@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="fi">
+<!-- Staattinen versio - generoitu build_static.py:lla, ala muokkaa suoraan -->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rantautumispaikkojen analysointi</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; }
+  #map { height: 100%; background: #cfe8ef; }
+  .legend {
+    background: white; padding: 8px 12px; border-radius: 4px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.35); font-size: 13px; line-height: 1.5;
+  }
+  .legend .swatch {
+    display: inline-block; width: 14px; height: 14px; margin-right: 6px;
+    vertical-align: middle; border-radius: 2px;
+  }
+  .legend-header {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; cursor: pointer; user-select: none;
+  }
+  .legend-toggle {
+    font-weight: bold; font-size: 15px; line-height: 1; color: #555;
+  }
+  .legend-body { margin-top: 6px; }
+  .legend-body.collapsed { display: none; }
+  .status {
+    position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+    background: white; padding: 6px 14px; border-radius: 4px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.35); font-size: 13px; z-index: 1000;
+  }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="status" id="status">Ladataan tiiliä...</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const map = L.map('map', { zoomSnap: 0.25 });
+
+const baseLayerGroup = L.layerGroup().addTo(map);
+const scoreLayerGroup = L.layerGroup().addTo(map);
+const topLayerGroup = L.layerGroup();
+
+L.control.layers(null, {
+  'Rantautumispisteytys': scoreLayerGroup,
+  'Parhaat rantautumispaikat (top 15%)': topLayerGroup,
+}, { collapsed: false }).addTo(map);
+
+const legend = L.control({ position: 'bottomright' });
+legend.onAdd = function () {
+  const div = L.DomUtil.create('div', 'legend');
+  div.innerHTML =
+    '<div class="legend-header">' +
+      '<b>Rantautumispiste</b>' +
+      '<span class="legend-toggle">&minus;</span>' +
+    '</div>' +
+    '<div class="legend-body">' +
+      '<span class="swatch" style="background:#00ff00"></span>Hyvä<br>' +
+      '<span class="swatch" style="background:#ffff00"></span>Kohtalainen<br>' +
+      '<span class="swatch" style="background:#ff0000"></span>Heikko<br>' +
+      '<span class="swatch" style="background:#ff00ff"></span>Paras 15% (oma kerros)<br>' +
+      '<small>Rantaviivan laatu perustuu 5–15&nbsp;m puskurivyöhykkeeseen,<br>' +
+      'visuaalisesti paksunnettuna näkyvyyden vuoksi.<br>' +
+      'Suo alentaa pistettä merkittävästi.</small>' +
+    '</div>';
+
+  L.DomEvent.disableClickPropagation(div);
+
+  const header = div.querySelector('.legend-header');
+  const body = div.querySelector('.legend-body');
+  const toggle = div.querySelector('.legend-toggle');
+  header.addEventListener('click', () => {
+    const collapsing = !body.classList.contains('collapsed');
+    body.classList.toggle('collapsed', collapsing);
+    toggle.innerHTML = collapsing ? '&plus;' : '&minus;';
+  });
+
+  return div;
+};
+legend.addTo(map);
+let tileListCache = [];
+let topLoaded = false;
+
+map.on('overlayadd', (e) => {
+  if (e.name.startsWith('Parhaat') && !topLoaded) {
+    topLoaded = true;
+    tileListCache.forEach((tile) => {
+      const b = tile.bounds_wgs84;
+      const bounds = [[b.south, b.west], [b.north, b.east]];
+      L.imageOverlay(`cache/${tile.tile_id}_top.png`, bounds, { opacity: 1 })
+        .addTo(topLayerGroup);
+    });
+  }
+});
+
+async function init() {
+  const statusEl = document.getElementById('status');
+  const res = await fetch('tiles.json');
+  const tileList = (await res.json()).tiles;
+  tileListCache = tileList;
+
+  const allBounds = [];
+
+  tileList.forEach((tile, i) => {
+    const b = tile.bounds_wgs84;
+    const bounds = [[b.south, b.west], [b.north, b.east]];
+    allBounds.push(bounds);
+
+    L.imageOverlay(`cache/${tile.tile_id}_base.png`, bounds, { opacity: 1 })
+      .addTo(baseLayerGroup);
+    L.imageOverlay(`cache/${tile.tile_id}.png`, bounds, { opacity: 1 })
+      .addTo(scoreLayerGroup);
+
+    statusEl.textContent = `Ladataan tiiliä... (${i + 1}/${tileList.length})`;
+  });
+
+  if (allBounds.length) {
+    map.fitBounds(allBounds);
+  } else {
+    map.setView([60.27, 20.8], 11);
+  }
+
+  statusEl.remove();
+}
+
+init().catch((err) => {
+  document.getElementById('status').textContent = 'Virhe ladattaessa: ' + err;
+});
+</script>
+</body>
+</html>
