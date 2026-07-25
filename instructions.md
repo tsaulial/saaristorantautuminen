@@ -108,8 +108,9 @@ Etene kehityksessä seuraavassa järjestyksessä:
 
 5. **Vaihe 5: Täysin staattinen julkaisu (GitHub Pages)** — VALMIS (`build_static.py`)
    * Koska lähdedata ei muutu ajossa, koko laskenta voidaan ajaa kertaalleen build-vaiheessa ja tuotanto voi olla pelkkiä staattisia tiedostoja — ei Pythonia, GDAL:ia eikä palvelinta tuotannossa.
-   * `python3 build_static.py` (ajetaan projektin juuresta): käy läpi `backend/pipeline.py`:n kautta kaikki tiilet, kirjoittaa `dist/cache/{tile}.png` (+ `_base.png`, `_top.png`) ja `dist/tiles.json` (tiilirajat + top-15 %-kynnysarvo), ja generoi `dist/index.html`:n `frontend/index.html`:sta korvaamalla `/api/...`-polut suhteellisilla staattisilla poluilla (`URL_REPLACEMENTS`-taulukko skriptissä).
-   * **Suhteelliset polut ovat pakollisia**: GitHub Pages -projektisivut palvelevat osoitteesta `https://kayttaja.github.io/repo/`, ei domainin juuresta — jos poluissa olisi alkava `/`, kuvat ja `tiles.json` eivät latautuisi. Testattu toimivaksi alipolusta (`/dist/`) tavallisella `python3 -m http.server`:lla.
+   * `python3 build_static.py` (ajetaan projektin juuresta): käy läpi `backend/pipeline.py`:n kautta kaikki tiilet, kirjoittaa `docs/cache/{tile}.png` (+ `_base.png`, `_top.png`) ja `docs/tiles.json` (tiilirajat + top-15 %-kynnysarvo), ja generoi `docs/index.html`:n `frontend/index.html`:sta korvaamalla `/api/...`-polut suhteellisilla staattisilla poluilla (`URL_REPLACEMENTS`-taulukko skriptissä).
+   * **Kansion nimi on `docs/`, ei `dist/`**: GitHub Pagesin "Deploy from a branch" -tila tukee lähdekansioksi vain juurta (`/`) tai nimenomaan `/docs`-kansiota — ei mielivaltaisia nimiä. Tämä huomattiin vasta kun `/dist`-vaihtoehtoa ei löytynyt Pagesin asetussivulta.
+   * **Suhteelliset polut ovat pakollisia**: GitHub Pages -projektisivut palvelevat osoitteesta `https://kayttaja.github.io/repo/`, ei domainin juuresta — jos poluissa olisi alkava `/`, kuvat ja `tiles.json` eivät latautuisi. Testattu toimivaksi alipolusta tavallisella `python3 -m http.server`:lla.
    * `/api/viewport`-endpointtia ei tarvinnut siirtää staattiseksi, koska frontend ei käyttänyt sitä koskaan (lataa kaikki 11 tiiltä suoraan alusta alkaen).
-   * Lopputulos: `dist/` on ~26 MB, 36 tiedostoa, itsenäinen kokonaisuus. `.nojekyll`-tiedosto mukana estämässä GitHub Pagesin Jekyll-käsittelyä.
-   * `dist/` tyhjennetään ja luodaan uudelleen joka ajolla (`shutil.rmtree`) — ei kasita hand-editoitavaksi.
+   * Lopputulos: `docs/` on ~26 MB, 36 tiedostoa, itsenäinen kokonaisuus. `.nojekyll`-tiedosto mukana estämässä GitHub Pagesin Jekyll-käsittelyä.
+   * `docs/` tyhjennetään ja luodaan uudelleen joka ajolla (`shutil.rmtree`) — ei kasita hand-editoitavaksi.

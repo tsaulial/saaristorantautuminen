@@ -1,12 +1,16 @@
 """
-Rakentaa taysin staattisen dist/-hakemiston (esim. GitHub Pagesia varten).
+Rakentaa taysin staattisen docs/-hakemiston GitHub Pagesia varten.
 
 Ajaa kaiken GIS-laskennan kertaalleen paikallisen output/cache/-valimuistin
 kautta (backend/pipeline.py) ja kopioi tulokset seka kevennetyn, staattisia
-polkuja kayttavan frontendin dist/-kansioon. Tuotannossa ei tarvita Pythonia,
+polkuja kayttavan frontendin docs/-kansioon. Tuotannossa ei tarvita Pythonia,
 GDAL:ia eika mitaan palvelinta - pelkat staattiset tiedostot.
 
-dist/-kansio tyhjennetaan ja luodaan uudelleen joka ajolla.
+Kansio on nimeltaan "docs" (ei "dist"), koska GitHub Pagesin "Deploy from a
+branch" -tila tukee vain juurikansiota tai nimenomaan /docs-kansiota - ei
+mielivaltaisia kansionimia.
+
+docs/-kansio tyhjennetaan ja luodaan uudelleen joka ajolla.
 
 Kaynnistys projektin juuresta:
     python3 build_static.py
@@ -20,8 +24,8 @@ from backend import pipeline, tiles
 
 ROOT = Path(__file__).resolve().parent
 BUILDINGS_PATH = ROOT / "rakennukset-mll" / "rakennukset.gpkg"
-DIST_DIR = ROOT / "dist"
-DIST_CACHE_DIR = DIST_DIR / "cache"
+DOCS_DIR = ROOT / "docs"
+DOCS_CACHE_DIR = DOCS_DIR / "cache"
 
 # frontend/index.html kayttaa naita tarkkoja /api/-polkuja - build-skripti
 # korvaa ne staattisilla, suhteellisilla poluilla (toimivat myos GitHub
@@ -36,9 +40,9 @@ URL_REPLACEMENTS = {
 
 
 def build():
-    if DIST_DIR.exists():
-        shutil.rmtree(DIST_DIR)
-    DIST_CACHE_DIR.mkdir(parents=True)
+    if DOCS_DIR.exists():
+        shutil.rmtree(DOCS_DIR)
+    DOCS_CACHE_DIR.mkdir(parents=True)
 
     registry = tiles.get_registry()
     print(f"{len(registry)} tiilta rekisterissa")
@@ -51,9 +55,9 @@ def build():
         overlay_bytes, meta = pipeline.get_or_compute_overlay(tile_id, str(BUILDINGS_PATH))
         top_bytes = pipeline.get_or_compute_top(tile_id, str(BUILDINGS_PATH))
 
-        (DIST_CACHE_DIR / f"{tile_id}_base.png").write_bytes(base_bytes)
-        (DIST_CACHE_DIR / f"{tile_id}.png").write_bytes(overlay_bytes)
-        (DIST_CACHE_DIR / f"{tile_id}_top.png").write_bytes(top_bytes)
+        (DOCS_CACHE_DIR / f"{tile_id}_base.png").write_bytes(base_bytes)
+        (DOCS_CACHE_DIR / f"{tile_id}.png").write_bytes(overlay_bytes)
+        (DOCS_CACHE_DIR / f"{tile_id}_top.png").write_bytes(top_bytes)
 
         tile_entries.append({"tile_id": tile_id, "bounds_wgs84": meta["bounds_wgs84"]})
 
@@ -64,16 +68,16 @@ def build():
         "top_percentile": pipeline.TOP_PERCENTILE,
         "top_threshold": threshold,
     }
-    (DIST_DIR / "tiles.json").write_text(json.dumps(tiles_json, indent=2))
+    (DOCS_DIR / "tiles.json").write_text(json.dumps(tiles_json, indent=2))
 
     write_static_index_html()
 
     # Estaa GitHub Pagesia ajamasta Jekylla-prosessointia staattisten
     # tiedostojen paalla (nopeampi julkaisu, ei yllatyksia tiedostonimissa).
-    (DIST_DIR / ".nojekyll").touch()
+    (DOCS_DIR / ".nojekyll").touch()
 
-    total_size = sum(f.stat().st_size for f in DIST_DIR.rglob("*") if f.is_file())
-    print(f"\nValmis: {DIST_DIR} ({total_size / 1e6:.1f} MB, {len(tile_entries)} tiilta)")
+    total_size = sum(f.stat().st_size for f in DOCS_DIR.rglob("*") if f.is_file())
+    print(f"\nValmis: {DOCS_DIR} ({total_size / 1e6:.1f} MB, {len(tile_entries)} tiilta)")
     print(f"Paras 15% -kynnysarvo: {threshold:.4f} (persentiili {pipeline.TOP_PERCENTILE})")
 
 
@@ -95,7 +99,7 @@ def write_static_index_html():
         1,
     )
 
-    (DIST_DIR / "index.html").write_text(out)
+    (DOCS_DIR / "index.html").write_text(out)
 
 
 if __name__ == "__main__":
