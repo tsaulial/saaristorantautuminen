@@ -44,7 +44,7 @@ from rasterio.crs import CRS
 from rasterio.transform import Affine, array_bounds
 from rasterio.warp import Resampling as WarpResampling
 from rasterio.warp import reproject
-from scipy.ndimage import distance_transform_edt, minimum_filter
+from scipy.ndimage import distance_transform_edt, label as ndimage_label, minimum_filter
 
 from backend import raster_filters, score_engine, tiles
 
@@ -60,6 +60,26 @@ SWAMP_PENALTY_FACTOR = 0.5
 
 SHORELINE_BUFFER_MIN_M = 5.0
 SHORELINE_BUFFER_MAX_M = 15.0
+
+# Peruskartalla puro/oja piirretaan rantaviiva-varisena viivana MUTTA ILMAN
+# vesialueen tayttoa (liian kapea nakyakseen tallä mittakaavalla) - siksi
+# rantaviiva-vari yksinaan ei erota merenrantaa sisamaan puron rannasta
+# (havaittu ongelma: sovellus ehdotti rantautumista purojen varsilta).
+# Erottelu tehdaan vesialueen tayton (WATER_FILL_HSV_*) yhtenaisten alueiden
+# koon perusteella: meri on aina valtava yhtenainen alue (havaittu
+# aineistossa >2000 ha per 6x6km tiili), puro/lampi/pieni jarvi pieni (alle
+# ~10 ha). SEA_MIN_AREA_M2 on asetettu selvalla marginaalilla naiden valiin.
+#
+# Ennen ryhmittelya tayttomaskille tehdaan morphological closing
+# (SEA_CLOSING_RADIUS_M): tiet, laivavaylaviivat yms. kartan symbolit voivat
+# katkaista tayton varin kapeista salmista/lahdista, jolloin aidosti
+# merellinen alue pilkkoutuisi virheellisesti moneksi pieneksi
+# komponentiksi (havaittu esimerkki: tie katkaisi 18 ha:n suojaisan lahden
+# yhteyden avomereen). 10m sulkee nama katkokset mutta ei yhdista aidosti
+# erillisia sisamaan lampia/jarvia mereen.
+SEA_CLOSING_RADIUS_M = 10.0
+SEA_MIN_AREA_M2 = 500_000.0  # 50 ha
+SEA_ADJACENCY_M = 5.0  # kuinka lahella meripintaa rantaviivapikselin pitaa olla sailyakseen
 
 # Puskurivyohyke on todellisuudessa vain muutaman metrin levyinen eika erotu
 # ulompana zoomitasolla. Paksunnetaan sita PELKASTAAN nakymista varten
@@ -115,6 +135,26 @@ def compute_shoreline_buffer(shoreline_mask, dem, pixel_size):
     non_shore = ~shoreline_mask
     dist_to_shore = distance_transform_edt(non_shore, sampling=(pixel_size, pixel_size))
     return land & (dist_to_shore >= SHORELINE_BUFFER_MIN_M) & (dist_to_shore <= SHORELINE_BUFFER_MAX_M)
+
+
+def compute_sea_mask(water_fill_mask, pixel_size):
+    """Erottaa meren (yhtenainen, suuri vesialue) sisamaan puroista/lammista/
+    pienista jarvista (pienia, erillisia vesialueita) - ks. SEA_* -vakioiden
+    kommentit. Palauttaa maskin niista vesitaytto-pikseleista jotka kuuluvat
+    riittavan suureen yhtenaiseen alueeseen."""
+    close_radius_px = meters_to_px(SEA_CLOSING_RADIUS_M, pixel_size)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * close_radius_px + 1, 2 * close_radius_px + 1))
+    closed = cv2.morphologyEx(water_fill_mask.astype(np.uint8), cv2.MORPH_CLOSE, kernel).astype(bool)
+
+    labels, n = ndimage_label(closed, structure=np.ones((3, 3), dtype=bool))
+    if n == 0:
+        return np.zeros_like(water_fill_mask)
+
+    sizes = np.bincount(labels.ravel())
+    min_area_px = SEA_MIN_AREA_M2 / (pixel_size ** 2)
+    sea_labels = np.flatnonzero(sizes >= min_area_px)
+    sea_labels = sea_labels[sea_labels != 0]
+    return np.isin(labels, sea_labels)
 
 
 def score_to_rgba(score, visible_mask):
@@ -176,8 +216,16 @@ def compute_tile(tile, buildings_path):
 
     map_bgr, _map_transform = raster_filters.load_map_window(str(tile.map_path), tile.bounds)
     rock_mask = raster_filters.detect_rock_mask(map_bgr)
-    shoreline_mask = raster_filters.detect_shoreline_mask(map_bgr)
+    shoreline_mask_raw = raster_filters.detect_shoreline_mask(map_bgr)
     swamp_mask = raster_filters.detect_swamp_mask(map_bgr)
+    water_fill_mask = raster_filters.detect_water_fill_mask(map_bgr)
+
+    # Rantaviiva-vari piirretaan seka merenrannalle etta sisamaan puroille -
+    # rajataan huomioon vain se osa joka on lahella oikeaa, riittavan suurta
+    # vesialuetta (= merta), ks. SEA_*-vakioiden kommentit.
+    sea_mask = compute_sea_mask(water_fill_mask, pixel_size)
+    sea_mask_near = dilate_mask(sea_mask, meters_to_px(SEA_ADJACENCY_M, pixel_size))
+    shoreline_mask = shoreline_mask_raw & sea_mask_near
 
     slope_score = resample_to_grid(v1["slope_score"], v1["transform"], map_transform, map_shape)
     dist_score = resample_to_grid(v1["dist_score"], v1["transform"], map_transform, map_shape)

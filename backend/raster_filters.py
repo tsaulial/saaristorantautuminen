@@ -48,6 +48,16 @@ ROCK_HSV_UPPER = np.array([175, 40, 230], dtype=np.uint8)
 SWAMP_HSV_LOWER = np.array([29, 180, 250], dtype=np.uint8)
 SWAMP_HSV_UPPER = np.array([31, 255, 255], dtype=np.uint8)
 
+# Vesialueen taytto #80ffff -> HSV(90,127,255): meri, jarvet ja leveammat
+# joet piirretaan tasaisena syaanintayttona, mutta kapeat purot/ojat VAIN
+# rantaviiva-varisena viivana ilman omaa tayttoa (liian kapeita nakyakseen
+# tallä mittakaavalla). Rantaviiva-vari (#0080ff) ei siis yksinaan riita
+# erottamaan merenrantaa puron rannasta - tayttoa kaytetaan tahan
+# pipeline.py:n compute_sea_mask-funktiossa (yhtenaisten tayttoalueiden koon
+# perusteella: meri on aina valtava, puro/lampi pieni).
+WATER_FILL_HSV_LOWER = np.array([85, 80, 200], dtype=np.uint8)
+WATER_FILL_HSV_UPPER = np.array([95, 180, 255], dtype=np.uint8)
+
 
 def load_map_raster(png_path):
     """Lukee kartta-PNG:n pikselidatan (BGR, paletti puretaan automaattisesti)
@@ -116,6 +126,12 @@ def detect_swamp_mask(bgr_img, hsv_img=None, close_kernel_px=9):
     if hsv_img is None:
         hsv_img = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2HSV)
     return _color_mask(hsv_img, SWAMP_HSV_LOWER, SWAMP_HSV_UPPER, close_kernel_px)
+
+
+def detect_water_fill_mask(bgr_img, hsv_img=None, close_kernel_px=0):
+    if hsv_img is None:
+        hsv_img = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2HSV)
+    return _color_mask(hsv_img, WATER_FILL_HSV_LOWER, WATER_FILL_HSV_UPPER, close_kernel_px)
 
 
 def run(map_path, out_path, preview=False, rock_close_px=9, shoreline_close_px=3, swamp_close_px=9):
