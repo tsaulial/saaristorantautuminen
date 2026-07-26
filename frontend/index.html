@@ -88,7 +88,26 @@ legend.onAdd = function () {
 };
 legend.addTo(map);
 let tileListCache = [];
-let topLoaded = false;
+let topVisible = false;
+
+// Moniresoluutioiset tasot ulompia zoomauksia varten (ks.
+// backend/pipeline.py: LEVEL_FACTORS). "suffix" vastaa tallennettujen
+// kuvien tiedostonimen paatetta - "" = detail-taso, ei suffiksia.
+// maxZoom on YLARAJA (poissulkeva): taso kaytossa kun zoom < maxZoom.
+// Kynnykset ovat puolivalissa perakkaisten tasojen omaa natiiviresoluutiota
+// vastaavien zoom-tasojen valissa (L.CRS.Simple: 1 karttayksikko = 1m,
+// resoluutio zoomilla z on 2^-z m/px - natiivit: overview 16m/px -> z=-4,
+// mid 4m/px -> z=-2, near 2m/px -> z=-1, detail 1m/px -> z=0).
+const LEVELS = [
+  { name: 'overview', suffix: '_overview', maxZoom: -3 },
+  { name: 'mid', suffix: '_mid', maxZoom: -1.5 },
+  { name: 'near', suffix: '_near', maxZoom: -0.5 },
+  { name: 'detail', suffix: '', maxZoom: Infinity },
+];
+
+function levelForZoom(zoom) {
+  return LEVELS.find((l) => zoom < l.maxZoom) || LEVELS[LEVELS.length - 1];
+}
 
 function tileLatLngBounds(tile) {
   // EPSG:3067-metrit suoraan lat/lng-pareina (ks. yllä), ei muunnosta.
@@ -96,14 +115,57 @@ function tileLatLngBounds(tile) {
   return [[b.miny, b.minx], [b.maxy, b.maxx]];
 }
 
-map.on('overlayadd', (e) => {
-  if (e.name.startsWith('Parhaat') && !topLoaded) {
-    topLoaded = true;
-    tileListCache.forEach((tile) => {
-      L.imageOverlay(`/api/overlay/${tile.tile_id}/top.png`, tileLatLngBounds(tile), { opacity: 1 })
+function tileIntersectsView(tile, view) {
+  const b = tile.bounds_epsg3067;
+  return !(b.maxx < view.minx || b.minx > view.maxx || b.maxy < view.miny || b.miny > view.maxy);
+}
+
+function currentViewBounds() {
+  const b = map.getBounds();
+  return { minx: b.getWest(), miny: b.getSouth(), maxx: b.getEast(), maxy: b.getNorth() };
+}
+
+// Ladataan tasosta riippuen vain naytossa juuri nyt olevien tiilien kuvat -
+// karkeampi yleistaso lataa nopeasti heti, tarkempi taso vain sille
+// alueelle johon kayttaja on zoomannut/panoroinut (ks. instructions.md).
+function refreshLayers() {
+  const level = levelForZoom(map.getZoom());
+  const view = currentViewBounds();
+  const visible = tileListCache.filter((tile) => tileIntersectsView(tile, view));
+
+  baseLayerGroup.clearLayers();
+  scoreLayerGroup.clearLayers();
+  visible.forEach((tile) => {
+    const bounds = tileLatLngBounds(tile);
+    L.imageOverlay(`/api/basemap/${tile.tile_id}${level.suffix}.png`, bounds, { opacity: 1 })
+      .addTo(baseLayerGroup);
+    L.imageOverlay(`/api/overlay/${tile.tile_id}${level.suffix}.png`, bounds, { opacity: 1 })
+      .addTo(scoreLayerGroup);
+  });
+
+  if (topVisible) {
+    topLayerGroup.clearLayers();
+    visible.forEach((tile) => {
+      L.imageOverlay(`/api/overlay/${tile.tile_id}/top${level.suffix}.png`, tileLatLngBounds(tile), { opacity: 1 })
         .addTo(topLayerGroup);
     });
   }
+}
+
+map.on('overlayadd', (e) => {
+  if (e.name.startsWith('Parhaat')) {
+    topVisible = true;
+    refreshLayers();
+  }
+});
+map.on('overlayremove', (e) => {
+  if (e.name.startsWith('Parhaat')) {
+    topVisible = false;
+    topLayerGroup.clearLayers();
+  }
+});
+map.on('zoomend moveend', () => {
+  if (tileListCache.length) refreshLayers();
 });
 
 async function init() {
@@ -112,26 +174,19 @@ async function init() {
   const tileList = await res.json();
   tileListCache = tileList;
 
-  const allBounds = [];
-
-  tileList.forEach((tile, i) => {
-    const bounds = tileLatLngBounds(tile);
-    allBounds.push(bounds);
-
-    L.imageOverlay(`/api/basemap/${tile.tile_id}.png`, bounds, { opacity: 1 })
-      .addTo(baseLayerGroup);
-    L.imageOverlay(`/api/overlay/${tile.tile_id}.png`, bounds, { opacity: 1 })
-      .addTo(scoreLayerGroup);
-
-    statusEl.textContent = `Ladataan tiiliä... (${i + 1}/${tileList.length})`;
-  });
-
+  const allBounds = tileList.map(tileLatLngBounds);
   if (allBounds.length) {
-    map.fitBounds(allBounds);
+    // Avataan hieman lahempaa kuin taysi "koko aineisto nakyvissa" -taso:
+    // yksi zoom-askel enemman (L.CRS.Simple: 2x resoluutio per askel) eli
+    // nakyvissa on karkeasti puolet koko aineiston fit-to-bounds-leveydesta.
+    const overallBounds = L.latLngBounds(allBounds);
+    const fitZoom = map.getBoundsZoom(overallBounds);
+    map.setView(overallBounds.getCenter(), fitZoom + 1);
   } else {
     map.setView([0, 0], -6);
   }
 
+  refreshLayers();
   statusEl.remove();
 }
 

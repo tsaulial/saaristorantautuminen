@@ -29,12 +29,15 @@ DOCS_CACHE_DIR = DOCS_DIR / "cache"
 
 # frontend/index.html kayttaa naita tarkkoja /api/-polkuja - build-skripti
 # korvaa ne staattisilla, suhteellisilla poluilla (toimivat myos GitHub
-# Pagesin ali-URLissa, esim. https://user.github.io/repo/).
+# Pagesin ali-URLissa, esim. https://user.github.io/repo/). "${level.suffix}"
+# on JS-ajonaikainen muuttuja (ks. pipeline.LEVEL_SUFFIXES) - staattiset
+# tiedostot on nimetty samalla suffiksikaytannolla, joten pelkka polun alku
+# tarvitsee korvata.
 URL_REPLACEMENTS = {
     "fetch('/api/tiles')": "fetch('tiles.json')",
-    "`/api/basemap/${tile.tile_id}.png`": "`cache/${tile.tile_id}_base.png`",
-    "`/api/overlay/${tile.tile_id}.png`": "`cache/${tile.tile_id}.png`",
-    "`/api/overlay/${tile.tile_id}/top.png`": "`cache/${tile.tile_id}_top.png`",
+    "`/api/basemap/${tile.tile_id}${level.suffix}.png`": "`cache/${tile.tile_id}_base${level.suffix}.png`",
+    "`/api/overlay/${tile.tile_id}${level.suffix}.png`": "`cache/${tile.tile_id}${level.suffix}.png`",
+    "`/api/overlay/${tile.tile_id}/top${level.suffix}.png`": "`cache/${tile.tile_id}_top${level.suffix}.png`",
     "const tileList = await res.json();": "const tileList = (await res.json()).tiles;",
 }
 
@@ -51,13 +54,17 @@ def build():
     for tile_id in registry:
         print(f"  {tile_id}...")
 
-        base_bytes = pipeline.get_or_compute_basemap(tile_id)
-        overlay_bytes, meta = pipeline.get_or_compute_overlay(tile_id, str(BUILDINGS_PATH))
-        top_bytes = pipeline.get_or_compute_top(tile_id, str(BUILDINGS_PATH))
+        meta = None
+        for level in pipeline.LEVEL_FACTORS:
+            suffix = pipeline.LEVEL_SUFFIXES[level]
+            base_bytes = pipeline.get_or_compute_basemap(tile_id, level=level)
+            overlay_bytes, level_meta = pipeline.get_or_compute_overlay(tile_id, str(BUILDINGS_PATH), level=level)
+            top_bytes = pipeline.get_or_compute_top(tile_id, str(BUILDINGS_PATH), level=level)
+            meta = meta or level_meta
 
-        (DOCS_CACHE_DIR / f"{tile_id}_base.png").write_bytes(base_bytes)
-        (DOCS_CACHE_DIR / f"{tile_id}.png").write_bytes(overlay_bytes)
-        (DOCS_CACHE_DIR / f"{tile_id}_top.png").write_bytes(top_bytes)
+            (DOCS_CACHE_DIR / f"{tile_id}_base{suffix}.png").write_bytes(base_bytes)
+            (DOCS_CACHE_DIR / f"{tile_id}{suffix}.png").write_bytes(overlay_bytes)
+            (DOCS_CACHE_DIR / f"{tile_id}_top{suffix}.png").write_bytes(top_bytes)
 
         tile_entries.append({"tile_id": tile_id, "bounds_epsg3067": meta["bounds_epsg3067"]})
 

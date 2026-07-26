@@ -83,18 +83,59 @@ SEA_ADJACENCY_M = 5.0  # kuinka lahella meripintaa rantaviivapikselin pitaa olla
 
 # Puskurivyohyke on todellisuudessa vain muutaman metrin levyinen eika erotu
 # ulompana zoomitasolla. Paksunnetaan sita PELKASTAAN nakymista varten
-# (dilataatio, sade metreina - muunnetaan pikseleiksi peruskartan pixel_sizen
-# mukaan) - taustalla oleva data/tilastot pysyvat tarkkoina.
-BUFFER_VISUAL_DILATION_M = 10.0
+# (dilataatio). Sama pikselisade kaytetaan JOKAISELLA resoluutiotasolla (ks.
+# LEVEL_FACTORS) - ei metrisade - jotta viiva nayttaa yhta paksulta ruudulla
+# riippumatta zoomaustasosta. Karkeammalla tasolla downsampletusta ohuesta
+# maskista tulisi muuten resize-pehmennyksessa nakymatta.
+BUFFER_VISUAL_DILATION_PX = 10
 
 # Jyrkkyys ($S_{slope}$) vaihtelee hyvin paikallisesti, joten huonot pisteet
 # (keltainen/punainen) nakyvat pienina, hajanaisina taplina. Korostetaan
 # niita PELKASTAAN renderoinnissa: kunkin pikselin variksi otetaan
-# lahiymparistonsa (sade metreina) PIENIN pistemaara (minimum_filter), jolloin
-# huono kohta "leviaa" nakyvaan kuvaan laajemmalle. Tilastot, suo-rangaistus ja
-# top-persentiilin kynnysarvo perustuvat yha tarkkaan, suodattamattomaan
-# pisteeseen.
-LOW_SCORE_EMPHASIS_M = 6.0
+# lahiymparistonsa (sade pikseleina, sama joka tasolla ks. yllä) PIENIN
+# pistemaara (minimum_filter), jolloin huono kohta "leviaa" nakyvaan kuvaan
+# laajemmalle. Tilastot, suo-rangaistus ja top-persentiilin kynnysarvo
+# perustuvat yha tarkkaan, suodattamattomaan pisteeseen.
+LOW_SCORE_EMPHASIS_PX = 6
+
+# Moniresoluutioiset "tasot" ulompia zoomauksia varten: jokainen taso on
+# kokonaislukukerroin peruskartan natiivista 1m/px-ruudukosta, jolloin
+# downsamplaus on halpa lohkokeskiarvo (cv2.INTER_AREA) ilman geodeettista
+# resamplausta. "detail" (kerroin 1) on peruskartan natiivi resoluutio ja
+# sailyttaa aiemman tiedostonimikaytannon (ei suffiksia); "near"/"mid"/
+# "overview" ovat kevyempia yleisnakymia joita frontend nayttaa ulompana
+# zoomattuna nopean alkulatauksen vuoksi.
+LEVEL_FACTORS = {"detail": 1, "near": 2, "mid": 4, "overview": 16}
+LEVEL_SUFFIXES = {"detail": "", "near": "_near", "mid": "_mid", "overview": "_overview"}
+
+
+def parse_tile_key(tile_key):
+    """Purkaa API-polusta tulevan '{tile_id}' tai '{tile_id}_mid' tms.
+    tile_id + level -pariksi."""
+    for level, suffix in LEVEL_SUFFIXES.items():
+        if suffix and tile_key.endswith(suffix):
+            return tile_key[: -len(suffix)], level
+    return tile_key, "detail"
+
+
+def downsample_image(img, factor):
+    """Pienentaa kuvan/maskin 'factor'-kertaa per akseli aluekeskiarvolla
+    (cv2.INTER_AREA) - sopii seka jatkuville kuville etta 0/1-maskeille
+    (jalkimmaiselle kynnystetaan > 0, ks. downsample_mask)."""
+    if factor <= 1:
+        return img
+    h, w = img.shape[:2]
+    new_w, new_h = max(1, w // factor), max(1, h // factor)
+    return cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+
+def downsample_mask(mask, factor):
+    """Kuten downsample_image, mutta True jos kohdepikselin alueella oli
+    YHTAAN True-pikselia lahteessa - ohut maski ei katoa kokonaan."""
+    if factor <= 1:
+        return mask
+    small = downsample_image(mask.astype(np.float32), factor)
+    return small > 0.0
 
 # "Parhaat rantautumispaikat" = koko aineiston (kaikki tiilet) pisteiden
 # 93. persentiili (= paras 7%) puskurivyohykkeen sisalla.
@@ -321,12 +362,16 @@ def compute_global_threshold(buildings_path, percentile=TOP_PERCENTILE, force=Fa
     return threshold
 
 
-def get_or_compute_overlay(tile_id, buildings_path, force=False):
-    """Palauttaa (png_bytes, meta_dict). Kayttaa levyvalimuistia. Ei
-    resamplausta - pistemaara on jo laskettu peruskartan omalle ruudukolle
-    (compute_tile), joten se voidaan piirtaa suoraan sellaisenaan."""
+def get_or_compute_overlay(tile_id, buildings_path, level="detail", force=False):
+    """Palauttaa (png_bytes, meta_dict) pisteytysoverlaylle halutulla
+    resoluutiotasolla (ks. LEVEL_FACTORS). "detail" ei resamplaa mitaan -
+    pistemaara on jo laskettu peruskartan omalle ruudukolle (compute_tile).
+    "mid"/"overview" downsamplaavat raa'an pistemaaran/puskurimaskin ja
+    paksuntavat sen SAMALLA pikselisateella kuin detail, jotta viiva pysyy
+    nakyvana. Kayttaa levyvalimuistia."""
+    suffix = LEVEL_SUFFIXES[level]
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    png_path = CACHE_DIR / f"{tile_id}.png"
+    png_path = CACHE_DIR / f"{tile_id}{suffix}.png"
     meta_path = CACHE_DIR / f"{tile_id}.json"
 
     if not force and png_path.exists() and meta_path.exists():
@@ -335,13 +380,14 @@ def get_or_compute_overlay(tile_id, buildings_path, force=False):
     registry = tiles.get_registry()
     if tile_id not in registry:
         raise KeyError(f"Tuntematon tile_id: {tile_id}")
-    tile = registry[tile_id]
 
     raw = get_or_compute_raw(tile_id, buildings_path, force=force)
-    pixel_size = abs(raw["map_transform"].a)
+    factor = LEVEL_FACTORS[level]
+    score = downsample_image(raw["score"].astype(np.float32), factor)
+    buffer_mask = downsample_mask(raw["buffer_mask"], factor)
 
-    visible_mask = dilate_mask(raw["buffer_mask"], meters_to_px(BUFFER_VISUAL_DILATION_M, pixel_size))
-    visual_score = emphasize_low_scores(raw["score"], meters_to_px(LOW_SCORE_EMPHASIS_M, pixel_size))
+    visible_mask = dilate_mask(buffer_mask, BUFFER_VISUAL_DILATION_PX)
+    visual_score = emphasize_low_scores(score, LOW_SCORE_EMPHASIS_PX)
     rgba = score_to_rgba(visual_score, visible_mask)
 
     ok, encoded = cv2.imencode(".png", rgba)
@@ -349,7 +395,7 @@ def get_or_compute_overlay(tile_id, buildings_path, force=False):
         raise RuntimeError("PNG-enkoodaus epaonnistui")
     png_bytes = encoded.tobytes()
 
-    bounds_3067 = array_bounds(*rgba.shape[:2], raw["map_transform"])
+    bounds_3067 = array_bounds(*raw["score"].shape, raw["map_transform"])
     meta = {
         "tile_id": tile_id,
         "bounds_epsg3067": bounds_tuple_to_dict(bounds_3067),
@@ -366,12 +412,13 @@ def get_or_compute_overlay(tile_id, buildings_path, force=False):
     return png_bytes, meta
 
 
-def get_or_compute_top(tile_id, buildings_path, force=False):
+def get_or_compute_top(tile_id, buildings_path, level="detail", force=False):
     """Palauttaa PNG-tavuina erillisen kerroksen, joka nayttaa VAIN parhaat
-    X% (TOP_PERCENTILE) puskurivyohykkeen pisteista. Peruskartan omalla
-    ruudukolla, ei resamplausta."""
+    X% (TOP_PERCENTILE) puskurivyohykkeen pisteista, halutulla
+    resoluutiotasolla (ks. get_or_compute_overlay)."""
+    suffix = LEVEL_SUFFIXES[level]
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    png_path = CACHE_DIR / f"{tile_id}_top.png"
+    png_path = CACHE_DIR / f"{tile_id}_top{suffix}.png"
 
     if not force and png_path.exists():
         return png_path.read_bytes()
@@ -379,14 +426,14 @@ def get_or_compute_top(tile_id, buildings_path, force=False):
     registry = tiles.get_registry()
     if tile_id not in registry:
         raise KeyError(f"Tuntematon tile_id: {tile_id}")
-    tile = registry[tile_id]
 
     raw = get_or_compute_raw(tile_id, buildings_path, force=force)
-    pixel_size = abs(raw["map_transform"].a)
     threshold = compute_global_threshold(buildings_path, force=force)
-
     top_mask = raw["buffer_mask"] & (raw["score"] >= threshold)
-    top_mask_visible = dilate_mask(top_mask, meters_to_px(BUFFER_VISUAL_DILATION_M, pixel_size))
+
+    factor = LEVEL_FACTORS[level]
+    top_mask = downsample_mask(top_mask, factor)
+    top_mask_visible = dilate_mask(top_mask, BUFFER_VISUAL_DILATION_PX)
 
     bgra = np.zeros((*top_mask_visible.shape, 4), dtype=np.uint8)
     bgra[top_mask_visible, 0:3] = TOP_HIGHLIGHT_BGR
@@ -401,11 +448,14 @@ def get_or_compute_top(tile_id, buildings_path, force=False):
     return png_bytes
 
 
-def get_or_compute_basemap(tile_id, force=False):
-    """Palauttaa taustakartaksi tarkoitetun karttakuva-leikkauksen PNG-tavuina,
-    MUUTTUMATTOMANA (ei resamplausta/reprojisointia), levyvalimuistilla."""
+def get_or_compute_basemap(tile_id, level="detail", force=False):
+    """Palauttaa taustakartaksi tarkoitetun karttakuva-leikkauksen PNG-tavuina
+    halutulla resoluutiotasolla, levyvalimuistilla. "detail" on
+    MUUTTUMATON (ei resamplausta/reprojisointia); "mid"/"overview" ovat
+    kevyita downsamplattuja yleisnakymia nopeaa alkulatausta varten."""
+    suffix = LEVEL_SUFFIXES[level]
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    png_path = CACHE_DIR / f"{tile_id}_base.png"
+    png_path = CACHE_DIR / f"{tile_id}_base{suffix}.png"
 
     if not force and png_path.exists():
         return png_path.read_bytes()
@@ -416,6 +466,7 @@ def get_or_compute_basemap(tile_id, force=False):
     tile = registry[tile_id]
 
     map_bgr, _map_transform = raster_filters.load_map_window(str(tile.map_path), tile.bounds)
+    map_bgr = downsample_image(map_bgr, LEVEL_FACTORS[level])
 
     ok, encoded = cv2.imencode(".png", map_bgr)
     if not ok:
