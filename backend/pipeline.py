@@ -4,27 +4,35 @@ Vaihe 3: Yhdistaa Vaihe 1:n (jyrkkyys + rakennusetaisyys) ja Vaihe 2:n
 generoi RGBA-overlay-kuvan vain rantaviivan puskurivyohykkeelle
 (instructions.md kohta 3, D).
 
-Kuvat reprojisoidaan TM35FIN:sta (EPSG:3067) suoraan WGS84-pikseliruudukolle
-(EPSG:4326) ennen PNG-enkoodausta. Pelkka kulmapisteiden koordinaattimuunnos
-(2 kulmaa -> "bounds") EI riita: TM35FIN-ruudukko ei ole linjassa todellisen
-pohjois-etela-suunnan kanssa kaukana keskimeridiaanista (27E), joten naapuri-
-tiilten reunat eivat tasmaisi Leafletissa vaan jattaisivat nakyvia rakoja.
-Koko rasterin reprojisointi tuottaa aidosti suorakulmaisen lat/lon-ruudukon,
-jolloin vierekkaisten tiilten reunat tasmaavat.
+Peruskartta (karttakuva-mll) on VIITERUUDUKKO: sen pikselit pysyvat
+muuttumattomina, tarkalleen sellaisina kuin MML on ne tuottanut (1m/px,
+EPSG:3067, ei kiertoa - ks. .pgw-tiedostot). Kaikki muu data (DEM-pohjainen
+jyrkkyys+etaisyys, kallio/rantaviiva/suo-maskit, lopullinen pistemaara)
+resamploidaan TAMAN saman ruudukon paalle, tallakin CRS:lla (EPSG:3067) -
+ei geodeettista reprojisointia mihinkaan suuntaan. Nain peruskartta ja
+sen paalle piirrettava pisteytys asettuvat aina tarkalleen paallekkain
+ilman minkaanlaista resamplaus- tai saumavirhetta, koska molemmat ovat
+samalla pikseliruudukolla.
+
+Nayttopuolella (frontend/index.html) Leaflet kayttaa L.CRS.Simple-CRS:aa:
+EPSG:3067-metrit syotetaan suoraan lat/lng-pareina (pohjoinen=lat, ita=lng),
+IlmAN mitaan proj4/geodeettista muunnosta - koska karttakuva ei ole kiertynyt
+suhteessa ruudukkoonsa, tama riittaa pikselintarkkaan, saumattomaan
+esitykseen ilman ylimaaraisia riippuvuuksia.
 
 Tulos valimuistetaan levylle (output/cache/) - lasketaan vain kerran per
 tiili, ks. Vaihe 1:n suunnittelupaatos ("koko lehti kerralla + cache").
 
 Kaksi laskentavaihetta:
-1. get_or_compute_raw(tile_id): raaka pistemaara + puskurimaski DEM:n omalla
-   2m/px-ruudukolla (TM35FIN), valimuistettu .npz:na. Sisaltaa jo suo-
-   rangaistuksen. Kayttaa seka yksittaisen tiilen piirtoa etta globaalia
+1. get_or_compute_raw(tile_id): raaka pistemaara + puskurimaski peruskartan
+   omalla 1m/px-ruudukolla (EPSG:3067), valimuistettu .npz:na. Sisaltaa jo
+   suo-rangaistuksen. Kayttaa seka yksittaisen tiilen piirtoa etta globaalia
    persentiililaskentaa.
 2. compute_global_threshold(): kerää KAIKKIEN tiilien puskurivyohykkeen
-   pisteet yhteen ja laskee 80. persentiilin - "parhaat 20%" maaritellaan
-   koko aineiston, ei yksittaisen tiilen, suhteen. Tama on tietoinen
-   arkkitehtuurivalinta: ensimmainen /api/overlay/*/top.png-pyynto laskee
-   KAIKKIEN tiilien raa'an pistemaaran jos niita ei viela ole valimuistissa.
+   pisteet yhteen ja laskee persentiilin - "parhaat X%" maaritellaan koko
+   aineiston, ei yksittaisen tiilen, suhteen. Tama on tietoinen arkkitehtuuri-
+   valinta: ensimmainen /api/overlay/*/top.png-pyynto laskee KAIKKIEN
+   tiilien raa'an pistemaaran jos niita ei viela ole valimuistissa.
 """
 
 import json
@@ -35,7 +43,7 @@ import numpy as np
 from rasterio.crs import CRS
 from rasterio.transform import Affine, array_bounds
 from rasterio.warp import Resampling as WarpResampling
-from rasterio.warp import calculate_default_transform, reproject
+from rasterio.warp import reproject
 from scipy.ndimage import distance_transform_edt, minimum_filter
 
 from backend import raster_filters, score_engine, tiles
@@ -53,46 +61,37 @@ SWAMP_PENALTY_FACTOR = 0.5
 SHORELINE_BUFFER_MIN_M = 5.0
 SHORELINE_BUFFER_MAX_M = 15.0
 
-# Puskurivyohyke on todellisuudessa vain muutaman pikselin levyinen 2m/px
-# DEM-ruudukolla eika erotu ulompana zoomitasolla. Paksunnetaan sita PELKASTAAN
-# nakymista varten (dilataatio) - taustalla oleva data/tilastot pysyvat tarkkoina.
-BUFFER_VISUAL_DILATION_PX = 5
+# Puskurivyohyke on todellisuudessa vain muutaman metrin levyinen eika erotu
+# ulompana zoomitasolla. Paksunnetaan sita PELKASTAAN nakymista varten
+# (dilataatio, sade metreina - muunnetaan pikseleiksi peruskartan pixel_sizen
+# mukaan) - taustalla oleva data/tilastot pysyvat tarkkoina.
+BUFFER_VISUAL_DILATION_M = 10.0
 
-# Jyrkkyys ($S_{slope}$) vaihtelee hyvin paikallisesti 2m/px-ruudukolla, joten
-# huonot pisteet (keltainen/punainen) nakyvat pienina, hajanaisina taplina.
-# Korostetaan niita PELKASTAAN renderoinnissa: kunkin pikselin variksi otetaan
-# lahiymparistonsa (sade radius_px) PIENIN pistemaara (minimum_filter), jolloin
+# Jyrkkyys ($S_{slope}$) vaihtelee hyvin paikallisesti, joten huonot pisteet
+# (keltainen/punainen) nakyvat pienina, hajanaisina taplina. Korostetaan
+# niita PELKASTAAN renderoinnissa: kunkin pikselin variksi otetaan
+# lahiymparistonsa (sade metreina) PIENIN pistemaara (minimum_filter), jolloin
 # huono kohta "leviaa" nakyvaan kuvaan laajemmalle. Tilastot, suo-rangaistus ja
-# top-20%-kynnysarvo perustuvat yha tarkkaan, suodattamattomaan pisteeseen.
-LOW_SCORE_EMPHASIS_PX = 3
+# top-persentiilin kynnysarvo perustuvat yha tarkkaan, suodattamattomaan
+# pisteeseen.
+LOW_SCORE_EMPHASIS_M = 6.0
 
 # "Parhaat rantautumispaikat" = koko aineiston (kaikki tiilet) pisteiden
-# 85. persentiili (= paras 15%) puskurivyohykkeen sisalla.
-TOP_PERCENTILE = 85
+# 90. persentiili (= paras 10%) puskurivyohykkeen sisalla.
+TOP_PERCENTILE = 90
 TOP_HIGHLIGHT_BGR = (255, 0, 255)  # magenta - erottuu selvasti vihrea/keltainen/punainen-asteikosta
 TOP_HIGHLIGHT_ALPHA = 230
-
-# Selaimelle lahetettavien kuvien kutakuinkin tavoitesivun mitta pikseleina.
-# Nakymassa voi olla useita tiilia yhtaaikaa eika suuremmasta tarkkuudesta
-# ole hyotya selaimen zoomaustasolla.
-WEB_TARGET_DIM = 2000
 
 CACHE_DIR = Path(__file__).resolve().parent.parent / "output" / "cache"
 
 SRC_CRS = CRS.from_epsg(3067)
-DST_CRS = CRS.from_epsg(4326)
 
 
-def downsample_mask_majority(mask, factor):
-    """Pienentaa binaarimaskin 'factor'-kertaa per akseli enemmiston
-    perusteella (esim. 1m/px kalliomaski -> 2m/px DEM-ruudukko)."""
-    h, w = mask.shape
-    h, w = h - h % factor, w - w % factor
-    reshaped = mask[:h, :w].reshape(h // factor, factor, w // factor, factor)
-    return reshaped.mean(axis=(1, 3)) >= 0.5
+def meters_to_px(radius_m, pixel_size):
+    return max(1, round(radius_m / pixel_size))
 
 
-def dilate_mask(mask, radius_px=BUFFER_VISUAL_DILATION_PX):
+def dilate_mask(mask, radius_px):
     """Paksuntaa binaarimaskia pelkkaa visualisointia varten."""
     if radius_px <= 0:
         return mask
@@ -100,20 +99,20 @@ def dilate_mask(mask, radius_px=BUFFER_VISUAL_DILATION_PX):
     return cv2.dilate(mask.astype(np.uint8), kernel).astype(bool)
 
 
-def emphasize_low_scores(score, radius_px=LOW_SCORE_EMPHASIS_PX):
+def emphasize_low_scores(score, radius_px):
     """Palauttaa version pistemaarasta jossa huonot arvot on levitetty
-    lahiymparistoonsa (ks. LOW_SCORE_EMPHASIS_PX). Vain visualisointia varten."""
+    lahiymparistoonsa (ks. LOW_SCORE_EMPHASIS_M). Vain visualisointia varten."""
     if radius_px <= 0:
         return score
     return minimum_filter(score, size=2 * radius_px + 1, mode="nearest")
 
 
-def compute_shoreline_buffer(shoreline_mask_dem_grid, dem, pixel_size):
+def compute_shoreline_buffer(shoreline_mask, dem, pixel_size):
     """Palauttaa boolean-maskin: True niille pikseleille jotka ovat maalla
     JA 5-15m etaisyydella lahimmasta rantaviivapikselista. Maa/vesi
     eroteltu DEM:n 0m-tason perusteella (instructions.md kohta D)."""
     land = dem > 0.0
-    non_shore = ~shoreline_mask_dem_grid
+    non_shore = ~shoreline_mask
     dist_to_shore = distance_transform_edt(non_shore, sampling=(pixel_size, pixel_size))
     return land & (dist_to_shore >= SHORELINE_BUFFER_MIN_M) & (dist_to_shore <= SHORELINE_BUFFER_MAX_M)
 
@@ -133,22 +132,13 @@ def score_to_rgba(score, visible_mask):
     return bgra
 
 
-def compute_wgs84_grid(bounds_3067, target_dim=WEB_TARGET_DIM):
-    """Laskee yhteisen WGS84-pikseliruudukon (transform, shape, bounds) yhdelle
-    tiilelle. Sama ruudukko kaytetaan seka basemapille etta overlaylle, jotta
-    ne asettuvat Leafletissa tarkalleen paallekkain."""
-    minx, miny, maxx, maxy = bounds_3067
-    dst_transform, dst_w, dst_h = calculate_default_transform(
-        SRC_CRS, DST_CRS, target_dim, target_dim, minx, miny, maxx, maxy
-    )
-    bounds_wgs84 = array_bounds(dst_h, dst_w, dst_transform)  # (west, south, east, north)
-    return dst_transform, (dst_h, dst_w), bounds_wgs84
-
-
-def reproject_to_wgs84(img_hwc, src_transform, dst_transform, dst_shape, resampling=WarpResampling.bilinear):
+def resample_to_grid(img, src_transform, dst_transform, dst_shape, resampling=WarpResampling.bilinear):
+    """Resamploi rasterin toiselle ruudukolle SAMAN CRS:n (EPSG:3067) sisalla -
+    ei geodeettista reprojisointia, pelkka ruudukon/resoluution muutos (esim.
+    DEM:n 2m/px -> peruskartan 1m/px)."""
     dst_h, dst_w = dst_shape
-    is_2d = img_hwc.ndim == 2
-    src = img_hwc[..., None] if is_2d else img_hwc
+    is_2d = img.ndim == 2
+    src = img[..., None] if is_2d else img
     dst = np.zeros((dst_h, dst_w, src.shape[2]), dtype=src.dtype)
     for b in range(src.shape[2]):
         reproject(
@@ -157,56 +147,45 @@ def reproject_to_wgs84(img_hwc, src_transform, dst_transform, dst_shape, resampl
             src_transform=src_transform,
             src_crs=SRC_CRS,
             dst_transform=dst_transform,
-            dst_crs=DST_CRS,
+            dst_crs=SRC_CRS,
             resampling=resampling,
         )
     return dst[..., 0] if is_2d else dst
 
 
-def reproject_coverage_mask(src_shape, src_transform, dst_transform, dst_shape):
-    """Kertoo mitka WGS84-ruudukon pikselit sisaltavat oikeaa lahdedataa.
-    Reprojisoitu suorakulmainen tiili on alkuperaisessa TM35FIN-ruudukossa
-    hieman vino (ks. moduulin dosstring), joten kohde-bounds-suorakulmion
-    kulmiin jaa aina kattamatonta aluetta - tama maski erottaa sen oikeasta
-    (esim. mustasta) kartta-datasta."""
-    dst_h, dst_w = dst_shape
-    coverage_src = np.full(src_shape, 255, dtype=np.uint8)
-    coverage_dst = np.zeros((dst_h, dst_w), dtype=np.uint8)
-    reproject(
-        source=coverage_src,
-        destination=coverage_dst,
-        src_transform=src_transform,
-        src_crs=SRC_CRS,
-        dst_transform=dst_transform,
-        dst_crs=DST_CRS,
-        resampling=WarpResampling.nearest,
-    )
-    return coverage_dst
+def bounds_tuple_to_dict(bounds_3067):
+    minx, miny, maxx, maxy = bounds_3067
+    return {"minx": minx, "miny": miny, "maxx": maxx, "maxy": maxy}
 
 
-def bounds_tuple_to_dict(bounds_wgs84):
-    west, south, east, north = bounds_wgs84
-    return {"west": west, "south": south, "east": east, "north": north}
+def get_map_grid(tile):
+    """Peruskartan oma pikseliruudukko (transform, shape) tiilen rajoihin
+    leikattuna - tama on koko pipelinen viiteruudukko, ks. moduulin docstring."""
+    return raster_filters.map_window_geometry(str(tile.map_path), tile.bounds)
 
 
 def compute_tile(tile, buildings_path):
+    """Laskee tiilen pistemaaran peruskartan omalla ruudukolla (viiteruudukko,
+    ks. moduulin docstring). DEM-pohjaiset jatkuvat kentat (jyrkkyys, etaisyys,
+    korkeus) resamploidaan omalta 2m/px-ruudukoltaan tahan ruudukkoon; kartta-
+    pohjaiset maskit (kallio, rantaviiva, suo) ovat jo natiivisti silla."""
     v1 = score_engine.compute(str(tile.dem_path), buildings_path)
-    dem = v1["dem"]
-    pixel_size = v1["pixel_size"]
+
+    map_transform, map_shape = get_map_grid(tile)
+    pixel_size = abs(map_transform.a)
 
     map_bgr, _map_transform = raster_filters.load_map_window(str(tile.map_path), tile.bounds)
-    rock_mask_1m = raster_filters.detect_rock_mask(map_bgr)
-    shoreline_mask_1m = raster_filters.detect_shoreline_mask(map_bgr)
-    swamp_mask_1m = raster_filters.detect_swamp_mask(map_bgr)
+    rock_mask = raster_filters.detect_rock_mask(map_bgr)
+    shoreline_mask = raster_filters.detect_shoreline_mask(map_bgr)
+    swamp_mask = raster_filters.detect_swamp_mask(map_bgr)
 
-    factor = round(map_bgr.shape[0] / dem.shape[0])
-    rock_mask = downsample_mask_majority(rock_mask_1m, factor)
-    shoreline_mask = downsample_mask_majority(shoreline_mask_1m, factor)
-    swamp_mask = downsample_mask_majority(swamp_mask_1m, factor)
+    slope_score = resample_to_grid(v1["slope_score"], v1["transform"], map_transform, map_shape)
+    dist_score = resample_to_grid(v1["dist_score"], v1["transform"], map_transform, map_shape)
+    dem = resample_to_grid(v1["dem"], v1["transform"], map_transform, map_shape)
 
     rock_score = np.where(rock_mask, ROCK_SCORE_YES, ROCK_SCORE_NO)
-    total_score = v1["slope_score"] * score_engine.SLOPE_WEIGHT
-    total_score = total_score + v1["dist_score"] * score_engine.DIST_WEIGHT
+    total_score = slope_score * score_engine.SLOPE_WEIGHT
+    total_score = total_score + dist_score * score_engine.DIST_WEIGHT
     total_score = total_score + rock_score * ROCK_WEIGHT
     total_score = np.where(swamp_mask, total_score * SWAMP_PENALTY_FACTOR, total_score)
 
@@ -215,7 +194,7 @@ def compute_tile(tile, buildings_path):
     return {
         "score": total_score,
         "buffer_mask": buffer_mask,
-        "src_transform": v1["transform"],
+        "map_transform": map_transform,
         "n_buildings": v1["n_buildings"],
         "rock_pct": 100 * rock_mask.mean(),
         "swamp_pct": 100 * swamp_mask.mean(),
@@ -225,8 +204,8 @@ def compute_tile(tile, buildings_path):
 
 
 def get_or_compute_raw(tile_id, buildings_path, force=False):
-    """Palauttaa tiilen raa'an pistemaara+puskurimaski-tuloksen DEM:n omalla
-    2m/px-ruudukolla (TM35FIN), levyvalimuistilla. Kayttaa seka yksittaisen
+    """Palauttaa tiilen raa'an pistemaara+puskurimaski-tuloksen peruskartan
+    omalla ruudukolla (EPSG:3067), levyvalimuistilla. Kayttaa seka yksittaisen
     tiilen piirtoa etta globaalia persentiililaskentaa - lasketaan siis vain
     kerran per tiili riippumatta kummasta tarpeesta se ensin tulee."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -237,7 +216,7 @@ def get_or_compute_raw(tile_id, buildings_path, force=False):
         return {
             "score": data["score"],
             "buffer_mask": data["buffer_mask"].astype(bool),
-            "src_transform": Affine(*data["src_transform"]),
+            "map_transform": Affine(*data["map_transform"]),
             "n_buildings": int(data["n_buildings"]),
             "rock_pct": float(data["rock_pct"]),
             "swamp_pct": float(data["swamp_pct"]),
@@ -256,7 +235,7 @@ def get_or_compute_raw(tile_id, buildings_path, force=False):
         npz_path,
         score=result["score"].astype(np.float32),
         buffer_mask=result["buffer_mask"],
-        src_transform=np.array(result["src_transform"])[:6],
+        map_transform=np.array(result["map_transform"])[:6],
         n_buildings=result["n_buildings"],
         rock_pct=result["rock_pct"],
         swamp_pct=result["swamp_pct"],
@@ -267,7 +246,7 @@ def get_or_compute_raw(tile_id, buildings_path, force=False):
 
 
 def compute_global_threshold(buildings_path, percentile=TOP_PERCENTILE, force=False):
-    """Laskee pistemaaran percentile:n (oletus 80. eli paras 20%) kaikkien
+    """Laskee pistemaaran percentile:n (oletus TOP_PERCENTILE) kaikkien
     tiilien puskurivyohykkeen pikseleiden yli. Valimuistetaan levylle, koska
     vaatii kaikkien tiilien raa'an laskennan (~2s/tiili)."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -295,7 +274,9 @@ def compute_global_threshold(buildings_path, percentile=TOP_PERCENTILE, force=Fa
 
 
 def get_or_compute_overlay(tile_id, buildings_path, force=False):
-    """Palauttaa (png_bytes, meta_dict). Kayttaa levyvalimuistia."""
+    """Palauttaa (png_bytes, meta_dict). Kayttaa levyvalimuistia. Ei
+    resamplausta - pistemaara on jo laskettu peruskartan omalle ruudukolle
+    (compute_tile), joten se voidaan piirtaa suoraan sellaisenaan."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     png_path = CACHE_DIR / f"{tile_id}.png"
     meta_path = CACHE_DIR / f"{tile_id}.json"
@@ -308,23 +289,22 @@ def get_or_compute_overlay(tile_id, buildings_path, force=False):
         raise KeyError(f"Tuntematon tile_id: {tile_id}")
     tile = registry[tile_id]
 
-    dst_transform, dst_shape, bounds_wgs84 = compute_wgs84_grid(tile.bounds)
-
     raw = get_or_compute_raw(tile_id, buildings_path, force=force)
-    visible_mask = dilate_mask(raw["buffer_mask"])
-    visual_score = emphasize_low_scores(raw["score"])
+    pixel_size = abs(raw["map_transform"].a)
+
+    visible_mask = dilate_mask(raw["buffer_mask"], meters_to_px(BUFFER_VISUAL_DILATION_M, pixel_size))
+    visual_score = emphasize_low_scores(raw["score"], meters_to_px(LOW_SCORE_EMPHASIS_M, pixel_size))
     rgba = score_to_rgba(visual_score, visible_mask)
-    rgba = reproject_to_wgs84(rgba, raw["src_transform"], dst_transform, dst_shape)
 
     ok, encoded = cv2.imencode(".png", rgba)
     if not ok:
         raise RuntimeError("PNG-enkoodaus epaonnistui")
     png_bytes = encoded.tobytes()
 
+    bounds_3067 = array_bounds(*rgba.shape[:2], raw["map_transform"])
     meta = {
         "tile_id": tile_id,
-        "bounds_epsg3067": list(tile.bounds),
-        "bounds_wgs84": bounds_tuple_to_dict(bounds_wgs84),
+        "bounds_epsg3067": bounds_tuple_to_dict(bounds_3067),
         "n_buildings": raw["n_buildings"],
         "rock_pct": raw["rock_pct"],
         "swamp_pct": raw["swamp_pct"],
@@ -340,7 +320,8 @@ def get_or_compute_overlay(tile_id, buildings_path, force=False):
 
 def get_or_compute_top(tile_id, buildings_path, force=False):
     """Palauttaa PNG-tavuina erillisen kerroksen, joka nayttaa VAIN parhaat
-    20% (koko aineiston 80. persentiili) puskurivyohykkeen pisteista."""
+    X% (TOP_PERCENTILE) puskurivyohykkeen pisteista. Peruskartan omalla
+    ruudukolla, ei resamplausta."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     png_path = CACHE_DIR / f"{tile_id}_top.png"
 
@@ -352,18 +333,16 @@ def get_or_compute_top(tile_id, buildings_path, force=False):
         raise KeyError(f"Tuntematon tile_id: {tile_id}")
     tile = registry[tile_id]
 
-    dst_transform, dst_shape, _bounds_wgs84 = compute_wgs84_grid(tile.bounds)
-
     raw = get_or_compute_raw(tile_id, buildings_path, force=force)
+    pixel_size = abs(raw["map_transform"].a)
     threshold = compute_global_threshold(buildings_path, force=force)
 
     top_mask = raw["buffer_mask"] & (raw["score"] >= threshold)
-    top_mask_visible = dilate_mask(top_mask)
+    top_mask_visible = dilate_mask(top_mask, meters_to_px(BUFFER_VISUAL_DILATION_M, pixel_size))
 
     bgra = np.zeros((*top_mask_visible.shape, 4), dtype=np.uint8)
     bgra[top_mask_visible, 0:3] = TOP_HIGHLIGHT_BGR
     bgra[top_mask_visible, 3] = TOP_HIGHLIGHT_ALPHA
-    bgra = reproject_to_wgs84(bgra, raw["src_transform"], dst_transform, dst_shape)
 
     ok, encoded = cv2.imencode(".png", bgra)
     if not ok:
@@ -376,7 +355,7 @@ def get_or_compute_top(tile_id, buildings_path, force=False):
 
 def get_or_compute_basemap(tile_id, force=False):
     """Palauttaa taustakartaksi tarkoitetun karttakuva-leikkauksen PNG-tavuina,
-    reprojisoituna samalle WGS84-ruudukolle kuin overlay, levyvalimuistilla."""
+    MUUTTUMATTOMANA (ei resamplausta/reprojisointia), levyvalimuistilla."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     png_path = CACHE_DIR / f"{tile_id}_base.png"
 
@@ -388,14 +367,9 @@ def get_or_compute_basemap(tile_id, force=False):
         raise KeyError(f"Tuntematon tile_id: {tile_id}")
     tile = registry[tile_id]
 
-    dst_transform, dst_shape, _bounds_wgs84 = compute_wgs84_grid(tile.bounds)
+    map_bgr, _map_transform = raster_filters.load_map_window(str(tile.map_path), tile.bounds)
 
-    map_bgr, map_transform = raster_filters.load_map_window(str(tile.map_path), tile.bounds)
-    coverage = reproject_coverage_mask(map_bgr.shape[:2], map_transform, dst_transform, dst_shape)
-    map_bgr = reproject_to_wgs84(map_bgr, map_transform, dst_transform, dst_shape)
-    map_bgra = np.dstack([map_bgr, coverage])
-
-    ok, encoded = cv2.imencode(".png", map_bgra)
+    ok, encoded = cv2.imencode(".png", map_bgr)
     if not ok:
         raise RuntimeError("PNG-enkoodaus epaonnistui")
     png_bytes = encoded.tobytes()
@@ -404,6 +378,6 @@ def get_or_compute_basemap(tile_id, force=False):
     return png_bytes
 
 
-def get_tile_bounds_wgs84(tile):
-    _dst_transform, _dst_shape, bounds_wgs84 = compute_wgs84_grid(tile.bounds)
-    return bounds_tuple_to_dict(bounds_wgs84)
+def get_tile_bounds(tile):
+    transform, shape = get_map_grid(tile)
+    return bounds_tuple_to_dict(array_bounds(*shape, transform))

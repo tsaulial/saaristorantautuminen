@@ -63,6 +63,16 @@ def load_map_raster(png_path):
     return bgr, transform, bounds
 
 
+def map_window_geometry(png_path, bbox):
+    """Palauttaa (transform, shape) bbox:aa vastaavalle karttakuva-ikkunalle
+    lukematta pikselidataa - halpa tapa saada tiilen tarkat EPSG:3067-rajat
+    peruskartan omalla ruudukolla (ks. load_map_window)."""
+    with rasterio.open(png_path) as ds:
+        window = from_bounds(*bbox, transform=ds.transform).round_offsets().round_lengths()
+        transform = ds.window_transform(window)
+    return transform, (int(round(window.height)), int(round(window.width)))
+
+
 def load_map_window(png_path, bbox):
     """Lukee vain bbox:aa (minx,miny,maxx,maxy) vastaavan ikkunan karttakuvasta
     palettidatana ja purkaa sen BGR:ksi itse - valttaa koko 12000x12000-tiilen

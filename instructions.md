@@ -50,7 +50,7 @@ $$S = (0.50 \cdot S_{\text{slope}}) + (0.35 \cdot S_{\text{dist}}) + (0.15 \cdot
 ### E. Suo ($S$-rangaistus) — lisätty jälkikäteen
 * Suodatetaan rasterikarttakuvasta keltainen suomerkintä (`#ffff40`), HSV-ikkuna (H 29–31, S 180–255, V 250–255) + morphological closing samaan tapaan kuin kallio.
 * Suo on huono rantautumispaikka: pikselin **lopullinen** $S$ (kaikki kolme komponenttia A–C jo laskettuna) kerrotaan rangaistuskertoimella `SWAMP_PENALTY_FACTOR = 0.5` (`backend/pipeline.py`) — painoja A–C ei muuteta.
-* "Parhaat rantautumispaikat" -kerros (ks. kohta 4, Frontend) korostaa pisteet, jotka ovat **koko aineiston** (kaikkien tiilien) puskurivyöhykkeen pisteiden 80. persentiilissä tai yli (`TOP_PERCENTILE = 80`, `backend/pipeline.py: compute_global_threshold`). Tämä on globaali, ei per-tiili, kynnysarvo — ensimmäinen `/api/overlay/{id}/top.png`-pyyntö laskee kaikkien tiilien raa'an pistemäärän jos sitä ei ole vielä välimuistissa (~2s/tiili, kertaluontoinen).
+* "Parhaat rantautumispaikat" -kerros (ks. kohta 4, Frontend) korostaa pisteet, jotka ovat **koko aineiston** (kaikkien tiilien) puskurivyöhykkeen pisteiden 90. persentiilissä tai yli (`TOP_PERCENTILE = 90`, `backend/pipeline.py: compute_global_threshold`). Tämä on globaali, ei per-tiili, kynnysarvo — ensimmäinen `/api/overlay/{id}/top.png`-pyyntö laskee kaikkien tiilien raa'an pistemäärän jos sitä ei ole vielä välimuistissa (~2s/tiili, kertaluontoinen).
 
 ---
 
@@ -65,7 +65,7 @@ $$S = (0.50 \cdot S_{\text{slope}}) + (0.35 \cdot S_{\text{dist}}) + (0.15 \cdot
      * Etäisyyslaskenta rakennuksiin rasteroidaan (`rasterio.features.rasterize`) ja lasketaan `scipy.ndimage.distance_transform_edt`-funktiolla — ei geometrista etäisyyttä pikseli kerrallaan (liian hidasta 12000×12000-matriisille).
   3. Generoi kunkin pistemäärän mukaisen RGB-läpikuultavan PNG-overlay-ruudun (tai GeoJSON-vektorin) ja palauttaa sen käyttöliittymälle.
   4. Overlay lasketaan koko karttalehdelle (12km×12km) kerralla ja tallennetaan levylle välimuistiin (esim. tiedostonimen tai lehtitunnuksen mukaan) — ei lasketa uudestaan joka pyynnöllä samalle lehdelle.
-  5. Muuntaa overlay-kuvan rajat TM35FIN:stä (EPSG:3067) WGS84:ään (`pyproj`) ennen palautusta, jotta Leafletin `ImageOverlay` voi piirtää sen oikein.
+  5. Peruskartta (karttakuva-mll) on pipelinen viiteruudukko ja pysyy täysin muuttumattomana (natiivi 1m/px EPSG:3067, ei kiertoa) — kaikki muu data (DEM-pohjainen jyrkkyys/etäisyys, kallio/rantaviiva/suo-maskit, lopullinen pistemäärä) resamploidaan tämän saman ruudukon päälle, samalla CRS:llä. Ei geodeettista reprojisointia WGS84:ään missään vaiheessa — ks. kohta 4:n löydös CRS-käsittelystä frontendissä.
   6. Rantaviivan (`#0080ff`) ja kallion (`#d1c7d1`) väritunnistus HSV-avaruudessa käyttää toleranssia (esim. ±10/kanava), ei tarkkaa hex-osumaa.
 
 ### Frontend (HTML / JS)
@@ -90,21 +90,22 @@ Etene kehityksessä seuraavassa järjestyksessä:
 3. **Vaihe 3: FastAPI Backend** — VALMIS (`backend/pipeline.py`, `backend/tiles.py`, `backend/api.py`)
    * Yhdistä Vaiheet 1 & 2 FastAPI-rajapinnaksi, joka palauttaa pyydetylle BBOX-alueelle lasketun overlay-kuvan.
    * Toteutettu tiili-ID-pohjaisena (ei vapaamuotoisena BBOX-leikkauksena), koska Vaihe 1:n suunnittelupäätöksenä overlay lasketaan aina koko DEM-tiilelle kerralla ja välimuistetaan levylle (`output/cache/`):
-     - `GET /api/tiles` — kaikki saatavilla olevat tiilet + WGS84-rajat
-     - `GET /api/viewport?min_lon=&min_lat=&max_lon=&max_lat=` — palauttaa näkymään osuvat tiili-ID:t (frontend kutsuu tätä pan/zoomin yhteydessä)
+     - `GET /api/tiles` — kaikki saatavilla olevat tiilet + EPSG:3067-rajat (peruskartan omalla ruudukolla)
+     - `GET /api/viewport?min_x=&min_y=&max_x=&max_y=` — palauttaa näkymään osuvat tiili-ID:t (frontend kutsuu tätä pan/zoomin yhteydessä), rajat metreinä EPSG:3067:ssä
      - `GET /api/overlay/{tile_id}.png` — RGBA-overlay, läpinäkyvä puskurivyöhykkeen ulkopuolella, lasketaan/välimuistetaan tarvittaessa (~2s kylmänä, ~2ms välimuistista)
-     - `GET /api/overlay/{tile_id}/meta` — WGS84-rajat + tunnusluvut (rakennusmäärä, kallio-%, jne.)
+     - `GET /api/overlay/{tile_id}/meta` — EPSG:3067-rajat + tunnusluvut (rakennusmäärä, kallio-%, jne.)
    * `backend/tiles.py` yhdistää DEM- ja karttakuva-tiilet koordinaattien perusteella (ks. kohta 2).
-   * `backend/pipeline.py` laskee kokonaispisteen $S$ (kaikki neljä komponenttia), resamplaa kallio/rantaviiva-maskit 1m/px → 2m/px enemmistöpäätöksellä, ja rajaa overlayn näkyväksi vain rantaviivan 5–15m puskurivyöhykkeelle maalla (DEM > 0m = maa).
+   * `backend/pipeline.py` laskee kokonaispisteen $S$ (kaikki neljä komponenttia) peruskartan omalla 1m/px-ruudukolla — DEM-pohjaiset jatkuvat kentät (jyrkkyys, etäisyys, korkeus) resamploidaan omalta 2m/px-ruudukoltaan tähän ruudukkoon (`rasterio.warp.reproject` saman CRS:n sisällä), kallio/rantaviiva/suo-maskit ovat jo natiivisti sillä. Overlay rajataan näkyväksi vain rantaviivan 5–15m puskurivyöhykkeelle maalla (DEM > 0m = maa).
    * Käynnistys: `uvicorn backend.api:app --reload`
 
 4. **Vaihe 4: Frontend & Visualisointi** — VALMIS (`frontend/index.html`)
    * Rakenna yksinkertainen `index.html`-sivu Leaflet.js-kartalla, joka visualisoi laskentatulokset suoraan kartalle.
    * Taustakartaksi käytetään paikallista MML-karttakuvaa (`/api/basemap/{tile_id}.png`), ei ulkoista WMTS-palvelua — toimii täysin offline paitsi Leaflet-kirjaston CDN-lataus.
-   * **Tärkeä löydös**: pelkkä kahden kulman koordinaattimuunnos (TM35FIN → WGS84) ei riitä tiilien rajaamiseen — TM35FIN-ruudukko ei ole linjassa todellisen pohjois-etelä-suunnan kanssa n. 330 km päässä keskimeridiaanista (27°E), joten naapuritiilten reunat eivät täsmänneet Leafletissa (näkyviä rakoja/limityksiä). Korjattu reprojisoimalla koko rasteri (basemap + overlay) EPSG:4326-pikseliruudukolle (`rasterio.warp.reproject`) ennen PNG-enkoodausta, jolloin vierekkäiset tiilet asettuvat saumattomasti. Basemapin reprojektion ulkopuolelle jäävä alue (rotatoidun tiilen bounds-suorakulmion kulmat) tehdään läpinäkyväksi peittomaskilla, ei mustaksi.
+   * **Tärkeä löydös (historiallinen)**: alun perin overlay-kuvat reprojisoitiin geodeettisesti WGS84:ään (EPSG:4326), koska Leafletin oletus-CRS olettaa lat/lng-koordinaatteja. Pelkkä kahden kulman koordinaattimuunnos (TM35FIN → WGS84) ei riittänyt tiilien rajaamiseen — TM35FIN-ruudukko ei ole linjassa todellisen pohjois-etelä-suunnan kanssa n. 330 km päässä keskimeridiaanista (27°E), joten naapuritiilten reunat eivät täsmänneet (näkyviä rakoja/limityksiä). Korjattiin tuolloin reprojisoimalla koko rasteri EPSG:4326-pikseliruudukolle.
+   * **Myöhempi arkkitehtuurimuutos**: geodeettinen WGS84-reprojisointi poistettiin kokonaan. Peruskartta pysyy nyt muuttumattomana natiivissa EPSG:3067:ssään (ei kiertoa, ks. kohta 4:n edellinen löydös — TM35FIN-ruudukko itsessään EI ole vino suhteessa omaan ruudukkoonsa, vain suhteessa WGS84:n lat/lng-suuntiin), ja Leaflet on konfiguroitu käyttämään `L.CRS.Simple`-CRS:ää: EPSG:3067-metrit syötetään suoraan lat/lng-pareina (pohjoinen=lat, itä=lng). Tämä on pikselintarkka ja saumaton täsmälleen samasta syystä kuin WGS84-reprojisointi oli — kaikki kerrokset ovat samalla ruudukolla — mutta ilman minkäänlaista resamplausta tai ylimääräistä riippuvuutta (ei proj4/proj4leaflet, pelkkä ydin-Leaflet). Basemap-kuvien tiedostokoko kasvoi merkittävästi (~4x), koska ne eivät enää ole downsampletut ~3m/px-näyttöresoluutioon vaan säilyttävät peruskartan täyden 1m/px-tarkkuuden.
    * Palvelin (`uvicorn backend.api:app`) tarjoilee sekä API:n että staattisen frontendin samasta originesta (`app.mount("/", StaticFiles(...))`), joten CORS ei ole ongelma.
    * Testattu headless Chromella (`--headless --screenshot`): kaikki 11 tiiliä muodostavat saumattoman kartan, pistemääräkerros näkyy oikein rantaviivan puskurivyöhykkeellä.
-   * "Parhaat rantautumispaikat (top 15%)" -kerros (`/api/overlay/{id}/top.png`, magenta) on oma togglettava `L.layerGroup`, **ladataan laiskasti** (vasta kun käyttäjä ruksii sen näkyviin `overlayadd`-tapahtumalla) — koska ensimmäinen pyyntö laskee globaalin kynnysarvon kaikista tiilistä ja on siksi hidas (~20s kylmänä).
+   * "Parhaat rantautumispaikat (top 10%)" -kerros (`/api/overlay/{id}/top.png`, magenta) on oma togglettava `L.layerGroup`, **ladataan laiskasti** (vasta kun käyttäjä ruksii sen näkyviin `overlayadd`-tapahtumalla) — koska ensimmäinen pyyntö laskee globaalin kynnysarvon kaikista tiilistä ja on siksi hidas (~20s kylmänä).
 
 5. **Vaihe 5: Täysin staattinen julkaisu (GitHub Pages)** — VALMIS (`build_static.py`)
    * Koska lähdedata ei muutu ajossa, koko laskenta voidaan ajaa kertaalleen build-vaiheessa ja tuotanto voi olla pelkkiä staattisia tiedostoja — ei Pythonia, GDAL:ia eikä palvelinta tuotannossa.

@@ -1,9 +1,10 @@
 """
 Vaihe 3: FastAPI-rajapinta.
 
-Tarjoaa saatavilla olevien tiilien listan (WGS84-rajoineen Leafletia varten)
-ja kunkin tiilen pistemaaraoverlayn PNG:na. Overlay lasketaan ensimmaisella
-pyynnolla ja valimuistetaan levylle (backend/pipeline.py).
+Tarjoaa saatavilla olevien tiilien listan (EPSG:3067-rajoineen, peruskartan
+omalla ruudukolla) ja kunkin tiilen pistemaaraoverlayn PNG:na. Overlay
+lasketaan ensimmaisella pyynnolla ja valimuistetaan levylle
+(backend/pipeline.py).
 
 Kaynnistys:
     uvicorn backend.api:app --reload
@@ -32,12 +33,13 @@ app.add_middleware(
 
 @app.get("/api/tiles")
 def list_tiles():
-    """Kaikki saatavilla olevat tiilet ja niiden WGS84-rajat."""
+    """Kaikki saatavilla olevat tiilet ja niiden EPSG:3067-rajat (peruskartan
+    omalla ruudukolla)."""
     registry = tiles.get_registry()
     return [
         {
             "tile_id": tile_id,
-            "bounds_wgs84": pipeline.get_tile_bounds_wgs84(tile),
+            "bounds_epsg3067": pipeline.get_tile_bounds(tile),
         }
         for tile_id, tile in registry.items()
     ]
@@ -85,7 +87,7 @@ def get_threshold():
 
 @app.get("/api/overlay/{tile_id}/meta")
 def get_overlay_meta(tile_id: str):
-    """Tiilen WGS84-rajat ja tunnuslukuja (rakennusmaara, kallio-%, jne)."""
+    """Tiilen EPSG:3067-rajat ja tunnuslukuja (rakennusmaara, kallio-%, jne)."""
     try:
         _png_bytes, meta = pipeline.get_or_compute_overlay(tile_id, str(BUILDINGS_PATH))
     except KeyError:
@@ -94,18 +96,18 @@ def get_overlay_meta(tile_id: str):
 
 
 @app.get("/api/viewport")
-def get_viewport_tiles(min_lon: float, min_lat: float, max_lon: float, max_lat: float):
-    """Palauttaa nakymaan (WGS84-bbox) osuvat tiilet - frontend kutsuu tata
-    kun kayttaja panoroi karttaa, ja lataa vain palautetut overlayt."""
+def get_viewport_tiles(min_x: float, min_y: float, max_x: float, max_y: float):
+    """Palauttaa nakymaan (EPSG:3067-bbox, metreina) osuvat tiilet - frontend
+    kutsuu tata kun kayttaja panoroi karttaa, ja lataa vain palautetut overlayt."""
     registry = tiles.get_registry()
     hits = []
     for tile_id, tile in registry.items():
-        b = pipeline.get_tile_bounds_wgs84(tile)
+        b = pipeline.get_tile_bounds(tile)
         overlaps = not (
-            b["east"] < min_lon or b["west"] > max_lon or b["north"] < min_lat or b["south"] > max_lat
+            b["maxx"] < min_x or b["minx"] > max_x or b["maxy"] < min_y or b["miny"] > max_y
         )
         if overlaps:
-            hits.append({"tile_id": tile_id, "bounds_wgs84": b})
+            hits.append({"tile_id": tile_id, "bounds_epsg3067": b})
     return hits
 
 

@@ -38,7 +38,13 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-const map = L.map('map', { zoomSnap: 0.25 });
+// Peruskartta pysyy muuttumattomana natiivissa EPSG:3067-projektiossaan
+// (ei rotaatiota, ks. backend/pipeline.py:n docstring) - kaikki muu data on
+// resamploitu samalle ruudukolle. Leaflet piirtaa siis suoraan EPSG:3067-
+// metrit "lat/lng"-pareina (pohjoinen=lat, ita=lng) L.CRS.Simple:lla, jonka
+// project()/unproject() on identiteetti - ei geodeettista muunnosta, ei
+// proj4-riippuvuutta, silti pikselintarkka ja saumaton lopputulos.
+const map = L.map('map', { crs: L.CRS.Simple, zoomSnap: 0.25, minZoom: -10, maxZoom: 6 });
 
 const baseLayerGroup = L.layerGroup().addTo(map);
 const scoreLayerGroup = L.layerGroup().addTo(map);
@@ -46,7 +52,7 @@ const topLayerGroup = L.layerGroup();
 
 L.control.layers(null, {
   'Rantautumispisteytys': scoreLayerGroup,
-  'Parhaat rantautumispaikat (top 15%)': topLayerGroup,
+  'Parhaat rantautumispaikat (top 10%)': topLayerGroup,
 }, { collapsed: false }).addTo(map);
 
 const legend = L.control({ position: 'bottomright' });
@@ -61,7 +67,7 @@ legend.onAdd = function () {
       '<span class="swatch" style="background:#00ff00"></span>Hyvä<br>' +
       '<span class="swatch" style="background:#ffff00"></span>Kohtalainen<br>' +
       '<span class="swatch" style="background:#ff0000"></span>Heikko<br>' +
-      '<span class="swatch" style="background:#ff00ff"></span>Paras 15% (oma kerros)<br>' +
+      '<span class="swatch" style="background:#ff00ff"></span>Paras 10% (oma kerros)<br>' +
       '<small>Rantaviivan laatu perustuu 5–15&nbsp;m puskurivyöhykkeeseen,<br>' +
       'visuaalisesti paksunnettuna näkyvyyden vuoksi.<br>' +
       'Suo alentaa pistettä merkittävästi.</small>' +
@@ -84,13 +90,17 @@ legend.addTo(map);
 let tileListCache = [];
 let topLoaded = false;
 
+function tileLatLngBounds(tile) {
+  // EPSG:3067-metrit suoraan lat/lng-pareina (ks. yllä), ei muunnosta.
+  const b = tile.bounds_epsg3067;
+  return [[b.miny, b.minx], [b.maxy, b.maxx]];
+}
+
 map.on('overlayadd', (e) => {
   if (e.name.startsWith('Parhaat') && !topLoaded) {
     topLoaded = true;
     tileListCache.forEach((tile) => {
-      const b = tile.bounds_wgs84;
-      const bounds = [[b.south, b.west], [b.north, b.east]];
-      L.imageOverlay(`/api/overlay/${tile.tile_id}/top.png`, bounds, { opacity: 1 })
+      L.imageOverlay(`/api/overlay/${tile.tile_id}/top.png`, tileLatLngBounds(tile), { opacity: 1 })
         .addTo(topLayerGroup);
     });
   }
@@ -105,8 +115,7 @@ async function init() {
   const allBounds = [];
 
   tileList.forEach((tile, i) => {
-    const b = tile.bounds_wgs84;
-    const bounds = [[b.south, b.west], [b.north, b.east]];
+    const bounds = tileLatLngBounds(tile);
     allBounds.push(bounds);
 
     L.imageOverlay(`/api/basemap/${tile.tile_id}.png`, bounds, { opacity: 1 })
@@ -120,7 +129,7 @@ async function init() {
   if (allBounds.length) {
     map.fitBounds(allBounds);
   } else {
-    map.setView([60.27, 20.8], 11);
+    map.setView([0, 0], -6);
   }
 
   statusEl.remove();

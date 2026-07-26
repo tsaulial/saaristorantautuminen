@@ -59,7 +59,7 @@ def build():
         (DOCS_CACHE_DIR / f"{tile_id}.png").write_bytes(overlay_bytes)
         (DOCS_CACHE_DIR / f"{tile_id}_top.png").write_bytes(top_bytes)
 
-        tile_entries.append({"tile_id": tile_id, "bounds_wgs84": meta["bounds_wgs84"]})
+        tile_entries.append({"tile_id": tile_id, "bounds_epsg3067": meta["bounds_epsg3067"]})
 
     threshold = pipeline.compute_global_threshold(str(BUILDINGS_PATH))
 
@@ -78,7 +78,7 @@ def build():
 
     total_size = sum(f.stat().st_size for f in DOCS_DIR.rglob("*") if f.is_file())
     print(f"\nValmis: {DOCS_DIR} ({total_size / 1e6:.1f} MB, {len(tile_entries)} tiilta)")
-    print(f"Paras 15% -kynnysarvo: {threshold:.4f} (persentiili {pipeline.TOP_PERCENTILE})")
+    print(f"Paras 10% -kynnysarvo: {threshold:.4f} (persentiili {pipeline.TOP_PERCENTILE})")
 
 
 def write_static_index_html():
