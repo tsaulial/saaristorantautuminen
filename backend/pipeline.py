@@ -77,8 +77,8 @@ BUFFER_VISUAL_DILATION_M = 10.0
 LOW_SCORE_EMPHASIS_M = 6.0
 
 # "Parhaat rantautumispaikat" = koko aineiston (kaikki tiilet) pisteiden
-# 90. persentiili (= paras 10%) puskurivyohykkeen sisalla.
-TOP_PERCENTILE = 90
+# 93. persentiili (= paras 7%) puskurivyohykkeen sisalla.
+TOP_PERCENTILE = 93
 TOP_HIGHLIGHT_BGR = (255, 0, 255)  # magenta - erottuu selvasti vihrea/keltainen/punainen-asteikosta
 TOP_HIGHLIGHT_ALPHA = 230
 

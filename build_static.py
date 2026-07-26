@@ -78,7 +78,7 @@ def build():
 
     total_size = sum(f.stat().st_size for f in DOCS_DIR.rglob("*") if f.is_file())
     print(f"\nValmis: {DOCS_DIR} ({total_size / 1e6:.1f} MB, {len(tile_entries)} tiilta)")
-    print(f"Paras 10% -kynnysarvo: {threshold:.4f} (persentiili {pipeline.TOP_PERCENTILE})")
+    print(f"Paras 7% -kynnysarvo: {threshold:.4f} (persentiili {pipeline.TOP_PERCENTILE})")
 
 
 def write_static_index_html():

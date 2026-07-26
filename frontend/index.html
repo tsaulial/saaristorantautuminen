@@ -52,7 +52,7 @@ const topLayerGroup = L.layerGroup();
 
 L.control.layers(null, {
   'Rantautumispisteytys': scoreLayerGroup,
-  'Parhaat rantautumispaikat (top 10%)': topLayerGroup,
+  'Parhaat rantautumispaikat (top 7%)': topLayerGroup,
 }, { collapsed: false }).addTo(map);
 
 const legend = L.control({ position: 'bottomright' });
@@ -67,7 +67,7 @@ legend.onAdd = function () {
       '<span class="swatch" style="background:#00ff00"></span>Hyvä<br>' +
       '<span class="swatch" style="background:#ffff00"></span>Kohtalainen<br>' +
       '<span class="swatch" style="background:#ff0000"></span>Heikko<br>' +
-      '<span class="swatch" style="background:#ff00ff"></span>Paras 10% (oma kerros)<br>' +
+      '<span class="swatch" style="background:#ff00ff"></span>Paras 7% (oma kerros)<br>' +
       '<small>Rantaviivan laatu perustuu 5–15&nbsp;m puskurivyöhykkeeseen,<br>' +
       'visuaalisesti paksunnettuna näkyvyyden vuoksi.<br>' +
       'Suo alentaa pistettä merkittävästi.</small>' +
