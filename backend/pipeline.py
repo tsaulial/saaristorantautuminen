@@ -87,7 +87,28 @@ SEA_ADJACENCY_M = 5.0  # kuinka lahella meripintaa rantaviivapikselin pitaa olla
 # LEVEL_FACTORS) - ei metrisade - jotta viiva nayttaa yhta paksulta ruudulla
 # riippumatta zoomaustasosta. Karkeammalla tasolla downsampletusta ohuesta
 # maskista tulisi muuten resize-pehmennyksessa nakymatta.
-BUFFER_VISUAL_DILATION_PX = 10
+#
+# Paksuus on kayttajan saadettavissa (liukusaadin, ks. frontend/index.html)
+# muutaman kiintean esiasetuksen valilla - EI portaattomasti selaimessa
+# (esim. SVG feMorphology-suodattimella): kokeiltiin, mutta se osoittautui
+# liian raskaaksi (Chromiumin feMorphology on hidas suurilla sateilla ja
+# aiheutti pätkimista pan/zoomin aikana). Jokainen esiasetus lasketaan siis
+# kertaalleen build-vaiheessa omaksi kuvakseen (ks. get_or_compute_overlay/
+# get_or_compute_top: thickness_px sisaltyy tiedostonimeen), joten
+# ajonaikaista kulua ei ole - vaihto on pelkka toisen valmiin kuvan pyynto.
+THICKNESS_PRESETS = [1, 5, 10, 15, 20]
+DEFAULT_THICKNESS_PX = 10
+
+# "Parhaat rantautumispaikat" -kynnys on kayttajan saadettavissa (liukusaadin,
+# ks. frontend/index.html) valilta 1-10 (%) - eli kuinka suuri osuus koko
+# aineiston (kaikkien tiilien) puskurivyohykkeen pisteista korostetaan.
+# Pieni prosentti (esim. 1%) naytaa vain kapean kaistaleen parasta rantaa;
+# suurempi (esim. 10%) laajemman joukon. Persentiili numpy.percentile:lle on
+# aina 100-top_percent (top_percent=7 -> persentiili 93). Jokainen esiasetus
+# lasketaan kertaalleen build-vaiheessa omaksi kuvakseen (ks. get_or_compute_top
+# ja THICKNESS_PRESETS-kommentti - sama "ei ajonaikaista laskentaa" -periaate).
+TOP_PERCENT_PRESETS = list(range(1, 11))  # 1, 2, ..., 10
+DEFAULT_TOP_PERCENT = 7
 
 # Jyrkkyys ($S_{slope}$) vaihtelee hyvin paikallisesti, joten huonot pisteet
 # (keltainen/punainen) nakyvat pienina, hajanaisina taplina. Korostetaan
@@ -110,12 +131,33 @@ LEVEL_SUFFIXES = {"detail": "", "near": "_near", "mid": "_mid", "overview": "_ov
 
 
 def parse_tile_key(tile_key):
-    """Purkaa API-polusta tulevan '{tile_id}' tai '{tile_id}_mid' tms.
-    tile_id + level -pariksi."""
+    """Purkaa API-polusta tulevan '{tile_id}[_level][_t{thickness}][_p{percent}]'
+    -avaimen (tile_id, level, thickness_px, top_percent) -nelikoksi. Kaikki
+    paate-osat ovat valinnaisia (oletus 'detail' / DEFAULT_THICKNESS_PX /
+    DEFAULT_TOP_PERCENT) - kayttokelpoinen seka tiili- etta 'variant'-
+    avaimille (ks. api.py: get_overlay_top_png). '_p{percent}' purkaan
+    ENSIN, koska se on aina viimeisena (vain top-avaimissa, ks.
+    get_or_compute_top)."""
+    top_percent = DEFAULT_TOP_PERCENT
+    for p in TOP_PERCENT_PRESETS:
+        suffix = f"_p{p}"
+        if tile_key.endswith(suffix):
+            tile_key = tile_key[: -len(suffix)]
+            top_percent = p
+            break
+
+    thickness_px = DEFAULT_THICKNESS_PX
+    for t in THICKNESS_PRESETS:
+        suffix = f"_t{t}"
+        if tile_key.endswith(suffix):
+            tile_key = tile_key[: -len(suffix)]
+            thickness_px = t
+            break
+
     for level, suffix in LEVEL_SUFFIXES.items():
         if suffix and tile_key.endswith(suffix):
-            return tile_key[: -len(suffix)], level
-    return tile_key, "detail"
+            return tile_key[: -len(suffix)], level, thickness_px, top_percent
+    return tile_key, "detail", thickness_px, top_percent
 
 
 def downsample_image(img, factor):
@@ -137,9 +179,6 @@ def downsample_mask(mask, factor):
     small = downsample_image(mask.astype(np.float32), factor)
     return small > 0.0
 
-# "Parhaat rantautumispaikat" = koko aineiston (kaikki tiilet) pisteiden
-# 93. persentiili (= paras 7%) puskurivyohykkeen sisalla.
-TOP_PERCENTILE = 93
 TOP_HIGHLIGHT_BGR = (255, 0, 255)  # magenta - erottuu selvasti vihrea/keltainen/punainen-asteikosta
 TOP_HIGHLIGHT_ALPHA = 230
 
@@ -196,6 +235,36 @@ def compute_sea_mask(water_fill_mask, pixel_size):
     sea_labels = np.flatnonzero(sizes >= min_area_px)
     sea_labels = sea_labels[sea_labels != 0]
     return np.isin(labels, sea_labels)
+
+
+# "Paras rannat %" -valinta (ks. TOP_PERCENT_PRESETS) osoittautui olevan
+# rikki pienilla prosenteilla: total_score SATUROITUU tarkalleen arvoon 1.0
+# heti kun jyrkkyys<=5 astetta JA etaisyys rakennuksiin>150m JA kallio -
+# tama toteutuu n. 8 %:lla KAIKISTA puskurivyohykkeen pikseleista (mitattu
+# koko aineistosta), jolloin persentiilit 93-99 (top 1-7 %) tuottavat KAIKKI
+# saman kynnysarvon 1.0 ja siis TASAN saman korostetun alueen - "top 1 %"
+# ei siis ollut sen suppeampi kuin "top 7 %". Korjattu lisaamalla erittain
+# pieni, JATKUVA "tasapelin purku" (compute_tiebreak: suosii tasaisempaa
+# maastoa ja kauempana rakennuksista olevia pikseleita MYOS 1.0-tason
+# ylapuolella/sisalla) rank_score-nimiseen apusuureeseen, jota kaytetaan
+# VAIN persentiilikynnyksen laskennassa ja "top X %" -maskin valinnassa -
+# nakyva pistemaara/varikoodaus (score) pysyy talta osin muuttumattomana.
+# Epsilon on niin pieni ettei se voi koskaan kaantaa kahden aidosti eri
+# total_score-arvon jarjestysta (0.5/0.35/0.15-painotteiset erot ovat aina
+# suurempia kuin epsilon*[0,1]), se vain jarjestaa tasapelit.
+TIEBREAK_EPSILON = 1e-4
+
+
+def compute_tiebreak(slope_deg, dist_m):
+    """Jatkuva, rajoittamaton apusuure edella kuvattujen tasapelien
+    purkamiseen - normalisoitu karkeasti [0,1]-valille (ei tarvitse olla
+    tarkka, vain jarjestysta varten). Painotettu samoilla suhteellisilla
+    painoilla kuin varsinainen pistemaara (SLOPE_WEIGHT/DIST_WEIGHT) -
+    kallio ei mukana, koska se on jo binaarinen eika tarvitse tarkennusta."""
+    slope_component = np.clip(1.0 - slope_deg / 90.0, 0.0, 1.0)
+    dist_component = np.clip(dist_m / 1000.0, 0.0, 1.0)
+    weight_sum = score_engine.SLOPE_WEIGHT + score_engine.DIST_WEIGHT
+    return (score_engine.SLOPE_WEIGHT * slope_component + score_engine.DIST_WEIGHT * dist_component) / weight_sum
 
 
 def score_to_rgba(score, visible_mask):
@@ -271,6 +340,8 @@ def compute_tile(tile, buildings_path):
     slope_score = resample_to_grid(v1["slope_score"], v1["transform"], map_transform, map_shape)
     dist_score = resample_to_grid(v1["dist_score"], v1["transform"], map_transform, map_shape)
     dem = resample_to_grid(v1["dem"], v1["transform"], map_transform, map_shape)
+    slope_deg = resample_to_grid(v1["slope_deg"], v1["transform"], map_transform, map_shape)
+    dist_m = resample_to_grid(v1["dist_m"], v1["transform"], map_transform, map_shape)
 
     rock_score = np.where(rock_mask, ROCK_SCORE_YES, ROCK_SCORE_NO)
     total_score = slope_score * score_engine.SLOPE_WEIGHT
@@ -278,10 +349,13 @@ def compute_tile(tile, buildings_path):
     total_score = total_score + rock_score * ROCK_WEIGHT
     total_score = np.where(swamp_mask, total_score * SWAMP_PENALTY_FACTOR, total_score)
 
+    rank_score = total_score + TIEBREAK_EPSILON * compute_tiebreak(slope_deg, dist_m)
+
     buffer_mask = compute_shoreline_buffer(shoreline_mask, dem, pixel_size)
 
     return {
         "score": total_score,
+        "rank_score": rank_score,
         "buffer_mask": buffer_mask,
         "map_transform": map_transform,
         "n_buildings": v1["n_buildings"],
@@ -300,10 +374,10 @@ def get_or_compute_raw(tile_id, buildings_path, force=False):
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     npz_path = CACHE_DIR / f"{tile_id}_raw.npz"
 
-    if not force and npz_path.exists():
-        data = np.load(npz_path)
+    if not force and npz_path.exists() and "rank_score" in (data := np.load(npz_path)).files:
         return {
             "score": data["score"],
+            "rank_score": data["rank_score"],
             "buffer_mask": data["buffer_mask"].astype(bool),
             "map_transform": Affine(*data["map_transform"]),
             "n_buildings": int(data["n_buildings"]),
@@ -323,6 +397,7 @@ def get_or_compute_raw(tile_id, buildings_path, force=False):
     np.savez_compressed(
         npz_path,
         score=result["score"].astype(np.float32),
+        rank_score=result["rank_score"].astype(np.float32),
         buffer_mask=result["buffer_mask"],
         map_transform=np.array(result["map_transform"])[:6],
         n_buildings=result["n_buildings"],
@@ -334,17 +409,24 @@ def get_or_compute_raw(tile_id, buildings_path, force=False):
     return result
 
 
-def compute_global_threshold(buildings_path, percentile=TOP_PERCENTILE, force=False):
-    """Laskee pistemaaran percentile:n (oletus TOP_PERCENTILE) kaikkien
-    tiilien puskurivyohykkeen pikseleiden yli. Valimuistetaan levylle, koska
-    vaatii kaikkien tiilien raa'an laskennan (~2s/tiili)."""
+def top_percent_to_percentile(top_percent):
+    """'Paras rannan %' (ks. TOP_PERCENT_PRESETS) -> numpy.percentile-parametri
+    (esim. top_percent=7 -> persentiili 93)."""
+    return 100 - top_percent
+
+
+def compute_global_threshold(buildings_path, percentile, force=False):
+    """Laskee rank_score:n (ks. TIEBREAK_EPSILON-kommentti - EI nakyvaa
+    score:a, koska se saturoituu 1.0:aan liian monella pikselilla) percentile:n
+    kaikkien tiilien puskurivyohykkeen pikseleiden yli. Valimuistetaan
+    levylle PER PERSENTIILI (yksi esiasetus = yksi kynnysarvo), koska vaatii
+    kaikkien tiilien raa'an laskennan (~2s/tiili, kertaalleen - tuloksena
+    ei-persentiilikohtainen get_or_compute_raw on jo omalla valimuistillaan)."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    threshold_path = CACHE_DIR / "_global_threshold.json"
+    threshold_path = CACHE_DIR / f"_global_threshold_p{percentile}.json"
 
     if not force and threshold_path.exists():
-        cached = json.loads(threshold_path.read_text())
-        if cached.get("percentile") == percentile:
-            return cached["threshold"]
+        return json.loads(threshold_path.read_text())["threshold"]
 
     registry = tiles.get_registry()
     all_scores = []
@@ -352,7 +434,7 @@ def compute_global_threshold(buildings_path, percentile=TOP_PERCENTILE, force=Fa
         raw = get_or_compute_raw(tid, buildings_path, force=force)
         buf = raw["buffer_mask"]
         if buf.any():
-            all_scores.append(raw["score"][buf])
+            all_scores.append(raw["rank_score"][buf])
 
     threshold = float(np.percentile(np.concatenate(all_scores), percentile)) if all_scores else 1.0
 
@@ -362,16 +444,17 @@ def compute_global_threshold(buildings_path, percentile=TOP_PERCENTILE, force=Fa
     return threshold
 
 
-def get_or_compute_overlay(tile_id, buildings_path, level="detail", force=False):
+def get_or_compute_overlay(tile_id, buildings_path, level="detail", thickness_px=DEFAULT_THICKNESS_PX, force=False):
     """Palauttaa (png_bytes, meta_dict) pisteytysoverlaylle halutulla
-    resoluutiotasolla (ks. LEVEL_FACTORS). "detail" ei resamplaa mitaan -
-    pistemaara on jo laskettu peruskartan omalle ruudukolle (compute_tile).
-    "mid"/"overview" downsamplaavat raa'an pistemaaran/puskurimaskin ja
-    paksuntavat sen SAMALLA pikselisateella kuin detail, jotta viiva pysyy
-    nakyvana. Kayttaa levyvalimuistia."""
+    resoluutiotasolla (ks. LEVEL_FACTORS) ja rantaviivan paksuudella (ks.
+    THICKNESS_PRESETS). "detail" ei resamplaa mitaan - pistemaara on jo
+    laskettu peruskartan omalle ruudukolle (compute_tile). "mid"/"overview"
+    downsamplaavat raa'an pistemaaran/puskurimaskin ja paksuntavat sen
+    SAMALLA pikselisateella kuin detail, jotta viiva pysyy nakyvana. Kayttaa
+    levyvalimuistia (yksi PNG per level+thickness-yhdistelma)."""
     suffix = LEVEL_SUFFIXES[level]
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    png_path = CACHE_DIR / f"{tile_id}{suffix}.png"
+    png_path = CACHE_DIR / f"{tile_id}{suffix}_t{thickness_px}.png"
     meta_path = CACHE_DIR / f"{tile_id}.json"
 
     if not force and png_path.exists() and meta_path.exists():
@@ -386,7 +469,7 @@ def get_or_compute_overlay(tile_id, buildings_path, level="detail", force=False)
     score = downsample_image(raw["score"].astype(np.float32), factor)
     buffer_mask = downsample_mask(raw["buffer_mask"], factor)
 
-    visible_mask = dilate_mask(buffer_mask, BUFFER_VISUAL_DILATION_PX)
+    visible_mask = dilate_mask(buffer_mask, thickness_px)
     visual_score = emphasize_low_scores(score, LOW_SCORE_EMPHASIS_PX)
     rgba = score_to_rgba(visual_score, visible_mask)
 
@@ -412,13 +495,21 @@ def get_or_compute_overlay(tile_id, buildings_path, level="detail", force=False)
     return png_bytes, meta
 
 
-def get_or_compute_top(tile_id, buildings_path, level="detail", force=False):
+def get_or_compute_top(
+    tile_id,
+    buildings_path,
+    level="detail",
+    thickness_px=DEFAULT_THICKNESS_PX,
+    top_percent=DEFAULT_TOP_PERCENT,
+    force=False,
+):
     """Palauttaa PNG-tavuina erillisen kerroksen, joka nayttaa VAIN parhaat
-    X% (TOP_PERCENTILE) puskurivyohykkeen pisteista, halutulla
-    resoluutiotasolla (ks. get_or_compute_overlay)."""
+    top_percent % (ks. TOP_PERCENT_PRESETS) puskurivyohykkeen pisteista,
+    halutulla resoluutiotasolla ja rantaviivan paksuudella (ks.
+    get_or_compute_overlay)."""
     suffix = LEVEL_SUFFIXES[level]
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    png_path = CACHE_DIR / f"{tile_id}_top{suffix}.png"
+    png_path = CACHE_DIR / f"{tile_id}_top{suffix}_t{thickness_px}_p{top_percent}.png"
 
     if not force and png_path.exists():
         return png_path.read_bytes()
@@ -428,12 +519,12 @@ def get_or_compute_top(tile_id, buildings_path, level="detail", force=False):
         raise KeyError(f"Tuntematon tile_id: {tile_id}")
 
     raw = get_or_compute_raw(tile_id, buildings_path, force=force)
-    threshold = compute_global_threshold(buildings_path, force=force)
-    top_mask = raw["buffer_mask"] & (raw["score"] >= threshold)
+    threshold = compute_global_threshold(buildings_path, top_percent_to_percentile(top_percent), force=force)
+    top_mask = raw["buffer_mask"] & (raw["rank_score"] >= threshold)
 
     factor = LEVEL_FACTORS[level]
     top_mask = downsample_mask(top_mask, factor)
-    top_mask_visible = dilate_mask(top_mask, BUFFER_VISUAL_DILATION_PX)
+    top_mask_visible = dilate_mask(top_mask, thickness_px)
 
     bgra = np.zeros((*top_mask_visible.shape, 4), dtype=np.uint8)
     bgra[top_mask_visible, 0:3] = TOP_HIGHLIGHT_BGR

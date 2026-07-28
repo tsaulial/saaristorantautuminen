@@ -25,6 +25,11 @@
   }
   .legend-body { margin-top: 6px; }
   .legend-body.collapsed { display: none; }
+  .thickness-row {
+    margin-top: 8px; padding-top: 8px; border-top: 1px solid #ddd;
+  }
+  .thickness-row label { display: block; margin-bottom: 2px; }
+  .thickness-row input[type="range"] { width: 100%; vertical-align: middle; }
   .status {
     position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
     background: white; padding: 6px 14px; border-radius: 4px;
@@ -52,12 +57,32 @@ const topLayerGroup = L.layerGroup();
 
 L.control.layers(null, {
   'Rantautumispisteytys': scoreLayerGroup,
-  'Parhaat rantautumispaikat (top 7%)': topLayerGroup,
+  'Parhaat rantautumispaikat': topLayerGroup,
 }, { collapsed: false }).addTo(map);
+
+// Rantaviivan korostuksen paksuusesiasetukset (ks. backend/pipeline.py:
+// THICKNESS_PRESETS/DEFAULT_THICKNESS_PX - pidettava samassa) - kiintea
+// joukko, EI portaaton selainsaadin: kokeiltiin SVG feMorphology-
+// dilataatiota, mutta se osoittautui liian raskaaksi (pätki pan/zoomin
+// aikana). Jokainen esiasetus on valmiiksi build-vaiheessa laskettu
+// kuvatiedosto, joten paksuuden vaihto on ilmainen.
+const THICKNESS_PRESETS = [1, 5, 10, 15, 20];
+const DEFAULT_THICKNESS_PX = 10;
+let currentThickness = DEFAULT_THICKNESS_PX;
+
+// "Parhaat rantautumispaikat" -kynnys (ks. backend/pipeline.py:
+// TOP_PERCENT_PRESETS/DEFAULT_TOP_PERCENT - pidettava samassa) - kuinka
+// suuri osuus (1-10 %) koko aineiston puskurivyohykkeen pisteista
+// korostetaan. Jokainen esiasetus on niinikaan valmiiksi build-vaiheessa
+// laskettu kuvatiedosto (ei ajonaikaista persentiililaskentaa selaimessa).
+const TOP_PERCENT_PRESETS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+const DEFAULT_TOP_PERCENT = 7;
+let currentTopPercent = DEFAULT_TOP_PERCENT;
 
 const legend = L.control({ position: 'bottomright' });
 legend.onAdd = function () {
   const div = L.DomUtil.create('div', 'legend');
+  const defaultThicknessIndex = THICKNESS_PRESETS.indexOf(DEFAULT_THICKNESS_PX);
   div.innerHTML =
     '<div class="legend-header">' +
       '<b>Rantautumispiste</b>' +
@@ -67,10 +92,17 @@ legend.onAdd = function () {
       '<span class="swatch" style="background:#00ff00"></span>Hyvä<br>' +
       '<span class="swatch" style="background:#ffff00"></span>Kohtalainen<br>' +
       '<span class="swatch" style="background:#ff0000"></span>Heikko<br>' +
-      '<span class="swatch" style="background:#ff00ff"></span>Paras 7% (oma kerros)<br>' +
-      '<small>Rantaviivan laatu perustuu 5–15&nbsp;m puskurivyöhykkeeseen,<br>' +
-      'visuaalisesti paksunnettuna näkyvyyden vuoksi.<br>' +
+      '<span class="swatch" style="background:#ff00ff"></span>Paras <span id="top-percent-swatch"></span>% (oma kerros)<br>' +
+      '<small>Rantaviivan laatu perustuu 5–15&nbsp;m puskurivyöhykkeeseen.<br>' +
       'Suo alentaa pistettä merkittävästi.</small>' +
+      '<div class="thickness-row">' +
+        '<label for="thickness">Rantaviivan korostuksen paksuus: <span id="thickness-value"></span> px</label>' +
+        '<input type="range" id="thickness" min="0" max="' + (THICKNESS_PRESETS.length - 1) + '" step="1" value="' + defaultThicknessIndex + '">' +
+      '</div>' +
+      '<div class="thickness-row">' +
+        '<label for="top-percent">Parhaat rannat: <span id="top-percent-value"></span> %</label>' +
+        '<input type="range" id="top-percent" min="' + TOP_PERCENT_PRESETS[0] + '" max="' + TOP_PERCENT_PRESETS[TOP_PERCENT_PRESETS.length - 1] + '" step="1" value="' + DEFAULT_TOP_PERCENT + '">' +
+      '</div>' +
     '</div>';
 
   L.DomEvent.disableClickPropagation(div);
@@ -82,6 +114,27 @@ legend.onAdd = function () {
     const collapsing = !body.classList.contains('collapsed');
     body.classList.toggle('collapsed', collapsing);
     toggle.innerHTML = collapsing ? '&plus;' : '&minus;';
+  });
+
+  const thicknessInput = div.querySelector('#thickness');
+  const thicknessValue = div.querySelector('#thickness-value');
+  thicknessValue.textContent = currentThickness;
+  thicknessInput.addEventListener('input', () => {
+    currentThickness = THICKNESS_PRESETS[Number(thicknessInput.value)];
+    thicknessValue.textContent = currentThickness;
+    if (tileListCache.length) refreshLayers();
+  });
+
+  const topPercentInput = div.querySelector('#top-percent');
+  const topPercentValue = div.querySelector('#top-percent-value');
+  const topPercentSwatch = div.querySelector('#top-percent-swatch');
+  topPercentValue.textContent = currentTopPercent;
+  topPercentSwatch.textContent = currentTopPercent;
+  topPercentInput.addEventListener('input', () => {
+    currentTopPercent = Number(topPercentInput.value);
+    topPercentValue.textContent = currentTopPercent;
+    topPercentSwatch.textContent = currentTopPercent;
+    if (tileListCache.length) refreshLayers();
   });
 
   return div;
@@ -139,15 +192,18 @@ function refreshLayers() {
     const bounds = tileLatLngBounds(tile);
     L.imageOverlay(`/api/basemap/${tile.tile_id}${level.suffix}.png`, bounds, { opacity: 1 })
       .addTo(baseLayerGroup);
-    L.imageOverlay(`/api/overlay/${tile.tile_id}${level.suffix}.png`, bounds, { opacity: 1 })
+    L.imageOverlay(`/api/overlay/${tile.tile_id}${level.suffix}_t${currentThickness}.png`, bounds, { opacity: 1 })
       .addTo(scoreLayerGroup);
   });
 
   if (topVisible) {
     topLayerGroup.clearLayers();
     visible.forEach((tile) => {
-      L.imageOverlay(`/api/overlay/${tile.tile_id}/top${level.suffix}.png`, tileLatLngBounds(tile), { opacity: 1 })
-        .addTo(topLayerGroup);
+      L.imageOverlay(
+        `/api/overlay/${tile.tile_id}/top${level.suffix}_t${currentThickness}_p${currentTopPercent}.png`,
+        tileLatLngBounds(tile),
+        { opacity: 1 }
+      ).addTo(topLayerGroup);
     });
   }
 }

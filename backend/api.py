@@ -47,12 +47,15 @@ def list_tiles():
 
 @app.get("/api/overlay/{tile_key}.png")
 def get_overlay_png(tile_key: str):
-    """Tiilen pistemaaraoverlay RGBA-PNG:na halutulla resoluutiotasolla
-    (tile_key on esim. 'L3123F', 'L3123F_mid' tai 'L3123F_overview' - ks.
-    pipeline.LEVEL_SUFFIXES), lasketaan/valimuistetaan tarvittaessa."""
-    tile_id, level = pipeline.parse_tile_key(tile_key)
+    """Tiilen pistemaaraoverlay RGBA-PNG:na halutulla resoluutiotasolla ja
+    rantaviivan paksuudella (tile_key on esim. 'L3123F_t10', 'L3123F_mid_t1'
+    tai 'L3123F_overview_t20' - ks. pipeline.parse_tile_key), lasketaan/
+    valimuistetaan tarvittaessa."""
+    tile_id, level, thickness_px, _top_percent = pipeline.parse_tile_key(tile_key)
     try:
-        png_bytes, _meta = pipeline.get_or_compute_overlay(tile_id, str(BUILDINGS_PATH), level=level)
+        png_bytes, _meta = pipeline.get_or_compute_overlay(
+            tile_id, str(BUILDINGS_PATH), level=level, thickness_px=thickness_px
+        )
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Tuntematon tile_id: {tile_id}")
     return Response(content=png_bytes, media_type="image/png")
@@ -61,8 +64,9 @@ def get_overlay_png(tile_key: str):
 @app.get("/api/basemap/{tile_key}.png")
 def get_basemap_png(tile_key: str):
     """Taustakartaksi tarkoitettu MML-karttakuvaleikkaus samoille rajoille
-    kuin overlay, halutulla resoluutiotasolla (ks. get_overlay_png)."""
-    tile_id, level = pipeline.parse_tile_key(tile_key)
+    kuin overlay, halutulla resoluutiotasolla (ks. get_overlay_png). Ei
+    riipu rantaviivan paksuudesta."""
+    tile_id, level, _thickness_px, _top_percent = pipeline.parse_tile_key(tile_key)
     try:
         png_bytes = pipeline.get_or_compute_basemap(tile_id, level=level)
     except KeyError:
@@ -72,26 +76,31 @@ def get_basemap_png(tile_key: str):
 
 @app.get("/api/overlay/{tile_id}/{variant}.png")
 def get_overlay_top_png(tile_id: str, variant: str):
-    """Erillinen kerros: nayttaa vain parhaat X% (TOP_PERCENTILE)
-    rantautumispisteista halutulla resoluutiotasolla (variant on 'top',
-    'top_mid' tai 'top_overview'). Ensimmainen pyynto voi olla hidas, koska
-    se laskee kaikkien tiilien raa'an pistemaaran globaalia kynnysarvoa
-    varten jos sita ei viela ole valimuistissa."""
-    base, level = pipeline.parse_tile_key(variant)
+    """Erillinen kerros: nayttaa vain parhaat X% rantautumispisteista
+    halutulla resoluutiotasolla, rantaviivan paksuudella ja X%-arvolla
+    (ks. pipeline.TOP_PERCENT_PRESETS; variant on esim. 'top_t10_p7',
+    'top_mid_t1_p1' tai 'top_overview_t20_p10'). Ensimmainen pyynto tietylle
+    X%-arvolle voi olla hidas, koska se laskee kaikkien tiilien raa'an
+    pistemaaran globaalia kynnysarvoa varten jos sita ei viela ole
+    valimuistissa."""
+    base, level, thickness_px, top_percent = pipeline.parse_tile_key(variant)
     if base != "top":
         raise HTTPException(status_code=404, detail=f"Tuntematon polku: {variant}")
     try:
-        png_bytes = pipeline.get_or_compute_top(tile_id, str(BUILDINGS_PATH), level=level)
+        png_bytes = pipeline.get_or_compute_top(
+            tile_id, str(BUILDINGS_PATH), level=level, thickness_px=thickness_px, top_percent=top_percent
+        )
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Tuntematon tile_id: {tile_id}")
     return Response(content=png_bytes, media_type="image/png")
 
 
 @app.get("/api/threshold")
-def get_threshold():
-    """Nykyinen 'parhaat X%' -kynnysarvo (TOP_PERCENTILE) ja sen laskentaperuste."""
-    threshold = pipeline.compute_global_threshold(str(BUILDINGS_PATH))
-    return {"percentile": pipeline.TOP_PERCENTILE, "threshold": threshold}
+def get_threshold(top_percent: int = pipeline.DEFAULT_TOP_PERCENT):
+    """Kynnysarvo annetulle 'parhaat X%' -arvolle (ks. pipeline.TOP_PERCENT_PRESETS)."""
+    percentile = pipeline.top_percent_to_percentile(top_percent)
+    threshold = pipeline.compute_global_threshold(str(BUILDINGS_PATH), percentile)
+    return {"top_percent": top_percent, "percentile": percentile, "threshold": threshold}
 
 
 @app.get("/api/overlay/{tile_id}/meta")
