@@ -62,7 +62,9 @@ Muutokset tallentuvat heti ja ovat voimassa kun palaa kartalle.
 
 Asetussivun alalaidassa on kuvaaja, joka näyttää **koko rantaviivan jaettuna rantautumiskelpoisuuden mukaan** — kuinka monta kilometriä on helppoa, kuinka moni kohtalaista ja kuinka moni vaikeaa. Kuvaaja päivittyy heti kun tekijävalintoja muuttaa, joten siitä näkee suoraan miten paljon esimerkiksi rakennusten huomiotta jättäminen muuttaa tilannetta.
 
-Oletusasetuksilla kuva on tämä: **noin 500 km helppoa (72 %), 186 km kohtalaista (27 %) ja vain 12 km vaikeaa (2 %)**. Saaristo on siis suurimmaksi osaksi hyvää rantautumismaastoa. Jos katsoo pelkkää maaston jyrkkyyttä, vaikean osuus nousee 93 kilometriin — jyrkkiä kalliorantoja on selvästi enemmän kuin mitä kokonaispisteytys antaa ymmärtää, koska muut tekijät nostavat niiden pisteitä.
+Oletusasetuksilla kuva on tämä: **noin 500 km helppoa (72 %), 186 km kohtalaista (27 %) ja vain 12 km vaikeaa (2 %)**. Saaristo on siis suurimmaksi osaksi hyvää rantautumismaastoa.
+
+Kuvaajassa on lisäksi violetti käyrä, joka näyttää saman rantaviivan **kärkipaikkojen mittapuulla** — eli kun jokainen kohta arvioidaan koko rantakaistaleensa heikoimman osan mukaan. Ero on iso ja kertoo paljon: helpon rannan määrä putoaa 502 kilometristä **191 kilometriin**. Kaksi kolmasosaa siitä rannasta, joka näyttää vesirajassa helpolta, ei siis ole helppoa enää muutamaa metriä kauempana. Jos katsoo pelkkää maaston jyrkkyyttä, vaikean osuus nousee 93 kilometriin — jyrkkiä kalliorantoja on selvästi enemmän kuin mitä kokonaispisteytys antaa ymmärtää, koska muut tekijät nostavat niiden pisteitä.
 
 Rantaviivaa on kaikkiaan noin **700 km** (haarukka 600–900 km). Luku on arvio: rantaviiva on luettu peruskartan kuvasta, ei valmiista viivageometriasta, joten sen pituus riippuu siitä millä tarkkuudella mitataan — sama ilmiö kuin klassisessa kysymyksessä "kuinka pitkä on Britannian rannikko". Jakauman muoto ja prosenttiosuudet ovat sen sijaan tarkkoja.
 

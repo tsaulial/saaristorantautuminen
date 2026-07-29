@@ -943,6 +943,7 @@ def compute_shoreline_stats(buildings_path, force=False):
     bins = SHORELINE_HIST_BINS
     edges = np.linspace(0.0, 1.0, bins + 1)
     counts = {mask: np.zeros(bins, dtype=np.float64) for mask in range(1, ALL_FACTORS_MASK + 1)}
+    prime_counts = {mask: np.zeros(bins, dtype=np.float64) for mask in range(1, ALL_FACTORS_MASK + 1)}
     ranks = {mask: [] for mask in range(1, ALL_FACTORS_MASK + 1)}
     total_px = 0
 
@@ -961,9 +962,20 @@ def compute_shoreline_stats(buildings_path, force=False):
         swamp_bit = raw["swamp_mask"][buf]
         tiebreak_b = np.clip(raw["tiebreak"][buf] * 255.0, 0, 255).astype(np.uint8)
 
+        # Karkipaikkojen osatekijat SAMALLA natiiviruudukolla, jotta kayrat
+        # ovat keskenaan vertailukelpoisia (ks. compute_prime_components).
+        prime = compute_prime_components(tid, buildings_path, force=force, native=True)
+        p_slope_b = np.clip(prime["slope"][buf] * 255.0, 0, 255).astype(np.uint8)
+        p_dist_b = np.clip(prime["dist"][buf] * 255.0, 0, 255).astype(np.uint8)
+        p_rock_bit = prime["rock"][buf] >= 0.5
+        p_swamp_bit = prime["not_swamp"][buf] < 0.5
+        del prime
+
         for mask in counts:
             score = score_from_components(slope_b, dist_b, rock_bit, swamp_bit, mask)
             counts[mask] += np.histogram(score, bins=edges)[0]
+            prime_score = score_from_components(p_slope_b, p_dist_b, p_rock_bit, p_swamp_bit, mask)
+            prime_counts[mask] += np.histogram(prime_score, bins=edges)[0]
             # Persentiilit lasketaan lopuksi koko aineistosta; kerataan
             # otos muistin saastamiseksi (jakauma on niin suuri ettei
             # tarkkaa lajittelua tarvita merkkiviivan sijaintiin).
@@ -975,9 +987,11 @@ def compute_shoreline_stats(buildings_path, force=False):
     metres_per_px = SHORELINE_LENGTH_M / total_px if total_px else 0.0
 
     histograms = {}
+    prime_histograms = {}
     top_markers = {}
     for mask in counts:
         histograms[str(mask)] = [round(float(c) * metres_per_px, 1) for c in counts[mask]]
+        prime_histograms[str(mask)] = [round(float(c) * metres_per_px, 1) for c in prime_counts[mask]]
         sample = np.concatenate(ranks[mask])
         top_markers[str(mask)] = {
             str(pct): float(np.percentile(sample, top_percent_to_percentile(pct)))
@@ -987,6 +1001,7 @@ def compute_shoreline_stats(buildings_path, force=False):
     stats = {
         "bin_edges": [round(float(e), 4) for e in edges],
         "histograms_m": histograms,
+        "prime_histograms_m": prime_histograms,
         "top_markers": top_markers,
         "buffer_px": total_px,
         "buffer_km2": round(total_px / 1e6, 3),
@@ -1068,11 +1083,16 @@ def _alongshore_min(anchor_ids, values, shape, radius_px):
     return filtered[ys, xs]
 
 
-def compute_prime_components(tile_id, buildings_path, force=False):
+def compute_prime_components(tile_id, buildings_path, force=False, native=False):
     """Karkipaikkojen osatekijat selainruudukolla (ks. NEW_PIXEL_FACTOR).
     Arviointi tehdaan LEVEAMMALLA PRIME_ZONE-vyohykkeella, mutta tulos
     naytetaan NYKYISELLA 5-15 m puskurivyohykkeella, jotta kerros asettuu
-    tarkalleen samaan kohtaan kuin muut kerrokset."""
+    tarkalleen samaan kohtaan kuin muut kerrokset.
+
+    native=True palauttaa taulukot downsamplaamattomina (1 m/px) -
+    rantaviivan jakauman laskentaa varten, jotta karkipaikkojen jakauma on
+    laskettu TASMALLEEN samalla ruudukolla kuin tavallinen jakauma
+    (compute_shoreline_stats) ja kayrat ovat vertailukelpoisia."""
     raw = get_or_compute_raw(tile_id, buildings_path, force=force)
     shoreline = raw["shoreline_mask"]
     shape = shoreline.shape
@@ -1112,6 +1132,8 @@ def compute_prime_components(tile_id, buildings_path, force=False):
         pos = np.searchsorted(uniq, anchor_display)
         out = np.zeros(shape, dtype=np.float32)
         out[buffer_mask] = along[pos]
+        if native:
+            return out
         return _masked_downsample(out, buffer_native_f, shape, weight_small)
 
     return {
@@ -1126,7 +1148,7 @@ def compute_prime_components(tile_id, buildings_path, force=False):
         # vahintaan 10 % kaistaleesta on suota tai jos suota on lahistolla
         # rantaviivan suunnassa.
         "not_swamp": aggregate((~raw["swamp_mask"]).astype(np.float32)),
-        "buffer": weight_small > 0.0,
+        "buffer": buffer_mask if native else (weight_small > 0.0),
         "raw": raw,
     }
 
