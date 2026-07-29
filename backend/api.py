@@ -95,6 +95,39 @@ def get_overlay_top_png(tile_id: str, variant: str):
     return Response(content=png_bytes, media_type="image/png")
 
 
+@app.get("/api/factors/{tile_id}.png")
+def get_factors_png(tile_id: str):
+    """Pisteytyksen OSATEKIJAT erillisina kanavina (ks.
+    pipeline.get_or_compute_factor_png): R=jyrkkyys, G=etaisyys
+    rakennuksiin, B=kallio/suo-bitit, A=puskurimaski, 3,5x3,5m
+    resoluutiolla. Selain kokoaa naista pistemaaran kayttajan valitsemista
+    tekijoista (frontend/index.html: renderFactorTile)."""
+    try:
+        png_bytes, _meta = pipeline.get_or_compute_factor_png(tile_id, str(BUILDINGS_PATH), part="factors")
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Tuntematon tile_id: {tile_id}")
+    return Response(content=png_bytes, media_type="image/png")
+
+
+@app.get("/api/tiebreak/{tile_id}.png")
+def get_tiebreak_png(tile_id: str):
+    """Tasapelinpurku omana kuvanaan (R-kanava, alfa 255 kaikkialla) - ks.
+    pipeline-moduulin kanavakuvaus siita miksi tama ei mahdu samaan kuvaan."""
+    try:
+        png_bytes, _meta = pipeline.get_or_compute_factor_png(tile_id, str(BUILDINGS_PATH), part="tiebreak")
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Tuntematon tile_id: {tile_id}")
+    return Response(content=png_bytes, media_type="image/png")
+
+
+@app.get("/api/factor-thresholds")
+def get_factor_thresholds():
+    """"Parhaat X %" -kynnysarvot per tekijayhdistelma ja prosentti (ks.
+    pipeline.compute_factor_thresholds) - globaali suure, jota selain ei voi
+    itse laskea koska se nakee kerrallaan vain nakymassa olevat tiilet."""
+    return pipeline.compute_factor_thresholds(str(BUILDINGS_PATH))
+
+
 @app.get("/api/threshold")
 def get_threshold(top_percent: int = pipeline.DEFAULT_TOP_PERCENT):
     """Kynnysarvo annetulle 'parhaat X%' -arvolle (ks. pipeline.TOP_PERCENT_PRESETS)."""

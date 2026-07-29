@@ -349,7 +349,8 @@ def compute_tile(tile, buildings_path):
     total_score = total_score + rock_score * ROCK_WEIGHT
     total_score = np.where(swamp_mask, total_score * SWAMP_PENALTY_FACTOR, total_score)
 
-    rank_score = total_score + TIEBREAK_EPSILON * compute_tiebreak(slope_deg, dist_m)
+    tiebreak = compute_tiebreak(slope_deg, dist_m)
+    rank_score = total_score + TIEBREAK_EPSILON * tiebreak
 
     buffer_mask = compute_shoreline_buffer(shoreline_mask, dem, pixel_size)
 
@@ -357,6 +358,15 @@ def compute_tile(tile, buildings_path):
         "score": total_score,
         "rank_score": rank_score,
         "buffer_mask": buffer_mask,
+        # Osatekijat erikseen: KAYTTAJA voi valita mitka niista osallistuvat
+        # pisteytykseen (ks. FACTOR_BITS ja get_or_compute_factor_png) - siksi
+        # yhdistetty total_score ei yksin riita, vaan komponentit on
+        # sailytettava jotta pistemaara voidaan koota uudelleen selaimessa.
+        "slope_score": slope_score,
+        "dist_score": dist_score,
+        "rock_mask": rock_mask,
+        "swamp_mask": swamp_mask,
+        "tiebreak": tiebreak,
         "map_transform": map_transform,
         "n_buildings": v1["n_buildings"],
         "rock_pct": 100 * rock_mask.mean(),
@@ -374,11 +384,19 @@ def get_or_compute_raw(tile_id, buildings_path, force=False):
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     npz_path = CACHE_DIR / f"{tile_id}_raw.npz"
 
-    if not force and npz_path.exists() and "rank_score" in (data := np.load(npz_path)).files:
+    # "slope_score" (eika esim. "score") on valimuistin VERSIOTARKISTUS:
+    # osatekijat lisattiin vasta kayttajan valittavien tekijoiden myota, joten
+    # vanha valimuisti on laskettava uudelleen vaikka se muuten olisi ehja.
+    if not force and npz_path.exists() and "slope_score" in (data := np.load(npz_path)).files:
         return {
             "score": data["score"],
             "rank_score": data["rank_score"],
             "buffer_mask": data["buffer_mask"].astype(bool),
+            "slope_score": data["slope_score"],
+            "dist_score": data["dist_score"],
+            "rock_mask": data["rock_mask"].astype(bool),
+            "swamp_mask": data["swamp_mask"].astype(bool),
+            "tiebreak": data["tiebreak"],
             "map_transform": Affine(*data["map_transform"]),
             "n_buildings": int(data["n_buildings"]),
             "rock_pct": float(data["rock_pct"]),
@@ -399,6 +417,11 @@ def get_or_compute_raw(tile_id, buildings_path, force=False):
         score=result["score"].astype(np.float32),
         rank_score=result["rank_score"].astype(np.float32),
         buffer_mask=result["buffer_mask"],
+        slope_score=result["slope_score"].astype(np.float32),
+        dist_score=result["dist_score"].astype(np.float32),
+        rock_mask=result["rock_mask"],
+        swamp_mask=result["swamp_mask"],
+        tiebreak=result["tiebreak"].astype(np.float32),
         map_transform=np.array(result["map_transform"])[:6],
         n_buildings=result["n_buildings"],
         rock_pct=result["rock_pct"],
@@ -443,6 +466,288 @@ def compute_global_threshold(buildings_path, percentile, force=False):
     )
     return threshold
 
+
+# --- KAYTTAJAN VALITTAVAT TEKIJAT / SELAINPUOLEN PISTEYTYS ---
+#
+# VANHA toteutus (get_or_compute_overlay/get_or_compute_top, sailytetty
+# vertailua varten) esilaskee JOKAISEN paksuus x prosentti -yhdistelman omaksi
+# valmiiksi varitetyksi kuvakseen. Se ei voi tukea kayttajan valittavia
+# tekijoita lainkaan: 4 valintaruutua = 15 eri pisteytysta, jotka kertautuisivat
+# paksuuden (5) ja prosentin (10) kanssa ~37 000 tiedostoksi (~9 GB).
+#
+# TAMA toteutus koodaa per tiili KAKSI kuvaa, joissa pisteytyksen OSATEKIJAT
+# ovat erillaan toisistaan, ja jattaa seka pistemaaran KOKOAMISEN etta
+# varityksen/kynnyksen/paksuuden selaimen Canvas-pikselikasittelyn vastuulle
+# (ks. frontend/index.html: renderFactorTile). Datamaara ei siis riipu
+# lainkaan valintojen maarasta - viides tekija ei kasvattaisi sita ollenkaan
+# (vrt. instructions.md kohta 6: sama syy miksi vektoritiilia harkitaan
+# maantieteellista laajentumista varten).
+#
+# Resoluutio on karkeampi (NEW_PIXEL_FACTOR=3.5 eli 3,5x3,5m) - kayttajan
+# hyvaksyma kompromissi jotta jatkuva variliuku rantaviivaa pitkin ei vaadi
+# vektorigeometriaa.
+#
+# KUVA 1, "{tile}_factors.png" (BGRA cv2-jarjestyksessa taulukossa, RGBA
+# tiedostossa):
+#   R = jyrkkyyspisteet (slope_score) 0-255
+#   G = etaisyyspisteet rakennuksiin (dist_score) 0-255
+#   B = bittikentta: bitti 0 = kallio, bitti 1 = suo
+#   A = puskurivyohyke-peittomaski (0/255)
+#
+# KUVA 2, "{tile}_tiebreak.png":
+#   R = tasapelinpurku (ks. TIEBREAK_EPSILON) globaalisti jarjestysluvuksi
+#       kvantisoituna 0-255
+#   A = 255 KAIKKIALLA. Tama on tahallista: selaimen Canvas sailoo pikselit
+#       esikerrottuna alfalla, joten A<255 pyoristaa RGB-arvoja ja A=0 nollaa
+#       ne kokonaan getImageData:ssa. Kuvassa 1 se ei haittaa (A=0 vain
+#       puskurin ulkopuolella, jota ei kayteta), mutta tasapelinpurku
+#       tarvitaan tarkkana - siksi oma kuva taysalfalla.
+#
+# **Havaittu ja korjattu ongelma ("outo punainen reunus")**: aiempi versio
+# downsamplasi natiivit taulukot suoralla aluekeskiarvolla, mika sekoitti
+# puskurivyohykkeen ULKOPUOLISIA arvoja (esim. aivan rantaviivan tuntumassa,
+# jossa DEM:n maa/vesi-raja voi aiheuttaa keinotekoisen jyrkan pistemaaran)
+# mukaan reunaruutujen keskiarvoon. Korjattu (1) PEITTOPAINOTETULLA
+# keskiarvolla (_masked_downsample: vain oikeasti puskurivyohykkeella olevat
+# natiivipikselit vaikuttavat ruudun arvoon) ja (2) muuttamalla selaimen
+# dilataatio kayttamaan lahimman OIKEAN puskuripikselin varia (ks.
+# frontend/index.html: dilateWithNearestColor).
+NEW_PIXEL_FACTOR = 3.5
+
+# Kayttajan valittavat tekijat (ks. frontend/settings.html). Bittimaski
+# yksiloi valinnan: sama luku kaytetaan avaimena esilasketuissa
+# kynnysarvoissa (compute_factor_thresholds) ja lasketaan selaimessa
+# identtisesti (frontend/index.html: factorMask).
+FACTOR_SLOPE = 1
+FACTOR_DIST = 2
+FACTOR_ROCK = 4
+FACTOR_SWAMP = 8
+FACTOR_BITS = {"slope": FACTOR_SLOPE, "dist": FACTOR_DIST, "rock": FACTOR_ROCK, "swamp": FACTOR_SWAMP}
+ALL_FACTORS_MASK = FACTOR_SLOPE | FACTOR_DIST | FACTOR_ROCK | FACTOR_SWAMP
+
+
+def _resize_new_grid(arr, native_shape, factor):
+    """Resamploi (INTER_AREA, aluekeskiarvo) taulukon selainpuolen ruudukolle
+    (ks. NEW_PIXEL_FACTOR) - factor voi olla EI-kokonaisluku, toisin kuin
+    jaetut downsample_image/downsample_mask (VANHAN toteutuksen kayttamat,
+    vain kokonaislukukertoimet - ei muutettu tassa)."""
+    h, w = native_shape
+    new_h = max(1, round(h / factor))
+    new_w = max(1, round(w / factor))
+    return cv2.resize(arr, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+
+def _masked_downsample(arr, buffer_native_f, native_shape, weight_small):
+    """Peittopainotettu aluekeskiarvo (ks. moduulin "outo punainen reunus"
+    -kommentti): ruudun arvo lasketaan VAIN puskurivyohykkeella olevista
+    natiivipikseleista. weight_small on _resize_new_grid(buffer_native_f)
+    kertaalleen laskettuna (sama jokaiselle kanavalle)."""
+    masked = _resize_new_grid(arr.astype(np.float32) * buffer_native_f, native_shape, NEW_PIXEL_FACTOR)
+    return masked / np.maximum(weight_small, 1e-6)
+
+
+def downsampled_components(tile_id, buildings_path, force=False):
+    """Pisteytyksen osatekijat selainpuolen ruudukolla (ks. NEW_PIXEL_FACTOR),
+    peittopainotettuna. Palauttaa dict:n jossa kaikki taulukot ovat samaa
+    muotoa - 'buffer' kertoo mitka ruudut ovat lainkaan naytettavia."""
+    raw = get_or_compute_raw(tile_id, buildings_path, force=force)
+    native_shape = raw["score"].shape
+    buffer_native_f = raw["buffer_mask"].astype(np.float32)
+    weight_small = _resize_new_grid(buffer_native_f, native_shape, NEW_PIXEL_FACTOR)
+
+    return {
+        "slope": _masked_downsample(raw["slope_score"], buffer_native_f, native_shape, weight_small),
+        "dist": _masked_downsample(raw["dist_score"], buffer_native_f, native_shape, weight_small),
+        "rock": _masked_downsample(raw["rock_mask"], buffer_native_f, native_shape, weight_small),
+        "swamp": _masked_downsample(raw["swamp_mask"], buffer_native_f, native_shape, weight_small),
+        "tiebreak": _masked_downsample(raw["tiebreak"], buffer_native_f, native_shape, weight_small),
+        "buffer": weight_small > 0.0,
+        "raw": raw,
+    }
+
+
+def _global_tiebreak_sorted(buildings_path, force=False):
+    """Lajiteltu taulukko KAIKKIEN tiilien tasapelinpurkuarvoista puskuri-
+    vyohykkeella (selainpuolen ruudukolla). Kaytetaan kvantisoimaan
+    tasapelinpurku 0-255 GLOBAALIKSI JARJESTYSLUVUKSI: tasavalinen
+    kvantisointi hukkaisi tarkkuutta, koska arvot kasautuvat jakauman
+    ylapaahan - juuri sinne missa tasapelit ratkotaan."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_path = CACHE_DIR / "_global_tiebreak_sorted.npy"
+    if not force and cache_path.exists():
+        return np.load(cache_path)
+
+    values = []
+    for tid in tiles.get_registry():
+        comp = downsampled_components(tid, buildings_path, force=force)
+        if comp["buffer"].any():
+            values.append(comp["tiebreak"][comp["buffer"]])
+
+    sorted_values = np.sort(np.concatenate(values)) if values else np.array([0.0], dtype=np.float32)
+    np.save(cache_path, sorted_values)
+    return sorted_values
+
+
+def _rank_byte(values, sorted_global):
+    """0-255-kvantisoitu globaali jarjestysluku (255 = suurin) binaarihaulla."""
+    positions = np.searchsorted(sorted_global, values, side="right")
+    return np.clip(positions / len(sorted_global) * 255.0, 0, 255).astype(np.uint8)
+
+
+def score_from_components(slope_b, dist_b, rock_bit, swamp_bit, factor_mask):
+    """Pistemaara 0-1 valituista tekijoista, 8-bittisiksi kvantisoiduista
+    osatekijoista. **Tama on backendin puoli sopimuksesta** - selaimen
+    (frontend/index.html: scoreFromComponents) on laskettava TASAN samoin,
+    samassa jarjestyksessa, tai esilasketut kynnysarvot (ks.
+    compute_factor_thresholds) eivat vastaa naytettya kuvaa.
+
+    Valitsematta jaanyt tekija EI saa painoa 0 vaan poistuu kokonaan, ja
+    jaljelle jaavat painot normalisoidaan summaksi 1 - muuten esim. pelkka
+    jyrkkyys tuottaisi korkeintaan 0.50 pistetta ja koko kartta nayttaisi
+    punaiselta. Suo on kertova rangaistus (ei painotettu termi), ja jos
+    VAIN suo on valittuna, pohjapistemaara on 1.0 (= "kaikki on hyvaa paitsi
+    suo") - muuten valinnalle ei olisi mielekasta tulkintaa."""
+    total = np.zeros(slope_b.shape, dtype=np.float64)
+    weight_sum = 0.0
+    if factor_mask & FACTOR_SLOPE:
+        total = total + score_engine.SLOPE_WEIGHT * (slope_b / 255.0)
+        weight_sum += score_engine.SLOPE_WEIGHT
+    if factor_mask & FACTOR_DIST:
+        total = total + score_engine.DIST_WEIGHT * (dist_b / 255.0)
+        weight_sum += score_engine.DIST_WEIGHT
+    if factor_mask & FACTOR_ROCK:
+        total = total + ROCK_WEIGHT * np.where(rock_bit, ROCK_SCORE_YES, ROCK_SCORE_NO)
+        weight_sum += ROCK_WEIGHT
+
+    score = total / weight_sum if weight_sum > 0 else np.ones(slope_b.shape, dtype=np.float64)
+    if factor_mask & FACTOR_SWAMP:
+        score = np.where(swamp_bit, score * SWAMP_PENALTY_FACTOR, score)
+    return np.clip(score, 0.0, 1.0)
+
+
+def rank_from_components(slope_b, dist_b, rock_bit, swamp_bit, tiebreak_b, factor_mask):
+    """Pistemaara + tasapelinpurku - kaytetaan VAIN "parhaat X %" -valintaan,
+    ei varitykseen (sama jako kuin score/rank_score, ks. TIEBREAK_EPSILON)."""
+    score = score_from_components(slope_b, dist_b, rock_bit, swamp_bit, factor_mask)
+    return score + TIEBREAK_EPSILON * (tiebreak_b / 255.0)
+
+
+def get_or_compute_factor_arrays(tile_id, buildings_path, force=False):
+    """Kvantisoidut (8-bittiset) osatekijataulukot yhdelle tiilelle - tasan
+    ne arvot jotka selain lukee kuvista."""
+    comp = downsampled_components(tile_id, buildings_path, force=force)
+    sorted_tiebreak = _global_tiebreak_sorted(buildings_path, force=force)
+
+    return {
+        "slope_b": np.clip(comp["slope"] * 255.0, 0, 255).astype(np.uint8),
+        "dist_b": np.clip(comp["dist"] * 255.0, 0, 255).astype(np.uint8),
+        # Kallio/suo ovat natiivisti binaarisia; peittopainotetun keskiarvon
+        # jalkeen ruutu luetaan kallioksi/suoksi jos YLI PUOLET sen
+        # puskurivyohykkeen pinta-alasta on sita.
+        "rock_bit": comp["rock"] >= 0.5,
+        "swamp_bit": comp["swamp"] >= 0.5,
+        "tiebreak_b": _rank_byte(comp["tiebreak"], sorted_tiebreak),
+        "buffer": comp["buffer"],
+        "raw": comp["raw"],
+    }
+
+
+def get_or_compute_factor_png(tile_id, buildings_path, part="factors", force=False):
+    """Palauttaa (png_bytes, meta_dict) osatekijakuvalle. part="factors" tai
+    "tiebreak" (ks. moduulin kanavakuvaus). Yksi kuvapari per tiili
+    riippumatta tekijavalinnoista, paksuudesta ja prosentista."""
+    if part not in ("factors", "tiebreak"):
+        raise ValueError(f"Tuntematon part: {part}")
+
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    png_path = CACHE_DIR / f"{tile_id}_{part}.png"
+    meta_path = CACHE_DIR / f"{tile_id}.json"
+
+    if not force and png_path.exists() and meta_path.exists():
+        return png_path.read_bytes(), json.loads(meta_path.read_text())
+
+    registry = tiles.get_registry()
+    if tile_id not in registry:
+        raise KeyError(f"Tuntematon tile_id: {tile_id}")
+
+    arrays = get_or_compute_factor_arrays(tile_id, buildings_path, force=force)
+    raw = arrays["raw"]
+
+    if part == "factors":
+        r = arrays["slope_b"]
+        g = arrays["dist_b"]
+        b = (arrays["rock_bit"].astype(np.uint8) | (arrays["swamp_bit"].astype(np.uint8) << 1))
+        a = np.where(arrays["buffer"], 255, 0).astype(np.uint8)
+    else:
+        r = arrays["tiebreak_b"]
+        g = np.zeros_like(r)
+        b = np.zeros_like(r)
+        a = np.full_like(r, 255)
+
+    ok, encoded = cv2.imencode(".png", np.dstack([b, g, r, a]))
+    if not ok:
+        raise RuntimeError("PNG-enkoodaus epaonnistui")
+    png_bytes = encoded.tobytes()
+
+    bounds_3067 = array_bounds(*raw["score"].shape, raw["map_transform"])
+    meta = {
+        "tile_id": tile_id,
+        "bounds_epsg3067": bounds_tuple_to_dict(bounds_3067),
+        "n_buildings": raw["n_buildings"],
+        "rock_pct": raw["rock_pct"],
+        "swamp_pct": raw["swamp_pct"],
+        "shoreline_px": raw["shoreline_px"],
+        "buffer_px": raw["buffer_px"],
+    }
+
+    png_path.write_bytes(png_bytes)
+    if not meta_path.exists():
+        meta_path.write_text(json.dumps(meta, indent=2))
+
+    return png_bytes, meta
+
+
+def compute_factor_thresholds(buildings_path, force=False):
+    """"Parhaat X %" -kynnysarvot JOKAISELLE tekijayhdistelmalle (15 kpl) ja
+    jokaiselle prosenttiesiasetukselle: {"<bittimaski>": {"<prosentti>": kynnys}}.
+
+    Kynnys on pakko laskea taalla eika selaimessa, koska se on GLOBAALI (koko
+    aineiston yli) - selain nakee kerrallaan vain nakymassa olevat tiilet.
+    Laskenta tehdaan TASAN samoista 8-bittisista arvoista jotka selain lukee
+    kuvista (ei natiiveista liukuluvuista), jotta kynnys ja naytetty kuva
+    vastaavat toisiaan pikselilleen."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_path = CACHE_DIR / "_factor_thresholds.json"
+    if not force and cache_path.exists():
+        return json.loads(cache_path.read_text())
+
+    parts = []
+    for tid in tiles.get_registry():
+        arrays = get_or_compute_factor_arrays(tid, buildings_path, force=force)
+        buf = arrays["buffer"]
+        if buf.any():
+            parts.append(
+                (
+                    arrays["slope_b"][buf],
+                    arrays["dist_b"][buf],
+                    arrays["rock_bit"][buf],
+                    arrays["swamp_bit"][buf],
+                    arrays["tiebreak_b"][buf],
+                )
+            )
+
+    slope_b, dist_b, rock_bit, swamp_bit, tiebreak_b = (np.concatenate(c) for c in zip(*parts))
+
+    thresholds = {}
+    for factor_mask in range(1, ALL_FACTORS_MASK + 1):
+        rank = rank_from_components(slope_b, dist_b, rock_bit, swamp_bit, tiebreak_b, factor_mask)
+        thresholds[str(factor_mask)] = {
+            str(pct): float(np.percentile(rank, top_percent_to_percentile(pct)))
+            for pct in TOP_PERCENT_PRESETS
+        }
+
+    cache_path.write_text(json.dumps(thresholds, indent=2))
+    return thresholds
 
 def get_or_compute_overlay(tile_id, buildings_path, level="detail", thickness_px=DEFAULT_THICKNESS_PX, force=False):
     """Palauttaa (png_bytes, meta_dict) pisteytysoverlaylle halutulla

@@ -11,6 +11,7 @@
   .legend {
     background: white; padding: 8px 12px; border-radius: 4px;
     box-shadow: 0 1px 4px rgba(0,0,0,.35); font-size: 13px; line-height: 1.5;
+    max-width: 240px;
   }
   .legend .swatch {
     display: inline-block; width: 14px; height: 14px; margin-right: 6px;
@@ -25,11 +26,19 @@
   }
   .legend-body { margin-top: 6px; }
   .legend-body.collapsed { display: none; }
-  .thickness-row {
+  .radio-row {
     margin-top: 8px; padding-top: 8px; border-top: 1px solid #ddd;
   }
-  .thickness-row label { display: block; margin-bottom: 2px; }
-  .thickness-row input[type="range"] { width: 100%; vertical-align: middle; }
+  .radio-row .radio-row-label { font-weight: 600; display: block; margin-bottom: 2px; }
+  .radio-row label { font-weight: normal; display: block; cursor: pointer; }
+  .radio-row label.disabled { color: #9aa4ad; cursor: not-allowed; }
+  .impl-note { display: block; color: #7a8590; line-height: 1.3; margin-top: 2px; }
+  .settings-row {
+    margin-top: 8px; padding-top: 8px; border-top: 1px solid #ddd;
+  }
+  .settings-row a { font-weight: 600; text-decoration: none; color: #1769aa; }
+  .settings-row a:hover { text-decoration: underline; }
+  .settings-summary { color: #7a8590; font-size: 11px; line-height: 1.35; margin-top: 3px; }
   .status {
     position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
     background: white; padding: 6px 14px; border-radius: 4px;
@@ -52,37 +61,106 @@
 const map = L.map('map', { crs: L.CRS.Simple, zoomSnap: 0.25, minZoom: -10, maxZoom: 6 });
 
 const baseLayerGroup = L.layerGroup().addTo(map);
-const scoreLayerGroup = L.layerGroup().addTo(map);
-const topLayerGroup = L.layerGroup();
 
-L.control.layers(null, {
-  'Rantautumispisteytys': scoreLayerGroup,
-  'Parhaat rantautumispaikat': topLayerGroup,
-}, { collapsed: false }).addTo(map);
+// Kaksi VANHAN toteutuksen kerrosryhmaa (esilasketut kuvat, ks. alla) ja
+// yksi UUDEN kokeellisen toteutuksen kerrosryhma (Canvas-renderoity ajon-
+// aikaisesti, ks. renderFactorTile). Vain YKSI naista kolmesta on kartalla
+// kerrallaan - "Toteutus"- ja "Nayta"-radiopainikkeet (ks. legend alla)
+// maarittavat kumpi.
+const oldScoreGroup = L.layerGroup();
+const oldTopGroup = L.layerGroup();
+const newGroup = L.layerGroup();
+
+let currentImpl = 'old'; // 'old' | 'new'
+let currentDisplay = 'score'; // 'score' | 'top'
 
 // Rantaviivan korostuksen paksuusesiasetukset (ks. backend/pipeline.py:
 // THICKNESS_PRESETS/DEFAULT_THICKNESS_PX - pidettava samassa) - kiintea
-// joukko, EI portaaton selainsaadin: kokeiltiin SVG feMorphology-
-// dilataatiota, mutta se osoittautui liian raskaaksi (pätki pan/zoomin
-// aikana). Jokainen esiasetus on valmiiksi build-vaiheessa laskettu
-// kuvatiedosto, joten paksuuden vaihto on ilmainen.
+// joukko VANHALLE toteutukselle, EI portaaton selainsaadin: kokeiltiin
+// SVG feMorphology-dilataatiota, mutta se osoittautui liian raskaaksi
+// (pätki pan/zoomin aikana). Sama liukusaadin ohjaa myos UUTTA toteutusta
+// (ks. renderFactorTile) - siella paksuus on aidosti portaaton, mutta
+// jaettu saadin pitaa vertailun reiluna (samat arvot molemmille).
 const THICKNESS_PRESETS = [1, 5, 10, 15, 20];
 const DEFAULT_THICKNESS_PX = 10;
 let currentThickness = DEFAULT_THICKNESS_PX;
 
+// --- Kayttajan asetukset (oma sivu, ks. frontend/settings.html) ---
+//
+// Paksuus, "parhaat rannat %" ja pisteytykseen osallistuvat TEKIJAT
+// siirrettiin kartalta omalle asetussivulleen. Koska se on eri sivu, arvot
+// kulkevat selaimen localStoragen kautta - luetaan uudelleen aina kun sivu
+// palaa nakyviin ('pageshow'), jotta asetussivulta paluu naytaa muutokset
+// heti myos selaimen takaisin-napilla (bfcache ei aja skriptia uudelleen).
+const SETTINGS_KEY = 'rantautuminen-asetukset';
+const FACTOR_KEYS = ['slope', 'dist', 'rock', 'swamp'];
+const FACTOR_LABELS = { slope: 'jyrkkyys', dist: 'rakennukset', rock: 'kallio', swamp: 'suo' };
+// Pidettava samassa kuin backend/pipeline.py: FACTOR_BITS.
+const FACTOR_BITS = { slope: 1, dist: 2, rock: 4, swamp: 8 };
+const ALL_FACTORS_MASK = 15;
+const DEFAULT_FACTORS = { slope: true, dist: true, rock: true, swamp: true };
+let currentFactors = { ...DEFAULT_FACTORS };
+
+// Pisteytyksen painot - pidettava samassa kuin backend/score_engine.py
+// (SLOPE_WEIGHT/DIST_WEIGHT) ja backend/pipeline.py (ROCK_WEIGHT,
+// ROCK_SCORE_YES/NO, SWAMP_PENALTY_FACTOR).
+const SLOPE_WEIGHT = 0.50;
+const DIST_WEIGHT = 0.35;
+const ROCK_WEIGHT = 0.15;
+const ROCK_SCORE_YES = 1.0;
+const ROCK_SCORE_NO = 0.2;
+const SWAMP_PENALTY_FACTOR = 0.5;
+const TIEBREAK_EPSILON = 1e-4;
+
+function factorMask() {
+  return FACTOR_KEYS.reduce((mask, key) => (currentFactors[key] ? mask | FACTOR_BITS[key] : mask), 0);
+}
+
 // "Parhaat rantautumispaikat" -kynnys (ks. backend/pipeline.py:
-// TOP_PERCENT_PRESETS/DEFAULT_TOP_PERCENT - pidettava samassa) - kuinka
-// suuri osuus (1-10 %) koko aineiston puskurivyohykkeen pisteista
-// korostetaan. Jokainen esiasetus on niinikaan valmiiksi build-vaiheessa
-// laskettu kuvatiedosto (ei ajonaikaista persentiililaskentaa selaimessa).
+// TOP_PERCENT_PRESETS/DEFAULT_TOP_PERCENT - pidettava samassa).
 const TOP_PERCENT_PRESETS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 const DEFAULT_TOP_PERCENT = 7;
 let currentTopPercent = DEFAULT_TOP_PERCENT;
 
+function loadSettings() {
+  const fallback = {
+    factors: { ...DEFAULT_FACTORS },
+    thickness: DEFAULT_THICKNESS_PX,
+    topPercent: DEFAULT_TOP_PERCENT,
+  };
+  try {
+    const stored = JSON.parse(localStorage.getItem(SETTINGS_KEY));
+    if (!stored) return fallback;
+    const factors = { ...DEFAULT_FACTORS, ...(stored.factors || {}) };
+    // Ilman yhtaakaan tekijaa pisteytykselle ei ole maaritelmaa - asetussivu
+    // estaa taman, mutta localStoragea voi muokata kasin.
+    if (!FACTOR_KEYS.some((key) => factors[key])) return fallback;
+    return {
+      factors,
+      thickness: THICKNESS_PRESETS.includes(stored.thickness) ? stored.thickness : DEFAULT_THICKNESS_PX,
+      topPercent: TOP_PERCENT_PRESETS.includes(stored.topPercent) ? stored.topPercent : DEFAULT_TOP_PERCENT,
+    };
+  } catch (err) {
+    return fallback;
+  }
+}
+
+// Palauttaa true jos jokin arvo muuttui (= kartta on piirrettava uudelleen).
+function applySettings() {
+  const next = loadSettings();
+  const changed =
+    next.thickness !== currentThickness ||
+    next.topPercent !== currentTopPercent ||
+    FACTOR_KEYS.some((key) => next.factors[key] !== currentFactors[key]);
+  currentThickness = next.thickness;
+  currentTopPercent = next.topPercent;
+  currentFactors = next.factors;
+  return changed;
+}
+
 const legend = L.control({ position: 'bottomright' });
 legend.onAdd = function () {
   const div = L.DomUtil.create('div', 'legend');
-  const defaultThicknessIndex = THICKNESS_PRESETS.indexOf(DEFAULT_THICKNESS_PX);
   div.innerHTML =
     '<div class="legend-header">' +
       '<b>Rantautumispiste</b>' +
@@ -93,15 +171,22 @@ legend.onAdd = function () {
       '<span class="swatch" style="background:#ffff00"></span>Kohtalainen<br>' +
       '<span class="swatch" style="background:#ff0000"></span>Heikko<br>' +
       '<span class="swatch" style="background:#ff00ff"></span>Paras <span id="top-percent-swatch"></span>% (oma kerros)<br>' +
-      '<small>Rantaviivan laatu perustuu 5–15&nbsp;m puskurivyöhykkeeseen.<br>' +
-      'Suo alentaa pistettä merkittävästi.</small>' +
-      '<div class="thickness-row">' +
-        '<label for="thickness">Rantaviivan korostuksen paksuus: <span id="thickness-value"></span> px</label>' +
-        '<input type="range" id="thickness" min="0" max="' + (THICKNESS_PRESETS.length - 1) + '" step="1" value="' + defaultThicknessIndex + '">' +
+      '<small>Rantaviivan laatu perustuu 5–15&nbsp;m puskurivyöhykkeeseen.' +
+      '<span id="swamp-note"><br>Suo alentaa pistettä merkittävästi.</span></small>' +
+      '<div class="radio-row">' +
+        '<span class="radio-row-label">Näytä</span>' +
+        '<label><input type="radio" name="display-mode" value="score" checked> Rantautumispisteytys</label>' +
+        '<label><input type="radio" name="display-mode" value="top"> Parhaat rantautumispaikat</label>' +
       '</div>' +
-      '<div class="thickness-row">' +
-        '<label for="top-percent">Parhaat rannat: <span id="top-percent-value"></span> %</label>' +
-        '<input type="range" id="top-percent" min="' + TOP_PERCENT_PRESETS[0] + '" max="' + TOP_PERCENT_PRESETS[TOP_PERCENT_PRESETS.length - 1] + '" step="1" value="' + DEFAULT_TOP_PERCENT + '">' +
+      '<div class="radio-row">' +
+        '<span class="radio-row-label">Toteutus (vertailua varten)</span>' +
+        '<label id="impl-old-label"><input type="radio" name="impl-choice" value="old" checked> Nykyinen</label>' +
+        '<label><input type="radio" name="impl-choice" value="new"> Uusi (3,5×3,5 m)</label>' +
+        '<small id="impl-note" class="impl-note"></small>' +
+      '</div>' +
+      '<div class="settings-row">' +
+        '<a href="settings.html">⚙ Asetukset</a>' +
+        '<div id="settings-summary" class="settings-summary"></div>' +
       '</div>' +
     '</div>';
 
@@ -116,32 +201,64 @@ legend.onAdd = function () {
     toggle.innerHTML = collapsing ? '&plus;' : '&minus;';
   });
 
-  const thicknessInput = div.querySelector('#thickness');
-  const thicknessValue = div.querySelector('#thickness-value');
-  thicknessValue.textContent = currentThickness;
-  thicknessInput.addEventListener('input', () => {
-    currentThickness = THICKNESS_PRESETS[Number(thicknessInput.value)];
-    thicknessValue.textContent = currentThickness;
-    if (tileListCache.length) refreshLayers();
+  div.querySelectorAll('input[name="display-mode"]').forEach((el) => {
+    el.addEventListener('change', () => {
+      currentDisplay = el.value;
+      switchActiveGroup();
+    });
   });
-
-  const topPercentInput = div.querySelector('#top-percent');
-  const topPercentValue = div.querySelector('#top-percent-value');
-  const topPercentSwatch = div.querySelector('#top-percent-swatch');
-  topPercentValue.textContent = currentTopPercent;
-  topPercentSwatch.textContent = currentTopPercent;
-  topPercentInput.addEventListener('input', () => {
-    currentTopPercent = Number(topPercentInput.value);
-    topPercentValue.textContent = currentTopPercent;
-    topPercentSwatch.textContent = currentTopPercent;
-    if (tileListCache.length) refreshLayers();
+  div.querySelectorAll('input[name="impl-choice"]').forEach((el) => {
+    el.addEventListener('change', () => {
+      currentImpl = el.value;
+      switchActiveGroup();
+    });
   });
 
   return div;
 };
 legend.addTo(map);
+
+// Legendan asetuksista riippuvat tekstit paivitetaan aina kun asetussivulta
+// palataan (ks. applySettings). VANHA toteutus ("Nykyinen") kayttaa valmiiksi
+// varitettyja kuvia, jotka on laskettu KAIKILLA tekijoilla - se ei siis voi
+// noudattaa tekijavalintoja, joten se lukitaan pois kaytosta heti kun jokin
+// tekija on poistettu (ja palautetaan takaisin kun kaikki ovat taas mukana).
+function updateLegendFromSettings() {
+  const allFactorsOn = factorMask() === ALL_FACTORS_MASK;
+
+  const swatch = document.getElementById('top-percent-swatch');
+  if (swatch) swatch.textContent = currentTopPercent;
+
+  // Suo-huomautus vain kun suo on mukana laskennassa - muuten legenda
+  // vaittaisi jotain mita pisteytys ei tee.
+  const swampNote = document.getElementById('swamp-note');
+  if (swampNote) swampNote.style.display = currentFactors.swamp ? '' : 'none';
+
+  const summary = document.getElementById('settings-summary');
+  if (summary) {
+    const active = FACTOR_KEYS.filter((key) => currentFactors[key]).map((key) => FACTOR_LABELS[key]);
+    summary.textContent =
+      'Tekijät: ' + active.join(', ') + ' · paksuus ' + currentThickness + ' px · parhaat ' + currentTopPercent + ' %';
+  }
+
+  const oldRadio = document.querySelector('input[name="impl-choice"][value="old"]');
+  const oldLabel = document.getElementById('impl-old-label');
+  const note = document.getElementById('impl-note');
+  if (!oldRadio || !oldLabel || !note) return;
+
+  oldRadio.disabled = !allFactorsOn;
+  oldLabel.classList.toggle('disabled', !allFactorsOn);
+  note.textContent = allFactorsOn
+    ? ''
+    : 'Nykyinen-toteutus on esilaskettu kaikilla tekijöillä eikä tue valintoja.';
+
+  if (!allFactorsOn && currentImpl === 'old') {
+    currentImpl = 'new';
+    document.querySelector('input[name="impl-choice"][value="new"]').checked = true;
+  }
+}
+
 let tileListCache = [];
-let topVisible = false;
 
 // Moniresoluutioiset tasot ulompia zoomauksia varten (ks.
 // backend/pipeline.py: LEVEL_FACTORS). "suffix" vastaa tallennettujen
@@ -150,7 +267,9 @@ let topVisible = false;
 // Kynnykset ovat puolivalissa perakkaisten tasojen omaa natiiviresoluutiota
 // vastaavien zoom-tasojen valissa (L.CRS.Simple: 1 karttayksikko = 1m,
 // resoluutio zoomilla z on 2^-z m/px - natiivit: overview 16m/px -> z=-4,
-// mid 4m/px -> z=-2, near 2m/px -> z=-1, detail 1m/px -> z=0).
+// mid 4m/px -> z=-2, near 2m/px -> z=-1, detail 1m/px -> z=0). Koskee
+// PERUSKARTTAA ja VANHAA toteutusta - UUSI toteutus kayttaa yhta kiintaa
+// 3,5x3,5m-resoluutiota riippumatta zoomista (ks. renderFactorTile).
 const LEVELS = [
   { name: 'overview', suffix: '_overview', maxZoom: -3 },
   { name: 'mid', suffix: '_mid', maxZoom: -1.5 },
@@ -178,57 +297,371 @@ function currentViewBounds() {
   return { minx: b.getWest(), miny: b.getSouth(), maxx: b.getEast(), maxy: b.getNorth() };
 }
 
-// Ladataan tasosta riippuen vain naytossa juuri nyt olevien tiilien kuvat -
-// karkeampi yleistaso lataa nopeasti heti, tarkempi taso vain sille
-// alueelle johon kayttaja on zoomannut/panoroinut (ks. instructions.md).
-function refreshLayers() {
-  const level = levelForZoom(map.getZoom());
+function visibleTiles() {
   const view = currentViewBounds();
-  const visible = tileListCache.filter((tile) => tileIntersectsView(tile, view));
+  return tileListCache.filter((tile) => tileIntersectsView(tile, view));
+}
 
+// --- Peruskartta (jaettu molemmille toteutuksille) ---
+function refreshBase() {
+  const level = levelForZoom(map.getZoom());
   baseLayerGroup.clearLayers();
-  scoreLayerGroup.clearLayers();
-  visible.forEach((tile) => {
-    const bounds = tileLatLngBounds(tile);
-    L.imageOverlay(`/api/basemap/${tile.tile_id}${level.suffix}.png`, bounds, { opacity: 1 })
+  visibleTiles().forEach((tile) => {
+    L.imageOverlay(`/api/basemap/${tile.tile_id}${level.suffix}.png`, tileLatLngBounds(tile), { opacity: 1 })
       .addTo(baseLayerGroup);
-    L.imageOverlay(`/api/overlay/${tile.tile_id}${level.suffix}_t${currentThickness}.png`, bounds, { opacity: 1 })
-      .addTo(scoreLayerGroup);
   });
+}
 
-  if (topVisible) {
-    topLayerGroup.clearLayers();
+// --- VANHA toteutus: esilasketut kuvat per taso/paksuus/prosentti ---
+function refreshOld() {
+  const level = levelForZoom(map.getZoom());
+  const visible = visibleTiles();
+  if (currentDisplay === 'score') {
+    oldScoreGroup.clearLayers();
+    visible.forEach((tile) => {
+      L.imageOverlay(
+        `/api/overlay/${tile.tile_id}${level.suffix}_t${currentThickness}.png`,
+        tileLatLngBounds(tile),
+        { opacity: 1 }
+      ).addTo(oldScoreGroup);
+    });
+  } else {
+    oldTopGroup.clearLayers();
     visible.forEach((tile) => {
       L.imageOverlay(
         `/api/overlay/${tile.tile_id}/top${level.suffix}_t${currentThickness}_p${currentTopPercent}.png`,
         tileLatLngBounds(tile),
         { opacity: 1 }
-      ).addTo(topLayerGroup);
+      ).addTo(oldTopGroup);
     });
   }
 }
 
-map.on('overlayadd', (e) => {
-  if (e.name.startsWith('Parhaat')) {
-    topVisible = true;
-    refreshLayers();
+// --- Osatekijapohjainen toteutus: kaksi kuvaa/tiili, joista PISTEMAARA
+// KOOTAAN valituista tekijoista ja varitys/kynnys/paksuus lasketaan
+// Canvasilla selaimessa (ks. backend/pipeline.py: kanavakuvaus
+// get_or_compute_factor_png-funktion ylla). ---
+const NEW_PIXEL_FACTOR = 3.5; // pidettava samassa kuin backend/pipeline.py: NEW_PIXEL_FACTOR
+const TOP_HIGHLIGHT_RGB = [255, 0, 255]; // sama kuin backendin TOP_HIGHLIGHT_BGR (magenta)
+const factorImageCache = new Map(); // tile_id -> { factors, tiebreak } (ImageData, ladataan kerran per tiili)
+
+// "Parhaat X %" -kynnysarvot per tekijayhdistelma ja prosentti, esilaskettu
+// backendissa (ks. pipeline.compute_factor_thresholds) - GLOBAALI suure jota
+// selain ei voi itse laskea, koska se nakee kerrallaan vain nakymassa olevat
+// tiilet.
+let factorThresholds = null;
+
+function loadImageData(url, what) {
+  return new Promise((resolve, reject) => {
+    const el = new Image();
+    el.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = el.naturalWidth;
+      canvas.height = el.naturalHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(el, 0, 0);
+      resolve(ctx.getImageData(0, 0, canvas.width, canvas.height));
+    };
+    el.onerror = () => reject(new Error(`Kuvan lataus epaonnistui: ${what}`));
+    el.src = url;
+  });
+}
+
+async function loadFactorImages(tileId) {
+  if (factorImageCache.has(tileId)) return factorImageCache.get(tileId);
+  const [factors, tiebreak] = await Promise.all([
+    loadImageData(`/api/factors/${tileId}.png`, `${tileId} factors`),
+    loadImageData(`/api/tiebreak/${tileId}.png`, `${tileId} tiebreak`),
+  ]);
+  const pair = { factors, tiebreak };
+  factorImageCache.set(tileId, pair);
+  return pair;
+}
+
+// HSV(H asteina 0-360, S,V 0-1) -> [r,g,b] 0-255. Vastaa backendin
+// score_to_rgba:n varitysta: siella H_cv = score*60 OpenCV:n 0-179-
+// asteikolla, eli H asteina = 2*H_cv = 120*score.
+function hsvToRgb(h, s, v) {
+  const c = v * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = v - c;
+  let r, g, b;
+  if (h < 60) { r = c; g = x; b = 0; }
+  else if (h < 120) { r = x; g = c; b = 0; }
+  else if (h < 180) { r = 0; g = c; b = x; }
+  else if (h < 240) { r = 0; g = x; b = c; }
+  else if (h < 300) { r = x; g = 0; b = c; }
+  else { r = c; g = 0; b = x; }
+  return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)];
+}
+
+const SCORE_COLOR_LUT = Array.from({ length: 256 }, (_, i) => hsvToRgb((i / 255) * 120, 1, 1));
+
+// Yksinkertainen, erotettava (kaksi 1D-pyyhkaisya) neliomainen dilataatio
+// alfamaskille - halpa pienelle karkean resoluution kuvalle (ks.
+// NEW_PIXEL_FACTOR), toisin kuin sama operaatio olisi natiivilla 1x1m-
+// resoluutiolla (siksi tama kokeiltiin AIEMMIN hylatylla SVG feMorphology
+// -suodattimella, ks. THICKNESS_PRESETS-kommentti). Kaytetaan "top"-tilassa,
+// jossa vari on aina kiintea (magenta) - ei tarvetta varin alkuperalle.
+function dilateAlpha(alpha, w, h, radiusPx) {
+  if (radiusPx <= 0) return alpha;
+  const tmp = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let hit = 0;
+      for (let dx = -radiusPx; dx <= radiusPx; dx++) {
+        const xx = x + dx;
+        if (xx >= 0 && xx < w && alpha[y * w + xx]) { hit = 1; break; }
+      }
+      tmp[y * w + x] = hit;
+    }
   }
-});
-map.on('overlayremove', (e) => {
-  if (e.name.startsWith('Parhaat')) {
-    topVisible = false;
-    topLayerGroup.clearLayers();
+  const out = new Uint8Array(w * h);
+  for (let x = 0; x < w; x++) {
+    for (let y = 0; y < h; y++) {
+      let hit = 0;
+      for (let dy = -radiusPx; dy <= radiusPx; dy++) {
+        const yy = y + dy;
+        if (yy >= 0 && yy < h && tmp[yy * w + x]) { hit = 1; break; }
+      }
+      out[y * w + x] = hit;
+    }
   }
-});
-map.on('zoomend moveend', () => {
-  if (tileListCache.length) refreshLayers();
+  return out;
+}
+
+// Dilataatio JOKA MYOS levittaa lahimman OIKEAN nakyvan pikselin indeksin
+// (ei vain nakyvyyden) - kaytetaan "rantautumispisteytys"-tilassa, jossa
+// vari riippuu sijainnista (score). Ilman tata dilatoidut ("paksunnetut")
+// reunapikselit varittyisivat OMALLA raa'alla pistemaarallaan, joka on
+// puskurivyohykkeen ULKOPUOLELLA (esim. aivan rantaviivan tuntumassa)
+// mielivaltainen/ei koskaan tarkoitettu naytettavaksi - nain syntyi
+// havaittu "outo punainen reunus". Palauttaa {alpha, sourceIdx}: sourceIdx
+// osoittaa mista alkuperaisesta (aidosti puskurilla olevasta) pikselista
+// vari haetaan. Kahden 1D-pyyhkaisyn Chebyshev-etaisyys riittaa taman
+// kosmeettisen tarkoituksen (ei tarvitse tarkkaa euklidista lahinta).
+function dilateWithNearestColor(alpha, w, h, radiusPx) {
+  if (radiusPx <= 0) {
+    const idx = new Int32Array(w * h);
+    for (let i = 0; i < w * h; i++) idx[i] = alpha[i] ? i : -1;
+    return { alpha, sourceIdx: idx };
+  }
+
+  const tmpAlpha = new Uint8Array(w * h);
+  const tmpIdx = new Int32Array(w * h).fill(-1);
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      const i = row + x;
+      if (alpha[i]) { tmpAlpha[i] = 1; tmpIdx[i] = i; continue; }
+      let best = -1, bestDist = Infinity;
+      for (let dx = -radiusPx; dx <= radiusPx; dx++) {
+        const xx = x + dx;
+        if (xx >= 0 && xx < w && alpha[row + xx] && Math.abs(dx) < bestDist) {
+          bestDist = Math.abs(dx);
+          best = row + xx;
+        }
+      }
+      if (best >= 0) { tmpAlpha[i] = 1; tmpIdx[i] = best; }
+    }
+  }
+
+  const outAlpha = new Uint8Array(w * h);
+  const outIdx = new Int32Array(w * h).fill(-1);
+  for (let x = 0; x < w; x++) {
+    for (let y = 0; y < h; y++) {
+      const i = y * w + x;
+      if (tmpAlpha[i]) { outAlpha[i] = 1; outIdx[i] = tmpIdx[i]; continue; }
+      let best = -1, bestDist = Infinity;
+      for (let dy = -radiusPx; dy <= radiusPx; dy++) {
+        const yy = y + dy;
+        if (yy >= 0 && yy < h && tmpAlpha[yy * w + x] && Math.abs(dy) < bestDist) {
+          bestDist = Math.abs(dy);
+          best = tmpIdx[yy * w + x];
+        }
+      }
+      if (best >= 0) { outAlpha[i] = 1; outIdx[i] = best; }
+    }
+  }
+  return { alpha: outAlpha, sourceIdx: outIdx };
+}
+
+// Renderoi yhden tiilen halutulla nayttotilalla/paksuudella/prosentilla ja
+// palauttaa data-URL:n (kaytetaan suoraan L.imageOverlay:n lahteena).
+// VALIMUISTETTU (renderResultCache) - ilman tata pelkka panorointi (sama
+// tiilijoukko nakymassa, ei muuttuneita saatimia) laukaisisi kalliin
+// dilataatio+varityslaskennan JOKAISELLA 'moveend'-tapahtumalla, mika
+// pudotti kuvataajuuden n. 17 fps:aan (mitattu) - VANHAN toteutuksen
+// staattiset kuvat eivat karsi tasta koska selaimen HTTP-valimuisti
+// hoitaa saman asian ilmaiseksi.
+const renderResultCache = new Map();
+
+// Pistemaara 0-1 valituista tekijoista. **Tama on selaimen puoli
+// sopimuksesta** - backendin (backend/pipeline.py: score_from_components) on
+// laskettava TASAN samoin, samassa jarjestyksessa, tai esilasketut "parhaat
+// X %" -kynnysarvot eivat vastaa naytettya kuvaa.
+//
+// Valitsematta jaanyt tekija EI saa painoa 0 vaan poistuu kokonaan, ja
+// jaljelle jaavat painot normalisoidaan summaksi 1 - muuten esim. pelkka
+// jyrkkyys tuottaisi korkeintaan 0,50 pistetta ja koko kartta nayttaisi
+// punaiselta. Suo on kertova rangaistus (ei painotettu termi); jos VAIN suo
+// on valittuna, pohjapistemaara on 1.0.
+function scoreFromComponents(slopeByte, distByte, rockBit, swampBit, mask) {
+  let total = 0;
+  let weightSum = 0;
+  if (mask & FACTOR_BITS.slope) { total += SLOPE_WEIGHT * (slopeByte / 255); weightSum += SLOPE_WEIGHT; }
+  if (mask & FACTOR_BITS.dist) { total += DIST_WEIGHT * (distByte / 255); weightSum += DIST_WEIGHT; }
+  if (mask & FACTOR_BITS.rock) {
+    total += ROCK_WEIGHT * (rockBit ? ROCK_SCORE_YES : ROCK_SCORE_NO);
+    weightSum += ROCK_WEIGHT;
+  }
+  let score = weightSum > 0 ? total / weightSum : 1.0;
+  if ((mask & FACTOR_BITS.swamp) && swampBit) score *= SWAMP_PENALTY_FACTOR;
+  return score < 0 ? 0 : score > 1 ? 1 : score;
+}
+
+async function renderFactorTile(tileId, displayMode, thicknessPx, topPercent, mask) {
+  const cacheKey = `${tileId}|${displayMode}|${thicknessPx}|${topPercent}|${mask}`;
+  if (renderResultCache.has(cacheKey)) return renderResultCache.get(cacheKey);
+
+  const { factors, tiebreak } = await loadFactorImages(tileId);
+  const w = factors.width, h = factors.height;
+  const data = factors.data; // RGBA: R=jyrkkyys, G=etaisyys, B=kallio/suo-bitit, A=peittomaski
+  const tb = tiebreak.data; // R=tasapelinpurku (alfa 255 kaikkialla, ks. backend)
+
+  // Pistemaara lasketaan kerran per pikseli ja talletetaan varin hakua
+  // varten; "top"-tilassa tarvitaan lisaksi tasapelinpurku, jotta vertailu
+  // kynnysarvoon vastaa backendin rank_from_components-laskentaa.
+  const scoreByte = new Uint8Array(w * h);
+  const alpha = new Uint8Array(w * h);
+  const threshold = displayMode === 'top' ? topThresholdFor(mask, topPercent) : 0;
+
+  for (let i = 0; i < w * h; i++) {
+    if (data[i * 4 + 3] === 0) { alpha[i] = 0; continue; }
+    const bits = data[i * 4 + 2];
+    const score = scoreFromComponents(data[i * 4], data[i * 4 + 1], bits & 1, bits & 2, mask);
+    scoreByte[i] = Math.round(score * 255);
+    if (displayMode === 'score') {
+      alpha[i] = 1;
+    } else {
+      const rank = score + TIEBREAK_EPSILON * (tb[i * 4] / 255);
+      alpha[i] = rank >= threshold ? 1 : 0;
+    }
+  }
+
+  const radiusPx = Math.round(thicknessPx / NEW_PIXEL_FACTOR);
+  const out = new Uint8ClampedArray(w * h * 4);
+
+  if (displayMode === 'score') {
+    // Varin lahde pitaa haketa lahimmasta AIDOSTI puskurilla olevasta
+    // pikselista, ei dilatoidun pikselin omasta (mahdollisesti puskurin
+    // ulkopuolisesta) raa'asta arvosta - ks. dilateWithNearestColor-kommentti.
+    const { alpha: dilated, sourceIdx } = dilateWithNearestColor(alpha, w, h, radiusPx);
+    for (let i = 0; i < w * h; i++) {
+      if (!dilated[i]) continue;
+      const [r, g, b] = SCORE_COLOR_LUT[scoreByte[sourceIdx[i]]];
+      out[i * 4] = r; out[i * 4 + 1] = g; out[i * 4 + 2] = b; out[i * 4 + 3] = 230;
+    }
+  } else {
+    // "Top"-tilassa vari on aina kiintea (magenta) - dilatoidun pikselin
+    // alkuperalla ei ole vaikutusta varin oikeellisuuteen.
+    const dilated = dilateAlpha(alpha, w, h, radiusPx);
+    for (let i = 0; i < w * h; i++) {
+      if (!dilated[i]) continue;
+      out[i * 4] = TOP_HIGHLIGHT_RGB[0];
+      out[i * 4 + 1] = TOP_HIGHLIGHT_RGB[1];
+      out[i * 4 + 2] = TOP_HIGHLIGHT_RGB[2];
+      out[i * 4 + 3] = 230;
+    }
+  }
+
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  canvas.getContext('2d').putImageData(new ImageData(out, w, h), 0, 0);
+  const dataUrl = canvas.toDataURL('image/png');
+  renderResultCache.set(cacheKey, dataUrl);
+  return dataUrl;
+}
+
+// Kynnysarvo valitulle tekijayhdistelmalle ja prosentille. Jos taulukkoa ei
+// jostain syysta saatu ladattua, palautetaan aareton = "top"-kerros jaa
+// tyhjaksi mieluummin kuin nayttaa mielivaltaisen alueen.
+function topThresholdFor(mask, topPercent) {
+  const forMask = factorThresholds && factorThresholds[String(mask)];
+  const value = forMask && forMask[String(topPercent)];
+  return typeof value === 'number' ? value : Infinity;
+}
+
+let newRenderGeneration = 0;
+
+async function refreshNew() {
+  const visible = visibleTiles();
+  const myGeneration = ++newRenderGeneration;
+  const mask = factorMask();
+  const rendered = await Promise.all(
+    visible.map(async (tile) => ({
+      tile,
+      dataUrl: await renderFactorTile(tile.tile_id, currentDisplay, currentThickness, currentTopPercent, mask),
+    }))
+  );
+  if (myGeneration !== newRenderGeneration) return; // uudempi pyynto on jo kaynnissa/valmis, hylataan tama
+  newGroup.clearLayers();
+  rendered.forEach(({ tile, dataUrl }) => {
+    L.imageOverlay(dataUrl, tileLatLngBounds(tile), { opacity: 1 }).addTo(newGroup);
+  });
+}
+
+// --- Aktiivisen kerroksen hallinta (VANHA/UUSI x rantautumispisteytys/top) ---
+function activeGroup() {
+  if (currentImpl === 'new') return newGroup;
+  return currentDisplay === 'score' ? oldScoreGroup : oldTopGroup;
+}
+
+function refreshActive() {
+  if (!tileListCache.length) return;
+  refreshBase();
+  if (currentImpl === 'old') {
+    refreshOld();
+  } else {
+    refreshNew().catch((err) => console.error('Uuden toteutuksen renderointi epaonnistui:', err));
+  }
+}
+
+function switchActiveGroup() {
+  [oldScoreGroup, oldTopGroup, newGroup].forEach((g) => {
+    if (map.hasLayer(g)) map.removeLayer(g);
+  });
+  map.addLayer(activeGroup());
+  refreshActive();
+}
+
+map.on('zoomend moveend', () => refreshActive());
+
+// Asetussivulta paluu: 'pageshow' kattaa seka tavallisen latauksen etta
+// selaimen takaisin-napin (bfcache, jolloin skriptia ei ajeta uudelleen).
+// Tekijavalinnan muutos mitatoi renderointivalimuistin vain avaimen kautta
+// (mask on osa avainta), joten mitaan ei tarvitse tyhjentaa kasin.
+window.addEventListener('pageshow', () => {
+  const changed = applySettings();
+  // updateLegendFromSettings voi vaihtaa toteutuksen ('old' -> 'new', jos
+  // tekijavalinta ei enaa ole taydellinen), joten kerrosryhma on vaihdettava
+  // eika pelkka sisalto paivitettava - switchActiveGroup tekee molemmat.
+  updateLegendFromSettings();
+  if (changed && tileListCache.length) switchActiveGroup();
 });
 
 async function init() {
   const statusEl = document.getElementById('status');
-  const res = await fetch('/api/tiles');
+  applySettings();
+
+  const [res, thresholdsRes] = await Promise.all([
+    fetch('/api/tiles'),
+    fetch('/api/factor-thresholds'),
+  ]);
   const tileList = await res.json();
+  factorThresholds = await thresholdsRes.json();
   tileListCache = tileList;
+  updateLegendFromSettings();
 
   const allBounds = tileList.map(tileLatLngBounds);
   if (allBounds.length) {
@@ -242,7 +675,7 @@ async function init() {
     map.setView([0, 0], -6);
   }
 
-  refreshLayers();
+  switchActiveGroup();
   statusEl.remove();
 }
 

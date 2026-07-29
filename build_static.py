@@ -41,6 +41,9 @@ URL_REPLACEMENTS = {
         "`cache/${tile.tile_id}${level.suffix}_t${currentThickness}.png`",
     "`/api/overlay/${tile.tile_id}/top${level.suffix}_t${currentThickness}_p${currentTopPercent}.png`":
         "`cache/${tile.tile_id}_top${level.suffix}_t${currentThickness}_p${currentTopPercent}.png`",
+    "`/api/factors/${tileId}.png`": "`cache/${tileId}_factors.png`",
+    "`/api/tiebreak/${tileId}.png`": "`cache/${tileId}_tiebreak.png`",
+    "fetch('/api/factor-thresholds')": "fetch('factor_thresholds.json')",
     "const tileList = await res.json();": "const tileList = (await res.json()).tiles;",
 }
 
@@ -82,6 +85,15 @@ def build():
                         top_bytes
                     )
 
+        # Osatekijakuvapari (ks. pipeline-moduulin kanavakuvaus) - yksi pari
+        # per tiili riippumatta tekijavalinnoista/paksuudesta/prosentista.
+        for part in ("factors", "tiebreak"):
+            part_bytes, part_meta = pipeline.get_or_compute_factor_png(
+                tile_id, str(BUILDINGS_PATH), part=part
+            )
+            (DOCS_CACHE_DIR / f"{tile_id}_{part}.png").write_bytes(part_bytes)
+            meta = meta or part_meta
+
         tile_entries.append({"tile_id": tile_id, "bounds_epsg3067": meta["bounds_epsg3067"]})
 
     default_percentile = pipeline.top_percent_to_percentile(pipeline.DEFAULT_TOP_PERCENT)
@@ -97,7 +109,16 @@ def build():
     }
     (DOCS_DIR / "tiles.json").write_text(json.dumps(tiles_json, indent=2))
 
+    # "Parhaat X %" -kynnykset kaikille 15 tekijayhdistelmalle omaan
+    # tiedostoonsa (ks. pipeline.compute_factor_thresholds) - selain hakee
+    # taman kerran ja valitsee siita valintojaan vastaavan kynnyksen.
+    factor_thresholds = pipeline.compute_factor_thresholds(str(BUILDINGS_PATH))
+    (DOCS_DIR / "factor_thresholds.json").write_text(json.dumps(factor_thresholds, indent=2))
+
     write_static_index_html()
+    # Asetussivu ei kutsu API:a lainkaan (kaikki valinnat ovat selaimen
+    # localStoragessa), joten se kopioidaan sellaisenaan.
+    shutil.copyfile(ROOT / "frontend" / "settings.html", DOCS_DIR / "settings.html")
 
     # Estaa GitHub Pagesia ajamasta Jekylla-prosessointia staattisten
     # tiedostojen paalla (nopeampi julkaisu, ei yllatyksia tiedostonimissa).

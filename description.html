@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="fi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rantautumispaikkojen analysointisovellus</title>
+<style>
+  :root {
+    --green: #2ecc40;
+    --yellow: #ffdc00;
+    --red: #ff4136;
+    --ink: #1c1f22;
+    --muted: #5a6570;
+    --bg: #fbfbfa;
+    --card: #ffffff;
+    --border: #e4e4e0;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; background: var(--bg); color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    line-height: 1.6;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 48px 24px 80px; }
+  h1 { font-size: 1.7rem; margin: 0 0 8px; }
+  h2 {
+    font-size: 1.15rem; margin: 40px 0 12px; padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  h3.sub { font-size: 1rem; margin: 28px 0 10px; }
+  p { margin: 0 0 14px; }
+  .tagline { color: var(--muted); font-size: 1.05rem; margin-bottom: 28px; }
+  .cta {
+    display: inline-block; margin: 8px 0 4px; padding: 10px 20px;
+    background: var(--ink); color: white; text-decoration: none;
+    border-radius: 8px; font-weight: 600; font-size: 0.95rem;
+  }
+  .cta:hover { opacity: 0.85; }
+  .score-list { list-style: none; margin: 0 0 16px; padding: 0; }
+  .score-list li {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 6px;
+    font-size: 0.97rem;
+  }
+  .dot {
+    width: 14px; height: 14px; border-radius: 50%; flex: none;
+    box-shadow: inset 0 0 0 1px rgba(0,0,0,.08);
+  }
+  .factors { margin: 0 0 8px; padding-left: 22px; }
+  .factors li { margin-bottom: 8px; }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 18px; margin-bottom: 12px;
+  }
+  .card b { display: block; margin-bottom: 4px; }
+  .card p { margin: 0; color: var(--muted); font-size: 0.95rem; }
+  .sources { list-style: none; margin: 0; padding: 0; }
+  .sources li {
+    padding: 12px 0; border-bottom: 1px solid var(--border);
+  }
+  .sources li:last-child { border-bottom: none; }
+  .sources b { display: block; }
+  .sources span { color: var(--muted); font-size: 0.93rem; }
+  footer {
+    margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--border);
+    color: var(--muted); font-size: 0.85rem;
+  }
+  a { color: inherit; }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink: #eef0f2; --muted: #a3adb8; --bg: #15171a; --card: #1d2024; --border: #2b2f34;
+    }
+    .cta { background: #eef0f2; color: #15171a; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>🧭 Rantautumispaikkojen analysointisovellus</h1>
+  <p class="tagline">
+    Näyttää kartalla mihin kohtiin Saaristomeren rannikkoa kannattaa rantautua veneellä
+    tai kajakilla — ja mihin ei.
+  </p>
+  <a class="cta" href="https://tsaulial.github.io/saaristorantautuminen/">Kokeile sovellusta →</a>
+
+  <h2>Miten pisteytys toimii?</h2>
+  <p>Jokainen rantaviivan lähellä oleva kohta saa värin:</p>
+  <ul class="score-list">
+    <li><span class="dot" style="background:var(--green)"></span> <b>Vihreä</b> — hyvä rantautumispaikka</li>
+    <li><span class="dot" style="background:var(--yellow)"></span> <b>Keltainen</b> — ihan ok</li>
+    <li><span class="dot" style="background:var(--red)"></span> <b>Punainen</b> — huono</li>
+    <li><span class="dot" style="background:#ff00ff"></span> <b>Magenta</b> — koko alueen parhaat rannat (oma näytettävä kerros)</li>
+  </ul>
+  <p>Väri lasketaan neljän tekijän perusteella:</p>
+  <ol class="factors">
+    <li><b>Rannan jyrkkyys</b> — tärkein tekijä</li>
+    <li><b>Etäisyys rakennuksiin</b> — ei haluta rantautua jonkun pihaan</li>
+    <li><b>Paljas kallio</b> — hyvä, koska tukeva</li>
+    <li><b>Suo</b> — huono, jalka uppoaa</li>
+  </ol>
+  <p>
+    Pisteytys koskee vain <b>merenrantaa</b> — saarten sisällä olevat purot ja lammet
+    jätetään huomiotta, koska niille ei kuitenkaan pääse rantautumaan.
+  </p>
+  <p>
+    Koko laskenta on tehty valmiiksi etukäteen, joten sovellus ei tarvitse jatkuvasti
+    pyörivää palvelinta — lopputulos on pelkkiä kuvia ja tietoa, jotka mikä tahansa
+    nettisivu voi näyttää.
+  </p>
+
+  <h2>Mitä kartalla voi säätää?</h2>
+  <p>Kartan oikean alakulman valikosta valitaan kumpi kahdesta näkymästä on esillä:</p>
+  <ul class="score-list">
+    <li><span class="dot" style="background:linear-gradient(90deg,var(--green),var(--yellow),var(--red))"></span> <b>Rantautumispisteytys</b> — koko rannikko väritettynä</li>
+    <li><span class="dot" style="background:#ff00ff"></span> <b>Parhaat rantautumispaikat</b> — vain kerma päältä</li>
+  </ul>
+  <p>Samasta valikosta pääsee <b>asetussivulle</b>, jossa on kaikki muu säädettävä.</p>
+
+  <h3 class="sub">Mitkä tekijät otetaan huomioon?</h3>
+  <p>
+    Asetussivulla voi valita rastittamalla, <b>mitkä neljästä tekijästä vaikuttavat
+    pisteytykseen</b>:
+  </p>
+  <ul class="score-list">
+    <li><span class="dot" style="background:var(--green)"></span> <b>Maaston jyrkkyys</b></li>
+    <li><span class="dot" style="background:var(--green)"></span> <b>Suo</b></li>
+    <li><span class="dot" style="background:var(--green)"></span> <b>Kallio</b></li>
+    <li><span class="dot" style="background:var(--green)"></span> <b>Rakennukset</b></li>
+  </ul>
+  <p>
+    Oletuksena kaikki ovat mukana. Jos jonkin poistaa, se häviää laskennasta kokonaan ja
+    loppujen keskinäinen painoarvo suhteutetaan uudelleen sataan prosenttiin — sivu näyttää
+    kunkin tekijän osuuden heti valintojen vierellä. Näin voi katsoa esimerkiksi pelkkää
+    maaston jyrkkyyttä, tai jättää rakennukset huomiotta jos ei välitä siitä että lähistöllä
+    on mökkejä. Vähintään yksi tekijä on oltava valittuna, ja muutokset tallentuvat heti.
+  </p>
+
+  <h3 class="sub">Esitystapa</h3>
+  <p>
+    Asetussivulla on lisäksi kaksi liukusäädintä, jotka eivät vaikuta pisteytykseen vaan
+    pelkkään ulkoasuun:
+  </p>
+  <div class="card">
+    <b>Rantaviivan korostuksen paksuus (1–20 px, oletus 10)</b>
+    <p>Kuinka leveänä rantakaista piirretään.</p>
+  </div>
+  <div class="card">
+    <b>Parhaat rannat (1–10 %, oletus 7 %)</b>
+    <p>Kuinka tiukka "parhaat rantautumispaikat" -näkymä on. 1 % näyttää vain aivan huippukohdat, 10 % selvästi laajemman joukon. Vertailu on aina koko alueen laajuinen, ei saarikohtainen — ja se ottaa huomioon juuri ne tekijät jotka on valittu.</p>
+  </div>
+
+  <h3 class="sub">Kokeellinen vertailu</h3>
+  <p>
+    Valikossa on toistaiseksi myös <b>"Toteutus (vertailua varten)"</b> -valinta
+    (<i>Nykyinen</i> / <i>Uusi</i>). Se ei muuta pisteytystä eikä lopputulosta, vain tavan
+    jolla kartta piirretään: uudessa tavassa väritys ja rajaukset lasketaan vasta selaimessa
+    yhdestä esilasketusta kuvasta, kun nykyisessä jokainen säätimen asento on oma valmiiksi
+    laskettu kuvansa. Uusi tapa on hieman karkeampi (3,5 metrin ruutu), mutta vie murto-osan
+    levytilasta — sillä on merkitystä, jos kartoitettava alue joskus laajenee koko
+    Suomenlahdelle ja länsirannikolle. Valinta on kehityksen aikainen vertailu eikä jää
+    lopulliseen sovellukseen.
+  </p>
+
+  <h2>Käytetyt avoimet aineistot</h2>
+  <ul class="sources">
+    <li>
+      <b>Korkeusmalli (2 m)</b>
+      <span>Maanmittauslaitoksen avoin korkeusmalliaineisto — maaston muodot ja jyrkkyys.</span>
+    </li>
+    <li>
+      <b>Maastotietokanta, rakennukset</b>
+      <span>MML:n rekisteri rakennuksista ja rakennelmista — etäisyyksien laskemiseen.</span>
+    </li>
+    <li>
+      <b>Peruskartta</b>
+      <span>MML:n karttapohja, josta väreistä tunnistettiin kalliot, rannat ja suot.</span>
+    </li>
+  </ul>
+  <p>Kaikki kolme ovat osa MML:n avointa tietoaineistoa — ilmaisia ja vapaasti käytettävissä.</p>
+
+  <h3 class="sub">Mitä rakennusaineistosta otettiin mukaan?</h3>
+  <p>
+    Maastotietokannan rakennusaineisto sisälsi yli 20 erilaista kohdeluokkaa.
+    Mukaan pisteytykseen otettiin vain kaksi — ne kertovat parhaiten missä
+    ihmiset todella asuvat tai oleskelevat:
+  </p>
+  <ul class="score-list">
+    <li><span class="dot" style="background:var(--green)"></span> <b>Varsinaiset rakennukset</b> — asuinrakennukset, mökit ym.</li>
+    <li><span class="dot" style="background:var(--green)"></span> <b>Muut rakennelmat</b> — esim. laiturit, aitat, saunat</li>
+  </ul>
+  <p>
+    Pois jätettiin loput noin 20 kohdeluokkaa, kuten <b>aidat, mastot,
+    muistomerkit, näkötornit, savupiiput, tuulivoimalat ja aallonmurtajat</b> —
+    ne eivät kerro asutuksen läheisyydestä samalla tavalla.
+  </p>
+
+  <h2>Matkan varrella ratkottuja pulmia</h2>
+
+  <div class="card">
+    <b>Kartta ja korkeusmalli eivät olleet samassa "ruudukossa"</b>
+    <p>Aineistot oli jaettu palasiin eri tavalla, joten palasten yhdistäminen piti tehdä sijainnin, ei tiedostonimien, perusteella.</p>
+  </div>
+
+  <div class="card">
+    <b>Tietokoneen piti oppia tunnistamaan kartan väripilkut</b>
+    <p>Kartalla oli useita samannäköisiä sävyjä vierekkäin, joten oikeat värirajat (kallio, ranta, suo) piti hakea kokeilemalla ja mittaamalla.</p>
+  </div>
+
+  <div class="card">
+    <b>Kartan palaset eivät aluksi täsmänneet saumattomasti yhteen</b>
+    <p>Suomalaiset kartat käyttävät koordinaatistoa, joka on hieman "vinossa" todelliseen pohjoiseen nähden. Jokainen pala piti erikseen suoristaa ennen yhdistämistä.</p>
+  </div>
+
+  <div class="card">
+    <b>Paras rantautumiskaista oli liian kapea näkyäkseen</b>
+    <p>Se jouduttiin piirtämään näkyvyyden vuoksi paksumpana kuin se todellisuudessa on — ja paksuudesta tehtiin lopulta säädettävä, koska sopiva leveys riippuu siitä kuinka kaukaa karttaa katsoo.</p>
+  </div>
+
+  <div class="card">
+    <b>Sisämaan purot ja lammet näyttivät merenrannalta</b>
+    <p>Rantaviiva tunnistettiin kartan sinisestä väristä, joten mukaan tarttui myös saarten sisällä olevia puroja ja lampia, joille ei veneellä pääse. Ne rajattiin pois.</p>
+  </div>
+
+  <div class="card">
+    <b>"Parhaat rannat" -säädin ei aluksi tehnyt mitään</b>
+    <p>Asetuksilla 1 % ja 7 % näkyi täsmälleen sama alue. Syy: niin moni rannankohta sai tasan täydet pisteet, ettei niitä voinut asettaa paremmuusjärjestykseen lainkaan. Tasapelit purettiin tarkemmilla mittausarvoilla — loivempi ranta ja kauempana rakennuksista oleva kohta voittaa.</p>
+  </div>
+
+  <div class="card">
+    <b>Kartta latautui hitaasti</b>
+    <p>Koko rannikko piirrettiin aina tarkimmalla mahdollisella tarkkuudella, vaikka katselisi koko aluetta kerralla. Nyt kartta on laskettu valmiiksi neljällä eri tarkkuudella ja lataa vain sen, mikä ruudulla juuri nyt näkyy.</p>
+  </div>
+
+  <div class="card">
+    <b>Yleisempi karttaruudutus kokeiltiin ja hylättiin</b>
+    <p>Kartta yritettiin pilkkoa samalla tavalla kuin tavalliset verkkokartat tekevät, mutta se osoittautui käytännössä epävakaaksi: kartta pätki ja ruutuja jäi satunnaisesti lataamatta. Vanha, yksinkertaisempi tapa palautettiin.</p>
+  </div>
+
+  <div class="card">
+    <b>Julkaisu piti muuttaa "itsestään pyöriväksi"</b>
+    <p>Sen sijaan että sovellus laskisi asioita joka kerta uudestaan, kaikki laskettiin kertaalleen valmiiksi kuviksi — sivu pyörii nyt ilmaiseksi ilman jatkuvasti käynnissä olevaa konetta.</p>
+  </div>
+
+  <div class="card">
+    <b>GitHub Pages ei aluksi suostunut näyttämään sivua</b>
+    <p>Julkaisukansion nimi ei kelvannut GitHubin säännöille — uudelleennimeäminen korjasi asian.</p>
+  </div>
+
+  <footer>
+    Lähdekoodi ja aineistot: <a href="https://github.com/tsaulial/saaristorantautuminen">github.com/tsaulial/saaristorantautuminen</a>
+  </footer>
+
+</div>
+</body>
+</html>
