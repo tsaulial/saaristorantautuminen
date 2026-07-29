@@ -45,7 +45,9 @@ URL_REPLACEMENTS = {
     "`/api/tiebreak/${tileId}.png`": "`cache/${tileId}_tiebreak.png`",
     "`/api/prime/${tileId}.png`": "`cache/${tileId}_prime.png`",
     "fetch('/api/factor-thresholds')": "fetch('factor_thresholds.json')",
+    "`/api/fetch/${tileId}/${part}.png`": "`cache/${tileId}_fetch${part}.png`",
     "fetch('/api/prime-thresholds')": "fetch('prime_thresholds.json')",
+    "fetch('/api/shelter-thresholds')": "fetch('shelter_thresholds.json')",
     "const tileList = await res.json();": "const tileList = (await res.json()).tiles;",
 }
 
@@ -102,6 +104,13 @@ def build():
         (DOCS_CACHE_DIR / f"{tile_id}_prime.png").write_bytes(prime_bytes)
         meta = meta or prime_meta
 
+        # Pyyhkaisymatkat suojaisuustekijaa varten (12 sektoria kahdessa kuvassa).
+        for part in ("a", "b"):
+            fetch_bytes, _ = pipeline.get_or_compute_fetch_png(
+                tile_id, str(BUILDINGS_PATH), part=part
+            )
+            (DOCS_CACHE_DIR / f"{tile_id}_fetch{part}.png").write_bytes(fetch_bytes)
+
         tile_entries.append({"tile_id": tile_id, "bounds_epsg3067": meta["bounds_epsg3067"]})
 
     default_percentile = pipeline.top_percent_to_percentile(pipeline.DEFAULT_TOP_PERCENT)
@@ -125,6 +134,11 @@ def build():
 
     prime_thresholds = pipeline.compute_prime_thresholds(str(BUILDINGS_PATH))
     (DOCS_DIR / "prime_thresholds.json").write_text(json.dumps(prime_thresholds, indent=2))
+
+    # Tuulesta riippuvat kynnykset omaan tiedostoonsa - selain hakee sen
+    # vasta kun suojaisuustekija otetaan kayttoon.
+    shelter_thresholds = pipeline.compute_shelter_thresholds(str(BUILDINGS_PATH))
+    (DOCS_DIR / "shelter_thresholds.json").write_text(json.dumps(shelter_thresholds))
 
     # Rantaviivan jakauma asetussivun kuvaajaa varten (ks.
     # pipeline.compute_shoreline_stats).

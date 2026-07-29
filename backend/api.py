@@ -133,6 +133,26 @@ def get_prime_png(tile_id: str):
     return Response(content=png_bytes, media_type="image/png")
 
 
+@app.get("/api/fetch/{tile_id}/{part}.png")
+def get_fetch_png(tile_id: str, part: str):
+    """Pyyhkaisymatkat 12 ilmansuuntaan pakattuna kahteen kuvaan (ks.
+    pipeline.get_or_compute_fetch_png) - suojaisuustekijan lahtodata."""
+    try:
+        png_bytes, _meta = pipeline.get_or_compute_fetch_png(tile_id, str(BUILDINGS_PATH), part=part)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Tuntematon tile_id: {tile_id}")
+    except ValueError as err:
+        raise HTTPException(status_code=404, detail=str(err))
+    return Response(content=png_bytes, media_type="image/png")
+
+
+@app.get("/api/shelter-thresholds")
+def get_shelter_thresholds():
+    """Tuulesta riippuvat "parhaat X %" -kynnysarvot (ks.
+    pipeline.compute_shelter_thresholds): maski x sektori x nopeusluokka."""
+    return pipeline.compute_shelter_thresholds(str(BUILDINGS_PATH))
+
+
 @app.get("/api/prime-thresholds")
 def get_prime_thresholds():
     """Karkipaikkojen "parhaat X %" -kynnysarvot per tekijayhdistelma (ks.

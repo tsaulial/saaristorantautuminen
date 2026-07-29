@@ -131,6 +131,19 @@
       <span class="weight" id="w-rock"></span>
     </div>
 
+    <div class="factor" data-factor="shelter">
+      <input type="checkbox" id="f-shelter">
+      <label for="f-shelter">
+        <span class="name">Suojaisuus</span>
+        <span class="desc">
+          Kuinka pitkältä avovedeltä aallokko ehtii kasvaa rantaan. Tämä on ainoa
+          tekijä joka riippuu <b>tuulesta</b> — kartta muuttuu tuulen suunnan ja
+          voimakkuuden mukana, ja tuuli säädetään kartalla.
+        </span>
+      </label>
+      <span class="weight" id="w-shelter"></span>
+    </div>
+
     <div class="factor" data-factor="dist">
       <input type="checkbox" id="f-dist">
       <label for="f-dist">
@@ -210,9 +223,11 @@ const DEFAULT_TOP_PERCENT = 7;
 // Painot: pidettava samassa kuin backend/score_engine.py (SLOPE_WEIGHT,
 // DIST_WEIGHT) ja backend/pipeline.py (ROCK_WEIGHT). Suo ei ole painotettu
 // termi vaan kertova rangaistus, joten sille ei nayteta prosenttiosuutta.
-const WEIGHTS = { slope: 0.50, dist: 0.35, rock: 0.15 };
-const FACTOR_KEYS = ['slope', 'dist', 'rock', 'swamp'];
-const DEFAULT_FACTORS = { slope: true, dist: true, rock: true, swamp: true };
+const WEIGHTS = { slope: 0.50, dist: 0.35, rock: 0.15, shelter: 0.40 };
+const FACTOR_KEYS = ['slope', 'dist', 'rock', 'swamp', 'shelter'];
+// Suojaisuus on oletuksena POIS: sen kanssa pisteytys riippuu tuulesta ja
+// vaatii verkkohaun.
+const DEFAULT_FACTORS = { slope: true, dist: true, rock: true, swamp: true, shelter: false };
 
 function loadSettings() {
   const fallback = {
@@ -336,7 +351,7 @@ document.getElementById('reset').addEventListener('click', () => {
 // backend/pipeline.py: compute_shoreline_stats). Selain valitsee vain
 // valintoja vastaavan rivin - jakauman uudelleenlaskentaan ei tarvita
 // mitaan raskasta.
-const FACTOR_BITS = { slope: 1, dist: 2, rock: 4, swamp: 8 }; // sama kuin backend/pipeline.py
+const FACTOR_BITS = { slope: 1, dist: 2, rock: 4, swamp: 8, shelter: 16 }; // sama kuin backend/pipeline.py
 let shorelineStats = null;
 
 function factorMask() {
@@ -360,7 +375,13 @@ const BANDS = [
 
 function renderChart() {
   if (!shorelineStats) return;
-  const mask = factorMask();
+  // Jakauma on esilaskettu ilman suojaisuutta: se riippuisi tuulesta, jolloin
+  // kuvaaja muuttuisi joka kerta kun tuuli kaantyy eika kertoisi rantaviivan
+  // pysyvista ominaisuuksista. Naytetaan siis jakauma ilman sita ja kerrotaan
+  // se kayttajalle.
+  const fullMask = factorMask();
+  const mask = fullMask & ~FACTOR_BITS.shelter;
+  const shelterOn = (fullMask & FACTOR_BITS.shelter) !== 0;
   const hist = shorelineStats.histograms_m[String(mask)];
   const primeHist = (shorelineStats.prime_histograms_m || {})[String(mask)] || null;
   const edges = shorelineStats.bin_edges;
@@ -440,6 +461,11 @@ function renderChart() {
   const low = (shorelineStats.length_m_low / 1000).toFixed(0);
   const high = (shorelineStats.length_m_high / 1000).toFixed(0);
   document.getElementById('caveat').innerHTML =
+    (shelterOn
+      ? '<b>Huom:</b> kuvaaja on laskettu <b>ilman suojaisuutta</b>, koska se riippuu ' +
+        'tuulesta — jakauma muuttuisi joka kerta kun tuuli kääntyy eikä kertoisi ' +
+        'rantaviivan pysyvistä ominaisuuksista. Muut valintasi ovat mukana. '
+      : '') +
     (inTopBin
       ? '<b>Huom:</b> raja osuu ylimpään pylvääseen, jossa on paljon täsmälleen ' +
         'saman pistemäärän saaneita kohtia. Niiden keskinäinen järjestys ratkaistaan ' +
