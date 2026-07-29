@@ -43,7 +43,9 @@ URL_REPLACEMENTS = {
         "`cache/${tile.tile_id}_top${level.suffix}_t${currentThickness}_p${currentTopPercent}.png`",
     "`/api/factors/${tileId}.png`": "`cache/${tileId}_factors.png`",
     "`/api/tiebreak/${tileId}.png`": "`cache/${tileId}_tiebreak.png`",
+    "`/api/prime/${tileId}.png`": "`cache/${tileId}_prime.png`",
     "fetch('/api/factor-thresholds')": "fetch('factor_thresholds.json')",
+    "fetch('/api/prime-thresholds')": "fetch('prime_thresholds.json')",
     "const tileList = await res.json();": "const tileList = (await res.json()).tiles;",
 }
 
@@ -94,6 +96,12 @@ def build():
             (DOCS_CACHE_DIR / f"{tile_id}_{part}.png").write_bytes(part_bytes)
             meta = meta or part_meta
 
+        # Karkipaikat: sama kanavarakenne, mutta arvot aggregoitu koko
+        # rantakaistaleen yli (ks. pipeline.get_or_compute_prime_png).
+        prime_bytes, prime_meta = pipeline.get_or_compute_prime_png(tile_id, str(BUILDINGS_PATH))
+        (DOCS_CACHE_DIR / f"{tile_id}_prime.png").write_bytes(prime_bytes)
+        meta = meta or prime_meta
+
         tile_entries.append({"tile_id": tile_id, "bounds_epsg3067": meta["bounds_epsg3067"]})
 
     default_percentile = pipeline.top_percent_to_percentile(pipeline.DEFAULT_TOP_PERCENT)
@@ -114,6 +122,9 @@ def build():
     # taman kerran ja valitsee siita valintojaan vastaavan kynnyksen.
     factor_thresholds = pipeline.compute_factor_thresholds(str(BUILDINGS_PATH))
     (DOCS_DIR / "factor_thresholds.json").write_text(json.dumps(factor_thresholds, indent=2))
+
+    prime_thresholds = pipeline.compute_prime_thresholds(str(BUILDINGS_PATH))
+    (DOCS_DIR / "prime_thresholds.json").write_text(json.dumps(prime_thresholds, indent=2))
 
     # Rantaviivan jakauma asetussivun kuvaajaa varten (ks.
     # pipeline.compute_shoreline_stats).

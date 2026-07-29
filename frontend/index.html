@@ -171,12 +171,15 @@ legend.onAdd = function () {
       '<span class="swatch" style="background:#ffff00"></span>Kohtalainen<br>' +
       '<span class="swatch" style="background:#ff0000"></span>Heikko<br>' +
       '<span class="swatch" style="background:#ff00ff"></span>Paras <span id="top-percent-swatch"></span>% (oma kerros)<br>' +
+      '<span class="swatch" style="background:#7b2ff7"></span>Kärkipaikat (oma kerros)<br>' +
       '<small>Rantaviivan laatu perustuu 5–15&nbsp;m puskurivyöhykkeeseen.' +
       '<span id="swamp-note"><br>Suo alentaa pistettä merkittävästi.</span></small>' +
       '<div class="radio-row">' +
         '<span class="radio-row-label">Näytä</span>' +
         '<label><input type="radio" name="display-mode" value="score" checked> Rantautumispisteytys</label>' +
         '<label><input type="radio" name="display-mode" value="top"> Parhaat rantautumispaikat</label>' +
+        '<label><input type="radio" name="display-mode" value="prime"> Kärkipaikat</label>' +
+        '<small id="prime-note" class="impl-note"></small>' +
       '</div>' +
       '<div class="radio-row">' +
         '<span class="radio-row-label">Toteutus (vertailua varten)</span>' +
@@ -204,6 +207,7 @@ legend.onAdd = function () {
   div.querySelectorAll('input[name="display-mode"]').forEach((el) => {
     el.addEventListener('change', () => {
       currentDisplay = el.value;
+      updateLegendFromSettings();
       switchActiveGroup();
     });
   });
@@ -241,18 +245,30 @@ function updateLegendFromSettings() {
       'Tekijät: ' + active.join(', ') + ' · paksuus ' + currentThickness + ' px · parhaat ' + currentTopPercent + ' %';
   }
 
+  const primeNote = document.getElementById('prime-note');
+  if (primeNote) {
+    primeNote.textContent = currentDisplay === 'prime'
+      ? 'Koko 5–30 m rantakaistale hyvä, vähintään ~20 m yhtäjaksoisesti.'
+      : '';
+  }
+
   const oldRadio = document.querySelector('input[name="impl-choice"][value="old"]');
   const oldLabel = document.getElementById('impl-old-label');
   const note = document.getElementById('impl-note');
   if (!oldRadio || !oldLabel || !note) return;
 
-  oldRadio.disabled = !allFactorsOn;
-  oldLabel.classList.toggle('disabled', !allFactorsOn);
-  note.textContent = allFactorsOn
+  // VANHASTA toteutuksesta ei ole esilaskettuja kuvia karkipaikoille sen
+  // paremmin kuin osittaisille tekijavalinnoillekaan.
+  const oldAvailable = allFactorsOn && currentDisplay !== 'prime';
+  oldRadio.disabled = !oldAvailable;
+  oldLabel.classList.toggle('disabled', !oldAvailable);
+  note.textContent = oldAvailable
     ? ''
-    : 'Nykyinen-toteutus on esilaskettu kaikilla tekijöillä eikä tue valintoja.';
+    : (currentDisplay === 'prime'
+        ? 'Kärkipaikoista ei ole esilaskettuja kuvia.'
+        : 'Nykyinen-toteutus on esilaskettu kaikilla tekijöillä eikä tue valintoja.');
 
-  if (!allFactorsOn && currentImpl === 'old') {
+  if (!oldAvailable && currentImpl === 'old') {
     currentImpl = 'new';
     document.querySelector('input[name="impl-choice"][value="new"]').checked = true;
   }
@@ -343,6 +359,9 @@ function refreshOld() {
 // get_or_compute_factor_png-funktion ylla). ---
 const NEW_PIXEL_FACTOR = 3.5; // pidettava samassa kuin backend/pipeline.py: NEW_PIXEL_FACTOR
 const TOP_HIGHLIGHT_RGB = [255, 0, 255]; // sama kuin backendin TOP_HIGHLIGHT_BGR (magenta)
+// Karkipaikat omalla varillaan (violetti) - erottuu seka magentasta etta
+// pisteytyksen punainen-keltainen-vihrea-asteikosta ja merensinisesta.
+const PRIME_HIGHLIGHT_RGB = [123, 47, 247];
 const factorImageCache = new Map(); // tile_id -> { factors, tiebreak } (ImageData, ladataan kerran per tiili)
 
 // "Parhaat X %" -kynnysarvot per tekijayhdistelma ja prosentti, esilaskettu
@@ -350,6 +369,10 @@ const factorImageCache = new Map(); // tile_id -> { factors, tiebreak } (ImageDa
 // selain ei voi itse laskea, koska se nakee kerrallaan vain nakymassa olevat
 // tiilet.
 let factorThresholds = null;
+// Karkipaikkojen kynnykset ja kuvat ladataan VASTA kun kerros valitaan -
+// suurin osa kayttajista ei avaa sita lainkaan.
+let primeThresholds = null;
+const primeImageCache = new Map();
 
 function loadImageData(url, what) {
   return new Promise((resolve, reject) => {
@@ -365,6 +388,18 @@ function loadImageData(url, what) {
     el.onerror = () => reject(new Error(`Kuvan lataus epaonnistui: ${what}`));
     el.src = url;
   });
+}
+
+async function loadPrimeImage(tileId) {
+  if (primeImageCache.has(tileId)) return primeImageCache.get(tileId);
+  const img = await loadImageData(`/api/prime/${tileId}.png`, `${tileId} prime`);
+  primeImageCache.set(tileId, img);
+  return img;
+}
+
+async function ensurePrimeThresholds() {
+  if (primeThresholds) return;
+  primeThresholds = await (await fetch('/api/prime-thresholds')).json();
 }
 
 async function loadFactorImages(tileId) {
@@ -525,8 +560,15 @@ async function renderFactorTile(tileId, displayMode, thicknessPx, topPercent, ma
   if (renderResultCache.has(cacheKey)) return renderResultCache.get(cacheKey);
 
   const { factors, tiebreak } = await loadFactorImages(tileId);
-  const w = factors.width, h = factors.height;
-  const data = factors.data; // RGBA: R=jyrkkyys, G=etaisyys, B=kallio/suo-bitit, A=peittomaski
+  // Karkipaikat lukevat SAMAN kanavarakenteen omasta kuvastaan, jossa arvot
+  // on aggregoitu koko 5-30 m rantakaistaleen yli (ks. backend/pipeline.py:
+  // compute_prime_components). Peittomaski on kummassakin sama 5-15 m
+  // puskurivyohyke, joten kerrokset asettuvat tarkalleen paallekkain.
+  const isPrime = displayMode === 'prime';
+  const src = isPrime ? await loadPrimeImage(tileId) : factors;
+
+  const w = src.width, h = src.height;
+  const data = src.data; // RGBA: R=jyrkkyys, G=etaisyys, B=kallio/suo-bitit, A=peittomaski
   const tb = tiebreak.data; // R=tasapelinpurku (alfa 255 kaikkialla, ks. backend)
 
   // Pistemaara lasketaan kerran per pikseli ja talletetaan varin hakua
@@ -534,7 +576,9 @@ async function renderFactorTile(tileId, displayMode, thicknessPx, topPercent, ma
   // kynnysarvoon vastaa backendin rank_from_components-laskentaa.
   const scoreByte = new Uint8Array(w * h);
   const alpha = new Uint8Array(w * h);
-  const threshold = displayMode === 'top' ? topThresholdFor(mask, topPercent) : 0;
+  const threshold = displayMode === 'score'
+    ? 0
+    : (isPrime ? primeThresholdFor(mask, topPercent) : topThresholdFor(mask, topPercent));
 
   for (let i = 0; i < w * h; i++) {
     if (data[i * 4 + 3] === 0) { alpha[i] = 0; continue; }
@@ -563,14 +607,15 @@ async function renderFactorTile(tileId, displayMode, thicknessPx, topPercent, ma
       out[i * 4] = r; out[i * 4 + 1] = g; out[i * 4 + 2] = b; out[i * 4 + 3] = 230;
     }
   } else {
-    // "Top"-tilassa vari on aina kiintea (magenta) - dilatoidun pikselin
+    // Korostuskerroksissa vari on aina kiintea - dilatoidun pikselin
     // alkuperalla ei ole vaikutusta varin oikeellisuuteen.
+    const rgb = isPrime ? PRIME_HIGHLIGHT_RGB : TOP_HIGHLIGHT_RGB;
     const dilated = dilateAlpha(alpha, w, h, radiusPx);
     for (let i = 0; i < w * h; i++) {
       if (!dilated[i]) continue;
-      out[i * 4] = TOP_HIGHLIGHT_RGB[0];
-      out[i * 4 + 1] = TOP_HIGHLIGHT_RGB[1];
-      out[i * 4 + 2] = TOP_HIGHLIGHT_RGB[2];
+      out[i * 4] = rgb[0];
+      out[i * 4 + 1] = rgb[1];
+      out[i * 4 + 2] = rgb[2];
       out[i * 4 + 3] = 230;
     }
   }
@@ -592,12 +637,19 @@ function topThresholdFor(mask, topPercent) {
   return typeof value === 'number' ? value : Infinity;
 }
 
+function primeThresholdFor(mask, topPercent) {
+  const forMask = primeThresholds && primeThresholds[String(mask)];
+  const value = forMask && forMask[String(topPercent)];
+  return typeof value === 'number' ? value : Infinity;
+}
+
 let newRenderGeneration = 0;
 
 async function refreshNew() {
   const visible = visibleTiles();
   const myGeneration = ++newRenderGeneration;
   const mask = factorMask();
+  if (currentDisplay === 'prime') await ensurePrimeThresholds();
   const rendered = await Promise.all(
     visible.map(async (tile) => ({
       tile,

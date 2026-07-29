@@ -31,8 +31,19 @@ Kartan oikean alakulman valikosta voi valita **kumpi kahdesta näkymästä** on 
 
 - **Rantautumispisteytys** — koko rannikko väritettynä vihreästä punaiseen
 - **Parhaat rantautumispaikat** — vain kerma päältä, omalla kirkkaan magentalla värillä
+- **Kärkipaikat** — tiukempi seula, violetilla
 
 Samasta valikosta pääsee **asetussivulle**, jossa on kaikki muu säädettävä.
+
+### Mitä "Kärkipaikat" tarkoittaa?
+
+"Parhaat rantautumispaikat" katsoo jokaista kohtaa erikseen. Siitä seuraa kaksi ongelmaa: ranta voi näyttää huippuhyvältä aivan vesirajassa vaikka muutaman metrin päässä olisi pystysuora kallio, eikä kartalta erota mahtuuko paikkaan vene vai onko kyse metrin levyisestä kolosta.
+
+**Kärkipaikat vaatii, että koko rantakaistale on hyvä** — ei vain vesiraja vaan koko 30 metrin syvyys sisämaahan päin — **ja että hyvää rantaa on yhtäjaksoisesti vähintään noin 20 metriä.** Käytännössä siis kohtia, joissa pääsee rantaan, pääsee ylös ja mahtuu olemaan.
+
+Yksittäinen mittausvirhe ei kaada paikkaa: arvio perustuu kaistaleen huonoimpaan kymmenykseen, ei sen huonoimpaan yksittäiseen pisteeseen.
+
+Kärkipaikkoja on yhtä paljon kuin parhaita rantautumispaikkojakin (oletuksena 7 % rantaviivasta), mutta ne ovat **eri kohtia**: vain 43 % vanhoista säilyy. Ennen kaikkea ne ovat isompia ja yhtenäisempiä — erillisten kohtien määrä putoaa 7581:stä 2330:een ja tyypillinen koko yli nelinkertaistuu.
 
 ### Mitkä tekijät otetaan huomioon?
 

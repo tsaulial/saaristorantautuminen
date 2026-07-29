@@ -120,6 +120,26 @@ def get_tiebreak_png(tile_id: str):
     return Response(content=png_bytes, media_type="image/png")
 
 
+@app.get("/api/prime/{tile_id}.png")
+def get_prime_png(tile_id: str):
+    """Karkipaikat: samat kanavat kuin factors-kuvassa, mutta arvot on
+    aggregoitu koko 5-30 m rantakaistaleen yli (ks.
+    pipeline.get_or_compute_prime_png) - nostaa esiin kohdat joissa KOKO
+    kaistale on hyva, ei vain vesirajan tuntuma."""
+    try:
+        png_bytes, _meta = pipeline.get_or_compute_prime_png(tile_id, str(BUILDINGS_PATH))
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Tuntematon tile_id: {tile_id}")
+    return Response(content=png_bytes, media_type="image/png")
+
+
+@app.get("/api/prime-thresholds")
+def get_prime_thresholds():
+    """Karkipaikkojen "parhaat X %" -kynnysarvot per tekijayhdistelma (ks.
+    pipeline.compute_prime_thresholds)."""
+    return pipeline.compute_prime_thresholds(str(BUILDINGS_PATH))
+
+
 @app.get("/api/factor-thresholds")
 def get_factor_thresholds():
     """"Parhaat X %" -kynnysarvot per tekijayhdistelma ja prosentti (ks.

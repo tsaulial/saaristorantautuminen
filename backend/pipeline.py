@@ -367,6 +367,13 @@ def compute_tile(tile, buildings_path):
         "rock_mask": rock_mask,
         "swamp_mask": swamp_mask,
         "tiebreak": tiebreak,
+        # Rantaviiva ja maa/vesi-raja sailytetaan, jotta karkipaikkojen
+        # laajempi arviointivyohyke (ks. PRIME_ZONE_MAX_M) ja poikki-
+        # leikkausryhmittely voidaan laskea ilman koko tiilen uudelleen-
+        # laskentaa. Molemmat ovat boolean-maskeja eli pakkautuvat hyvin -
+        # DEM:ia kokonaisuudessaan EI tallenneta (144 MB/tiili).
+        "shoreline_mask": shoreline_mask,
+        "land_mask": dem > 0.0,
         "map_transform": map_transform,
         "n_buildings": v1["n_buildings"],
         "rock_pct": 100 * rock_mask.mean(),
@@ -384,10 +391,12 @@ def get_or_compute_raw(tile_id, buildings_path, force=False):
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     npz_path = CACHE_DIR / f"{tile_id}_raw.npz"
 
-    # "slope_score" (eika esim. "score") on valimuistin VERSIOTARKISTUS:
-    # osatekijat lisattiin vasta kayttajan valittavien tekijoiden myota, joten
-    # vanha valimuisti on laskettava uudelleen vaikka se muuten olisi ehja.
-    if not force and npz_path.exists() and "slope_score" in (data := np.load(npz_path)).files:
+    # "shoreline_mask" on valimuistin VERSIOTARKISTUS: taulukoita on lisatty
+    # kahdesti (osatekijat kayttajan valittavien tekijoiden myota, rantaviiva-
+    # ja maamaski karkipaikkojen myota), joten vanha valimuisti on laskettava
+    # uudelleen vaikka se muuten olisi ehja. Tarkistus osoittaa aina VIIMEKSI
+    # lisattyyn avaimeen.
+    if not force and npz_path.exists() and "shoreline_mask" in (data := np.load(npz_path)).files:
         return {
             "score": data["score"],
             "rank_score": data["rank_score"],
@@ -397,6 +406,8 @@ def get_or_compute_raw(tile_id, buildings_path, force=False):
             "rock_mask": data["rock_mask"].astype(bool),
             "swamp_mask": data["swamp_mask"].astype(bool),
             "tiebreak": data["tiebreak"],
+            "shoreline_mask": data["shoreline_mask"].astype(bool),
+            "land_mask": data["land_mask"].astype(bool),
             "map_transform": Affine(*data["map_transform"]),
             "n_buildings": int(data["n_buildings"]),
             "rock_pct": float(data["rock_pct"]),
@@ -422,6 +433,8 @@ def get_or_compute_raw(tile_id, buildings_path, force=False):
         rock_mask=result["rock_mask"],
         swamp_mask=result["swamp_mask"],
         tiebreak=result["tiebreak"].astype(np.float32),
+        shoreline_mask=result["shoreline_mask"],
+        land_mask=result["land_mask"],
         map_transform=np.array(result["map_transform"])[:6],
         n_buildings=result["n_buildings"],
         rock_pct=result["rock_pct"],
@@ -983,3 +996,239 @@ def compute_shoreline_stats(buildings_path, force=False):
     }
     cache_path.write_text(json.dumps(stats))
     return stats
+
+
+# --- KARKIPAIKAT: "koko rantakaistaleen on oltava hyva" ---
+#
+# ONGELMA jonka tama ratkaisee: "Parhaat rantautumispaikat" valitsee parhaat
+# X % PIKSELI KERRALLAAN. Siksi loiva kohta aivan vesirajassa saa taydet
+# pisteet vaikka 8 m sisamaahan olisi kelvoton kallio - paikkaan ei
+# kaytannossa pysty rantautumaan. Lisaksi valituksi tulee muutaman metrin
+# siivuja joihin ei mahdu venetta eika kajakkia.
+#
+# RATKAISU on kaksivaiheinen aggregointi, joka nojaa siihen etta
+# compute_shoreline_buffer laskee jo etaisyysmuunnoksen rantaviivaan.
+# Sama muunnos return_indices=True-lipulla antaa jokaiselle pikselille
+# LAHIMMAN RANTAVIIVAPIKSELIN indeksin, eli valmiin ryhmittelyn
+# poikkileikkauksiin - uutta geometriaa ei tarvita:
+#   1. POIKITTAIN (rantaviivasta sisamaahan): jokaiselle poikkileikkaukselle
+#      sen arvojen ALIN KYMMENYS koko PRIME_ZONE_MAX_M:iin asti.
+#   2. RANTAVIIVAN SUUNTAAN: minimi +-PRIME_ALONGSHORE_RADIUS_M ikkunassa,
+#      jolloin kelpuutettu kohta vaatii yhtajaksoisen hyvan jakson
+#      ymparilleen eivatka yksittaiset siivut paase lapi.
+#
+# Miksi ALIN KYMMENYS eika tiukka minimi: korkeusmalli on 2 m ruudukolta
+# resamploitu 1 m:iin, joten yksittaisia virheellisen jyrkkia pikseleita
+# esiintyy. Minimi antaisi niiden pudottaa muuten moitteettomia paikkoja.
+#
+# Miksi aggregoidaan OSATEKIJAT eika pistemaaraa: pistemaara riippuu
+# kayttajan tekijavalinnoista (15 yhdistelmaa), joten valmiiksi laskettu
+# pistemaara vaatisi 15 muunnelmaa ja rikkoisi "yksi kuva per tiili"
+# -periaatteen. Osatekijat sen sijaan ovat tekijavalinnasta riippumattomia,
+# ja selain kokoaa niista pistemaaran SAMALLA scoreFromComponents-
+# funktiolla kuin muuallakin.
+#
+# Kallio ja suo ovat binaarisia, ja niihin patee sama "alin kymmenys"
+# -saanto: kallio kelpaa jos VAHINTAAN 90 % kaistaleesta on kalliota, ja
+# suo lasketaan haitaksi jos VAHINTAAN 10 % kaistaleesta on suota. Suo
+# kasitellaan kaannettyna ("ei suota"), jolloin molempiin kay sama
+# persentiili 10 ja sama minimi rantaviivan suunnassa.
+PRIME_ZONE_MIN_M = 5.0
+PRIME_ZONE_MAX_M = 30.0
+PRIME_CROSS_PERCENTILE = 10
+PRIME_ALONGSHORE_RADIUS_M = 10.0
+
+
+def _grouped_percentile(anchor, values, percentile):
+    """Ryhmitelty persentiili ilman silmukkaa: lajitellaan (ryhma, arvo)
+    -parit ja poimitaan kustakin ryhmasta halutun kohdan alkio. Palauttaa
+    (ryhmatunnisteet, arvot) - ryhmatunnisteet ovat nousevassa jarjestyksessa,
+    jolloin niista voi hakea searchsorted:lla."""
+    order = np.lexsort((values, anchor))
+    sorted_anchor = anchor[order]
+    sorted_values = values[order]
+
+    uniq, starts = np.unique(sorted_anchor, return_index=True)
+    ends = np.append(starts[1:], len(sorted_anchor))
+    sizes = ends - starts
+    picks = starts + ((sizes - 1) * (percentile / 100.0)).astype(np.int64)
+    return uniq, sorted_values[picks]
+
+
+def _alongshore_min(anchor_ids, values, shape, radius_px):
+    """Minimi rantaviivan suunnassa: sirotellaan poikkileikkausarvot
+    2D-taulukkoon jonka tayte on +inf ja ajetaan minimum_filter. +inf ei
+    koskaan voita minimia, joten ikkuna huomioi vain oikeat
+    rantaviivapikselit - erillista "vain naiden pikselien yli" -logiikkaa
+    ei tarvita."""
+    arr = np.full(shape, np.inf, dtype=np.float32)
+    ys, xs = np.unravel_index(anchor_ids, shape)
+    arr[ys, xs] = values
+    filtered = minimum_filter(arr, size=2 * radius_px + 1, mode="nearest")
+    return filtered[ys, xs]
+
+
+def compute_prime_components(tile_id, buildings_path, force=False):
+    """Karkipaikkojen osatekijat selainruudukolla (ks. NEW_PIXEL_FACTOR).
+    Arviointi tehdaan LEVEAMMALLA PRIME_ZONE-vyohykkeella, mutta tulos
+    naytetaan NYKYISELLA 5-15 m puskurivyohykkeella, jotta kerros asettuu
+    tarkalleen samaan kohtaan kuin muut kerrokset."""
+    raw = get_or_compute_raw(tile_id, buildings_path, force=force)
+    shoreline = raw["shoreline_mask"]
+    shape = shoreline.shape
+    pixel_size = abs(raw["map_transform"].a)
+
+    dist, indices = distance_transform_edt(
+        ~shoreline, sampling=(pixel_size, pixel_size), return_indices=True
+    )
+    prime_zone = raw["land_mask"] & (dist >= PRIME_ZONE_MIN_M) & (dist <= PRIME_ZONE_MAX_M)
+    del dist
+
+    # Poikkileikkauksen tunniste = lahimman rantaviivapikselin litistetty indeksi.
+    # int32 riittaa: suurin indeksi on H*W = 36 milj. << 2^31, ja int64
+    # kaksinkertaistaisi 288 MB:n taulukon turhaan.
+    anchor_full = (indices[0].astype(np.int32) * np.int32(shape[1]) + indices[1].astype(np.int32))
+    del indices
+
+    anchor_zone = anchor_full[prime_zone]
+    # Nayttopikselit (5-15 m) ovat aina PRIME_ZONE:n osajoukko, joten niiden
+    # poikkileikkaustunnisteet loytyvat aina ryhmien joukosta.
+    buffer_mask = raw["buffer_mask"]
+    anchor_display = anchor_full[buffer_mask]
+    del anchor_full
+
+    radius_px = meters_to_px(PRIME_ALONGSHORE_RADIUS_M, pixel_size)
+    buffer_native_f = buffer_mask.astype(np.float32)
+    weight_small = _resize_new_grid(buffer_native_f, shape, NEW_PIXEL_FACTOR)
+
+    def aggregate(values_full):
+        """Kaksivaiheinen aggregointi + downsamplaus yhtena askeleena -
+        natiivikokoinen valitulos vapautetaan heti, jottei neljaa 144 MB:n
+        taulukkoa ole yhtaaikaa muistissa."""
+        uniq, per_transect = _grouped_percentile(
+            anchor_zone, values_full[prime_zone], PRIME_CROSS_PERCENTILE
+        )
+        along = _alongshore_min(uniq, per_transect, shape, radius_px)
+        pos = np.searchsorted(uniq, anchor_display)
+        out = np.zeros(shape, dtype=np.float32)
+        out[buffer_mask] = along[pos]
+        return _masked_downsample(out, buffer_native_f, shape, weight_small)
+
+    return {
+        "slope": aggregate(raw["slope_score"].astype(np.float32)),
+        "dist": aggregate(raw["dist_score"].astype(np.float32)),
+        # Kallio: persentiili 10 nolla/ykkos-taulukosta = tosi vain jos
+        # vahintaan 90 % kaistaleesta on kalliota.
+        "rock": aggregate(raw["rock_mask"].astype(np.float32)),
+        # Suo on NEGATIIVINEN tekija, joten sita kasitellaan kaannettyna
+        # "ei suota" -hyvyytena. Silloin sama persentiili 10 ja sama
+        # _alongshore_min osuvat oikeaan suuntaan: tulos on 0 (= suota) jos
+        # vahintaan 10 % kaistaleesta on suota tai jos suota on lahistolla
+        # rantaviivan suunnassa.
+        "not_swamp": aggregate((~raw["swamp_mask"]).astype(np.float32)),
+        "buffer": weight_small > 0.0,
+        "raw": raw,
+    }
+
+
+def get_or_compute_prime_arrays(tile_id, buildings_path, force=False):
+    """Kvantisoidut (8-bittiset) karkipaikka-osatekijat - tasan ne arvot
+    jotka selain lukee kuvasta."""
+    comp = compute_prime_components(tile_id, buildings_path, force=force)
+    return {
+        "slope_b": np.clip(comp["slope"] * 255.0, 0, 255).astype(np.uint8),
+        "dist_b": np.clip(comp["dist"] * 255.0, 0, 255).astype(np.uint8),
+        "rock_bit": comp["rock"] >= 0.5,
+        "swamp_bit": comp["not_swamp"] < 0.5,
+        "buffer": comp["buffer"],
+        "raw": comp["raw"],
+    }
+
+
+def get_or_compute_prime_png(tile_id, buildings_path, force=False):
+    """Palauttaa (png_bytes, meta_dict) karkipaikkakuvalle. Kanavat kuten
+    factors-kuvassa (R=jyrkkyys, G=etaisyys, B=kallio/suo-bitit,
+    A=puskurimaski), mutta arvot ovat kaistaleen yli aggregoituja."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    png_path = CACHE_DIR / f"{tile_id}_prime.png"
+    meta_path = CACHE_DIR / f"{tile_id}.json"
+
+    if not force and png_path.exists() and meta_path.exists():
+        return png_path.read_bytes(), json.loads(meta_path.read_text())
+
+    if tile_id not in tiles.get_registry():
+        raise KeyError(f"Tuntematon tile_id: {tile_id}")
+
+    arrays = get_or_compute_prime_arrays(tile_id, buildings_path, force=force)
+    raw = arrays["raw"]
+
+    r = arrays["slope_b"]
+    g = arrays["dist_b"]
+    b = arrays["rock_bit"].astype(np.uint8) | (arrays["swamp_bit"].astype(np.uint8) << 1)
+    a = np.where(arrays["buffer"], 255, 0).astype(np.uint8)
+
+    ok, encoded = cv2.imencode(".png", np.dstack([b, g, r, a]))
+    if not ok:
+        raise RuntimeError("PNG-enkoodaus epaonnistui")
+    png_bytes = encoded.tobytes()
+
+    bounds_3067 = array_bounds(*raw["score"].shape, raw["map_transform"])
+    meta = {
+        "tile_id": tile_id,
+        "bounds_epsg3067": bounds_tuple_to_dict(bounds_3067),
+        "n_buildings": raw["n_buildings"],
+        "rock_pct": raw["rock_pct"],
+        "swamp_pct": raw["swamp_pct"],
+        "shoreline_px": raw["shoreline_px"],
+        "buffer_px": raw["buffer_px"],
+    }
+
+    png_path.write_bytes(png_bytes)
+    if not meta_path.exists():
+        meta_path.write_text(json.dumps(meta, indent=2))
+
+    return png_bytes, meta
+
+
+def compute_prime_thresholds(buildings_path, force=False):
+    """"Parhaat X %" -kynnysarvot KARKIPAIKOILLE, per tekijayhdistelma ja
+    prosentti. Persentiili lasketaan SAMASTA populaatiosta (puskurivyohykkeen
+    pikselit) kuin compute_factor_thresholds, jotta "parhaat 7 %" tarkoittaa
+    samaa osuutta rantaviivasta molemmissa kerroksissa - ero on siina MITKA
+    7 % valitaan."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_path = CACHE_DIR / "_prime_thresholds.json"
+    if not force and cache_path.exists():
+        return json.loads(cache_path.read_text())
+
+    parts = []
+    for tid in tiles.get_registry():
+        prime = get_or_compute_prime_arrays(tid, buildings_path, force=force)
+        # Tasapelinpurku otetaan SAMASTA kuvasta kuin top-kerroksessa:
+        # aggregoitu pistemaara saturoituu sekin, ja jarjestys tasapelien
+        # sisalla on ratkaistava jotenkin.
+        factors = get_or_compute_factor_arrays(tid, buildings_path, force=force)
+        buf = prime["buffer"]
+        if buf.any():
+            parts.append(
+                (
+                    prime["slope_b"][buf],
+                    prime["dist_b"][buf],
+                    prime["rock_bit"][buf],
+                    prime["swamp_bit"][buf],
+                    factors["tiebreak_b"][buf],
+                )
+            )
+
+    slope_b, dist_b, rock_bit, swamp_bit, tiebreak_b = (np.concatenate(c) for c in zip(*parts))
+
+    thresholds = {}
+    for factor_mask in range(1, ALL_FACTORS_MASK + 1):
+        rank = rank_from_components(slope_b, dist_b, rock_bit, swamp_bit, tiebreak_b, factor_mask)
+        thresholds[str(factor_mask)] = {
+            str(pct): float(np.percentile(rank, top_percent_to_percentile(pct)))
+            for pct in TOP_PERCENT_PRESETS
+        }
+
+    cache_path.write_text(json.dumps(thresholds, indent=2))
+    return thresholds
