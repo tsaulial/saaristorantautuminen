@@ -56,6 +56,26 @@
   }
   .btn.secondary { background: none; color: var(--accent); font-weight: 500; }
   .saved { color: var(--muted); font-size: 0.86rem; }
+
+  .bands { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+  .band {
+    flex: 1 1 130px; border: 1px solid var(--border); border-radius: 8px;
+    padding: 9px 11px; border-left-width: 5px;
+  }
+  .band .band-km { font-size: 1.15rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .band .band-name { font-size: 0.84rem; color: var(--muted); }
+  .band .band-pct { font-size: 0.84rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .chart-wrap { overflow-x: auto; }
+  #chart { width: 100%; min-width: 420px; height: auto; display: block; }
+  #chart text { font-size: 11px; fill: var(--muted); }
+  #chart .grid { stroke: var(--border); stroke-width: 1; }
+  #chart .marker { stroke: var(--ink); stroke-width: 1.5; stroke-dasharray: 4 3; }
+  #chart .marker-label {
+    fill: var(--ink); font-weight: 600;
+    stroke: var(--card); stroke-width: 3px; paint-order: stroke fill;
+  }
+  .axis-note, .caveat { color: var(--muted); font-size: 0.82rem; margin: 10px 0 0; }
+  .caveat { border-top: 1px solid var(--border); padding-top: 10px; }
 </style>
 </head>
 <body>
@@ -131,6 +151,27 @@
       </div>
       <input type="range" id="top-percent" min="1" max="10" step="1">
     </div>
+  </div>
+
+  <div class="section" id="dist-section">
+    <h2>Miten rantaviiva jakautuu?</h2>
+    <p class="hint">
+      Koko aineiston rantaviiva jaettuna sen mukaan, minkä pistemäärän se saa
+      <b>nykyisillä tekijävalinnoillasi</b>. Päivittyy heti kun muutat valintoja yllä.
+    </p>
+
+    <div class="bands" id="bands"></div>
+
+    <div class="chart-wrap">
+      <svg id="chart" viewBox="0 0 560 224" preserveAspectRatio="xMidYMid meet" role="img"
+           aria-label="Rantaviivan jakauma rantautumiskelpoisuuden mukaan"></svg>
+    </div>
+    <p class="axis-note">
+      Pylvään korkeus = kuinka monta kilometriä rantaviivaa osuu kyseiseen
+      pistemäärään. Katkoviiva näyttää, mihin nykyinen &rdquo;parhaat
+      <span id="marker-pct"></span>&nbsp;%&rdquo; -raja osuu.
+    </p>
+    <p class="caveat" id="caveat"></p>
   </div>
 
   <div class="actions">
@@ -229,6 +270,7 @@ FACTOR_KEYS.forEach((key) => {
     }
     settings.factors[key] = e.target.checked;
     renderFactors();
+    renderChart();
     save();
   });
 });
@@ -259,6 +301,7 @@ function renderTopPercent() {
 topPercentInput.addEventListener('input', () => {
   settings.topPercent = Number(topPercentInput.value);
   topPercentValue.textContent = settings.topPercent;
+  renderChart();
   save();
 });
 
@@ -272,13 +315,130 @@ document.getElementById('reset').addEventListener('click', () => {
   save();
 });
 
+// --- Rantaviivan jakauma ---
+//
+// Backend on laskenut valmiiksi jokaiselle 15 tekijayhdistelmalle, kuinka
+// monta metria rantaviivaa osuu kuhunkin pistemaaraluokkaan (ks.
+// backend/pipeline.py: compute_shoreline_stats). Selain valitsee vain
+// valintoja vastaavan rivin - jakauman uudelleenlaskentaan ei tarvita
+// mitaan raskasta.
+const FACTOR_BITS = { slope: 1, dist: 2, rock: 4, swamp: 8 }; // sama kuin backend/pipeline.py
+let shorelineStats = null;
+
+function factorMask() {
+  return FACTOR_KEYS.reduce((m, k) => (settings.factors[k] ? m | FACTOR_BITS[k] : m), 0);
+}
+
+// Sama variasteikko kuin kartalla (ks. frontend/index.html: hsvToRgb) -
+// pistemaara 0..1 vastaa savya 0..120 astetta, punaisesta vihreaan.
+function scoreColor(score) {
+  const h = score * 120, c = 1, x = 1 - Math.abs(((h / 60) % 2) - 1);
+  let r, g, b;
+  if (h < 60) { r = c; g = x; b = 0; } else { r = x; g = c; b = 0; }
+  return `rgb(${Math.round(r * 255)},${Math.round(g * 255)},${Math.round(b * 255)})`;
+}
+
+const BANDS = [
+  { name: 'Vaikea', lo: 0, hi: 1 / 3, color: '#e2352a' },
+  { name: 'Kohtalainen', lo: 1 / 3, hi: 2 / 3, color: '#d8c72b' },
+  { name: 'Helppo', lo: 2 / 3, hi: 1.0001, color: '#25a63a' },
+];
+
+function renderChart() {
+  if (!shorelineStats) return;
+  const mask = factorMask();
+  const hist = shorelineStats.histograms_m[String(mask)];
+  const edges = shorelineStats.bin_edges;
+  if (!hist) return;
+
+  const totalM = hist.reduce((a, b) => a + b, 0);
+  const centre = (i) => (edges[i] + edges[i + 1]) / 2;
+
+  // Kolme luokkaa yhteenvetona
+  document.getElementById('bands').innerHTML = BANDS.map((band) => {
+    const m = hist.reduce((sum, v, i) => (centre(i) >= band.lo && centre(i) < band.hi ? sum + v : sum), 0);
+    return '<div class="band" style="border-left-color:' + band.color + '">' +
+      '<div class="band-km">' + (m / 1000).toFixed(0) + ' km</div>' +
+      '<div class="band-name">' + band.name + '</div>' +
+      '<div class="band-pct">' + (100 * m / totalM).toFixed(0) + ' % rantaviivasta</div>' +
+    '</div>';
+  }).join('');
+
+  // Pylvaskuvaaja
+  const W = 560, H = 224, L = 46, R = 548, T = 28, Bm = 190;
+  const maxKm = Math.max(...hist) / 1000;
+  const yTicks = 4;
+  const x = (v) => L + v * (R - L);
+  const y = (km) => Bm - (km / maxKm) * (Bm - T);
+
+  let svg = '';
+  for (let i = 0; i <= yTicks; i++) {
+    const km = (maxKm / yTicks) * i;
+    svg += `<line class="grid" x1="${L}" y1="${y(km).toFixed(1)}" x2="${R}" y2="${y(km).toFixed(1)}"/>`;
+    svg += `<text x="${L - 6}" y="${(y(km) + 4).toFixed(1)}" text-anchor="end">${km.toFixed(0)}</text>`;
+  }
+  svg += `<text x="${L - 6}" y="${T - 10}" text-anchor="end">km</text>`;
+
+  hist.forEach((m, i) => {
+    const x0 = x(edges[i]), x1 = x(edges[i + 1]);
+    const h = Bm - y(m / 1000);
+    svg += `<rect x="${x0.toFixed(1)}" y="${y(m / 1000).toFixed(1)}" width="${(x1 - x0 - 1).toFixed(1)}" ` +
+           `height="${Math.max(0, h).toFixed(1)}" fill="${scoreColor(centre(i))}"/>`;
+  });
+
+  svg += `<line class="grid" x1="${L}" y1="${Bm}" x2="${R}" y2="${Bm}"/>`;
+  [0, 0.25, 0.5, 0.75, 1].forEach((v) => {
+    svg += `<text x="${x(v).toFixed(1)}" y="${Bm + 15}" text-anchor="middle">${v.toFixed(2)}</text>`;
+  });
+  svg += `<text x="${L}" y="${H - 4}" text-anchor="start">← vaikeampi</text>`;
+  svg += `<text x="${R}" y="${H - 4}" text-anchor="end">helpompi →</text>`;
+
+  // "Parhaat X %" -raja samasta jakaumasta laskettuna
+  const rawMarker = shorelineStats.top_markers[String(mask)][String(settings.topPercent)];
+  const marker = Math.min(rawMarker, 1);
+  svg += `<line class="marker" x1="${x(marker).toFixed(1)}" y1="${T}" x2="${x(marker).toFixed(1)}" y2="${Bm}"/>`;
+  svg += `<text class="marker-label" x="${(x(marker) - 6).toFixed(1)}" y="${T + 10}" text-anchor="end">` +
+         `parhaat ${settings.topPercent} %</text>`;
+
+  document.getElementById('chart').innerHTML = svg;
+  document.getElementById('marker-pct').textContent = settings.topPercent;
+
+  // Kun raja osuu ylimpaan pylvaaseen, se ei erotu pistemaaran perusteella:
+  // pylvaan sisalla on valtavasti tasapisteita, ja "parhaat X %" ratkaistaan
+  // niiden kesken tasapelinpurulla (ks. backend/pipeline.py: TIEBREAK_EPSILON).
+  const inTopBin = rawMarker >= edges[edges.length - 2];
+  const low = (shorelineStats.length_m_low / 1000).toFixed(0);
+  const high = (shorelineStats.length_m_high / 1000).toFixed(0);
+  document.getElementById('caveat').innerHTML =
+    (inTopBin
+      ? '<b>Huom:</b> raja osuu ylimpään pylvääseen, jossa on paljon täsmälleen ' +
+        'saman pistemäärän saaneita kohtia. Niiden keskinäinen järjestys ratkaistaan ' +
+        'tarkemmilla mittausarvoilla (loivempi ranta ja kauempana rakennuksista voittaa), ' +
+        'joten korostettu alue on suppeampi kuin koko pylväs. '
+      : '') +
+    'Metriasteikko perustuu arvioon, että rantaviivaa on kaikkiaan noin ' +
+    (shorelineStats.length_m / 1000).toFixed(0) + ' km (haarukka ' + low + '–' + high + ' km): ' +
+    'lähde on peruskartan rasteroitu rantaviiva, ei vektorigeometriaa, joten pituus riippuu ' +
+    'mittatarkkuudesta. Jakauman muoto ja prosenttiosuudet ovat sen sijaan tarkkoja — ' +
+    'ne ovat suoria pikselilaskentoja ' + shorelineStats.buffer_km2 +
+    ' km²:n puskurivyöhykkeeltä.';
+}
+
 function renderAll() {
   renderFactors();
   renderThickness();
   renderTopPercent();
+  renderChart();
 }
 
 renderAll();
+
+fetch('/api/shoreline-stats')
+  .then((res) => res.json())
+  .then((data) => { shorelineStats = data; renderChart(); })
+  .catch(() => {
+    document.getElementById('dist-section').style.display = 'none';
+  });
 </script>
 </body>
 </html>

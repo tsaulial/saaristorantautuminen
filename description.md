@@ -47,6 +47,14 @@ Oletuksena kaikki ovat mukana. Jos jonkin poistaa, se häviää laskennasta koko
 
 Muutokset tallentuvat heti ja ovat voimassa kun palaa kartalle.
 
+### Miten rantaviiva jakautuu?
+
+Asetussivun alalaidassa on kuvaaja, joka näyttää **koko rantaviivan jaettuna rantautumiskelpoisuuden mukaan** — kuinka monta kilometriä on helppoa, kuinka moni kohtalaista ja kuinka moni vaikeaa. Kuvaaja päivittyy heti kun tekijävalintoja muuttaa, joten siitä näkee suoraan miten paljon esimerkiksi rakennusten huomiotta jättäminen muuttaa tilannetta.
+
+Oletusasetuksilla kuva on tämä: **noin 500 km helppoa (72 %), 186 km kohtalaista (27 %) ja vain 12 km vaikeaa (2 %)**. Saaristo on siis suurimmaksi osaksi hyvää rantautumismaastoa. Jos katsoo pelkkää maaston jyrkkyyttä, vaikean osuus nousee 93 kilometriin — jyrkkiä kalliorantoja on selvästi enemmän kuin mitä kokonaispisteytys antaa ymmärtää, koska muut tekijät nostavat niiden pisteitä.
+
+Rantaviivaa on kaikkiaan noin **700 km** (haarukka 600–900 km). Luku on arvio: rantaviiva on luettu peruskartan kuvasta, ei valmiista viivageometriasta, joten sen pituus riippuu siitä millä tarkkuudella mitataan — sama ilmiö kuin klassisessa kysymyksessä "kuinka pitkä on Britannian rannikko". Jakauman muoto ja prosenttiosuudet ovat sen sijaan tarkkoja.
+
 ### Esitystapa
 
 Asetussivulla on lisäksi kaksi liukusäädintä, jotka eivät vaikuta pisteytykseen vaan pelkkään ulkoasuun:

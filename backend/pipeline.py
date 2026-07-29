@@ -876,3 +876,110 @@ def get_or_compute_basemap(tile_id, level="detail", force=False):
 def get_tile_bounds(tile):
     transform, shape = get_map_grid(tile)
     return bounds_tuple_to_dict(array_bounds(*shape, transform))
+
+
+# --- RANTAVIIVAN JAKAUMA (asetussivun kuvaaja) ---
+#
+# Kuinka suuri osa rantaviivasta on helppoa ja kuinka suuri vaikeaa
+# rantautua. Jakauma lasketaan NATIIVILLA 1m/px-ruudukolla (ei 3,5m
+# selainruudukolla), jotta metrimaarat vastaavat tarkalleen todellista
+# puskurivyohykkeen pinta-alaa - osatekijat kvantisoidaan silti samoiksi
+# 8-bittisiksi arvoiksi kuin kuviin, jotta pistemaarat vastaavat sita mita
+# kartta nayttaa.
+SHORELINE_HIST_BINS = 25
+
+# Rantaviivan kokonaispituus metreina. **Tama on ARVIO, ei mitattu tarkka
+# arvo.** Puskurivyohykkeen PINTA-ALA tiedetaan tarkalleen (pikselilaskenta,
+# 1 px = 1 m2), mutta pituus ei: lahde on peruskartan RASTEROITU rantaviiva,
+# ei vektorigeometriaa, joten pituus riippuu seka maskin kohinasta etta
+# mittakaavasta (rantaviivaparadoksi - 1 m tarkkuudella saaristo tuottaa
+# aina pidemman luvun kuin 10 m tarkkuudella).
+#
+# Mitattu kolmella tavalla, joiden systemaattiset vinoumat osoittavat
+# vastakkaisiin suuntiin:
+#   - puskurin ala / mitattu leveys (10,2 m):   601 km  (ALIARVIO: kapeilla
+#     kannaksilla vastarantojen vyohykkeet sulautuvat, ala ei kasva pituuden
+#     mukana)
+#   - rantaviivamaskin aariviiva / 2:           899 km  (YLIARVIO: rasterin
+#     porrastus ja HSV-kynnyksen rosoinen reuna kasvattavat piiria)
+#   - Zhang-Suen-ohennus, ketjukoodipituus:    1405 km  (selva yliarvio:
+#     porrasaskeleet lasketaan taysmittaisina, ohennus tuottaa haaroja)
+# Kaksi ensimmaista rajaavat totuuden valiinsa -> ~700 km, haarukka 600-900.
+#
+# HUOM kuvaajan tulkinnassa: jakauman MUOTO ja suhteelliset osuudet ovat
+# tarkkoja (suoria pikselilaskentoja), vain metriasteikon absoluuttinen taso
+# kantaa tata epavarmuutta.
+SHORELINE_LENGTH_M = 700_000
+SHORELINE_LENGTH_M_LOW = 600_000
+SHORELINE_LENGTH_M_HIGH = 900_000
+
+
+def compute_shoreline_stats(buildings_path, force=False):
+    """Rantaviivan jakauma rantautumiskelpoisuuden mukaan, per
+    tekijayhdistelma: metria rantaviivaa kussakin pistemaaraluokassa.
+
+    Palauttaa myos "parhaat X %" -rajan sijainnin pistemaara-asteikolla,
+    jotta asetussivun kuvaaja voi merkita sen - se lasketaan TASTA SAMASTA
+    jakaumasta, jolloin merkki ja pylvaat ovat keskenaan tasmalleen
+    yhtapitavia."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_path = CACHE_DIR / "_shoreline_stats.json"
+    if not force and cache_path.exists():
+        return json.loads(cache_path.read_text())
+
+    bins = SHORELINE_HIST_BINS
+    edges = np.linspace(0.0, 1.0, bins + 1)
+    counts = {mask: np.zeros(bins, dtype=np.float64) for mask in range(1, ALL_FACTORS_MASK + 1)}
+    ranks = {mask: [] for mask in range(1, ALL_FACTORS_MASK + 1)}
+    total_px = 0
+
+    for tid in tiles.get_registry():
+        raw = get_or_compute_raw(tid, buildings_path, force=force)
+        buf = raw["buffer_mask"]
+        if not buf.any():
+            continue
+        total_px += int(buf.sum())
+
+        # Sama kvantisointi kuin kuviin (ks. get_or_compute_factor_arrays),
+        # mutta ilman downsamplausta.
+        slope_b = np.clip(raw["slope_score"][buf] * 255.0, 0, 255).astype(np.uint8)
+        dist_b = np.clip(raw["dist_score"][buf] * 255.0, 0, 255).astype(np.uint8)
+        rock_bit = raw["rock_mask"][buf]
+        swamp_bit = raw["swamp_mask"][buf]
+        tiebreak_b = np.clip(raw["tiebreak"][buf] * 255.0, 0, 255).astype(np.uint8)
+
+        for mask in counts:
+            score = score_from_components(slope_b, dist_b, rock_bit, swamp_bit, mask)
+            counts[mask] += np.histogram(score, bins=edges)[0]
+            # Persentiilit lasketaan lopuksi koko aineistosta; kerataan
+            # otos muistin saastamiseksi (jakauma on niin suuri ettei
+            # tarkkaa lajittelua tarvita merkkiviivan sijaintiin).
+            step = max(1, len(score) // 20000)
+            ranks[mask].append(
+                (score + TIEBREAK_EPSILON * (tiebreak_b / 255.0))[::step].astype(np.float32)
+            )
+
+    metres_per_px = SHORELINE_LENGTH_M / total_px if total_px else 0.0
+
+    histograms = {}
+    top_markers = {}
+    for mask in counts:
+        histograms[str(mask)] = [round(float(c) * metres_per_px, 1) for c in counts[mask]]
+        sample = np.concatenate(ranks[mask])
+        top_markers[str(mask)] = {
+            str(pct): float(np.percentile(sample, top_percent_to_percentile(pct)))
+            for pct in TOP_PERCENT_PRESETS
+        }
+
+    stats = {
+        "bin_edges": [round(float(e), 4) for e in edges],
+        "histograms_m": histograms,
+        "top_markers": top_markers,
+        "buffer_px": total_px,
+        "buffer_km2": round(total_px / 1e6, 3),
+        "length_m": SHORELINE_LENGTH_M,
+        "length_m_low": SHORELINE_LENGTH_M_LOW,
+        "length_m_high": SHORELINE_LENGTH_M_HIGH,
+    }
+    cache_path.write_text(json.dumps(stats))
+    return stats

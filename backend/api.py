@@ -128,6 +128,14 @@ def get_factor_thresholds():
     return pipeline.compute_factor_thresholds(str(BUILDINGS_PATH))
 
 
+@app.get("/api/shoreline-stats")
+def get_shoreline_stats():
+    """Rantaviivan jakauma rantautumiskelpoisuuden mukaan per
+    tekijayhdistelma (ks. pipeline.compute_shoreline_stats) - asetussivun
+    kuvaajan lahde."""
+    return pipeline.compute_shoreline_stats(str(BUILDINGS_PATH))
+
+
 @app.get("/api/threshold")
 def get_threshold(top_percent: int = pipeline.DEFAULT_TOP_PERCENT):
     """Kynnysarvo annetulle 'parhaat X%' -arvolle (ks. pipeline.TOP_PERCENT_PRESETS)."""

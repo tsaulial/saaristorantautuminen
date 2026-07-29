@@ -115,10 +115,13 @@ def build():
     factor_thresholds = pipeline.compute_factor_thresholds(str(BUILDINGS_PATH))
     (DOCS_DIR / "factor_thresholds.json").write_text(json.dumps(factor_thresholds, indent=2))
 
+    # Rantaviivan jakauma asetussivun kuvaajaa varten (ks.
+    # pipeline.compute_shoreline_stats).
+    shoreline_stats = pipeline.compute_shoreline_stats(str(BUILDINGS_PATH))
+    (DOCS_DIR / "shoreline_stats.json").write_text(json.dumps(shoreline_stats))
+
     write_static_index_html()
-    # Asetussivu ei kutsu API:a lainkaan (kaikki valinnat ovat selaimen
-    # localStoragessa), joten se kopioidaan sellaisenaan.
-    shutil.copyfile(ROOT / "frontend" / "settings.html", DOCS_DIR / "settings.html")
+    write_static_settings_html()
 
     # Estaa GitHub Pagesia ajamasta Jekylla-prosessointia staattisten
     # tiedostojen paalla (nopeampi julkaisu, ei yllatyksia tiedostonimissa).
@@ -129,17 +132,39 @@ def build():
     print(f"Paras {pipeline.DEFAULT_TOP_PERCENT}% -kynnysarvo: {threshold:.4f} (persentiili {default_percentile})")
 
 
-def write_static_index_html():
-    src = (ROOT / "frontend" / "index.html").read_text()
+# Asetussivun ainoa API-riippuvuus on rantaviivan jakauma; muut valinnat
+# ovat selaimen localStoragessa.
+SETTINGS_URL_REPLACEMENTS = {
+    "fetch('/api/shoreline-stats')": "fetch('shoreline_stats.json')",
+}
 
+
+def replace_urls(src, replacements, source_name):
     out = src
-    for old, new in URL_REPLACEMENTS.items():
+    for old, new in replacements.items():
         if old not in out:
             raise RuntimeError(
-                f"Odotettua tekstia ei loytynyt frontend/index.html:sta: {old!r} "
-                "- frontend on luultavasti muuttunut, paivita URL_REPLACEMENTS"
+                f"Odotettua tekstia ei loytynyt {source_name}:sta: {old!r} "
+                "- frontend on luultavasti muuttunut, paivita korvaustaulukko"
             )
         out = out.replace(old, new)
+    return out
+
+
+def write_static_settings_html():
+    src = (ROOT / "frontend" / "settings.html").read_text()
+    out = replace_urls(src, SETTINGS_URL_REPLACEMENTS, "frontend/settings.html")
+    out = out.replace(
+        "<head>",
+        "<!-- Staattinen versio - generoitu build_static.py:lla, ala muokkaa suoraan -->\n<head>",
+        1,
+    )
+    (DOCS_DIR / "settings.html").write_text(out)
+
+
+def write_static_index_html():
+    src = (ROOT / "frontend" / "index.html").read_text()
+    out = replace_urls(src, URL_REPLACEMENTS, "frontend/index.html")
 
     out = out.replace(
         "<head>",
