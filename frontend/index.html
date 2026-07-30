@@ -579,7 +579,9 @@ legend.addTo(map);
 // suunta ja MALLIN LASKEMA aallonkorkeus juuri siina kohdassa. Numerot
 // seuraavat valittua ennustehetkea, joten aikajanaa siirtamalla ne ja nuolen
 // suunta muuttuvat.
-let paddleBubble = null;   // { latlng, marker }
+// Palloja voi olla mielivaltainen maara: kartan klikkaus lisaa uuden,
+// pallon klikkaus poistaa juuri sen.
+let paddleBubbles = [];    // [{ latlng, marker }]
 
 // Vesiruudukon arvot klikatussa pisteessa. Palauttaa null jos kohta on maalla
 // tai aineiston ulkopuolella. Kayttaa jo ladattua valimuistia - kerros on
@@ -647,34 +649,39 @@ function bubbleHtml(cond) {
     + '</div>';
 }
 
-function updatePaddleBubble() {
-  if (!paddleBubble) return;
-  const cond = waterConditionsAt(paddleBubble.latlng);
-  paddleBubble.marker.setIcon(L.divIcon({
+function bubbleIcon(cond) {
+  return L.divIcon({
     className: '', html: bubbleHtml(cond), iconSize: [104, 104], iconAnchor: [52, 52],
-  }));
+  });
 }
 
-function hidePaddleBubble() {
-  if (!paddleBubble) return;
-  map.removeLayer(paddleBubble.marker);
-  paddleBubble = null;
+// Kaikkien pallojen luvut lasketaan uudelleen - tuuli tai ennustehetki on
+// voinut muuttua, ja jokainen pallo on eri paikassa eli eri olosuhteissa.
+function updatePaddleBubbles() {
+  paddleBubbles.forEach((b) => b.marker.setIcon(bubbleIcon(waterConditionsAt(b.latlng))));
 }
 
-function showPaddleBubble(latlng) {
-  hidePaddleBubble();
-  const marker = L.marker(latlng, {
-    icon: L.divIcon({ className: '', html: bubbleHtml(null), iconSize: [104, 104], iconAnchor: [52, 52] }),
-    interactive: true,
-  }).addTo(map);
-  marker.on('click', (e) => { L.DomEvent.stop(e); hidePaddleBubble(); });
-  paddleBubble = { latlng, marker };
-  updatePaddleBubble();
+function removePaddleBubble(bubble) {
+  map.removeLayer(bubble.marker);
+  paddleBubbles = paddleBubbles.filter((b) => b !== bubble);
+}
+
+function clearPaddleBubbles() {
+  paddleBubbles.forEach((b) => map.removeLayer(b.marker));
+  paddleBubbles = [];
+}
+
+function addPaddleBubble(latlng) {
+  const marker = L.marker(latlng, { icon: bubbleIcon(null), interactive: true }).addTo(map);
+  const bubble = { latlng, marker };
+  marker.on('click', (e) => { L.DomEvent.stop(e); removePaddleBubble(bubble); });
+  paddleBubbles.push(bubble);
+  marker.setIcon(bubbleIcon(waterConditionsAt(latlng)));
 }
 
 map.on('click', (e) => {
   if (currentDisplay !== 'paddle') return;
-  showPaddleBubble(e.latlng);
+  addPaddleBubble(e.latlng);
 });
 
 // Legendan valilehdet: koko sisalto ei mahdu kerralla nayttoon, joten
@@ -849,7 +856,9 @@ function updateLegendFromSettings() {
   if (paddleNote) {
     paddleNote.textContent = currentDisplay === 'paddle'
       ? 'Melottavuus värittää meren: vihreä helppo, punainen ei suositella. '
-        + 'Vaikeus määräytyy aallokon TAI puuskien mukaan, kumpi on huonompi.'
+        + 'Vaikeus määräytyy aallokon TAI puuskien mukaan, kumpi on huonompi. '
+        + 'Klikkaa karttaa niin monesta kohdasta kuin haluat — kukin pallo näyttää '
+        + 'sen paikan olosuhteet. Pallon klikkaus poistaa sen.'
       : '';
   }
 
@@ -1425,7 +1434,7 @@ function refreshActive() {
   if (!tileListCache.length) return;
   // Pallo piiloon kun poistutaan melottavuusnakymasta - sen luvut eivat
   // tarkoita mitaan muissa kerroksissa.
-  if (currentDisplay !== 'paddle') hidePaddleBubble(); else updatePaddleBubble();
+  if (currentDisplay !== 'paddle') clearPaddleBubbles(); else updatePaddleBubbles();
   refreshBase();
   if (currentImpl === 'old') {
     refreshOld();
