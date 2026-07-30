@@ -26,6 +26,19 @@
   }
   .legend-body { margin-top: 6px; }
   .legend-body.collapsed { display: none; }
+  /* Paneeli kasvoi kahdeksan vaiheen aikana yli ikkunan korkeuden, joten
+     sisalto on jaettu valilehtiin - yksi kerrallaan nakyvissa. Lisaksi
+     korkeusrajoitus varmuuden vuoksi pienilla naytoilla. */
+  .legend-body { max-height: calc(100vh - 130px); overflow-y: auto; }
+  .legend-tabs { display: flex; gap: 2px; margin-bottom: 8px; }
+  .legend-tab {
+    flex: 1; font: inherit; font-size: 12px; padding: 4px 2px; cursor: pointer;
+    background: #f1f3f5; border: 1px solid #dde2e6; color: #5a6570;
+    border-radius: 4px 4px 0 0; border-bottom-color: #1769aa;
+  }
+  .legend-tab.active { background: #fff; color: #1769aa; font-weight: 600; border-bottom-color: #fff; }
+  .legend-tab.hidden { display: none; }
+  .tab-panel.hidden { display: none; }
   .radio-row {
     margin-top: 8px; padding-top: 8px; border-top: 1px solid #ddd;
   }
@@ -39,9 +52,7 @@
   .settings-row a { font-weight: 600; text-decoration: none; color: #1769aa; }
   .settings-row a:hover { text-decoration: underline; }
   .settings-summary { color: #7a8590; font-size: 11px; line-height: 1.35; margin-top: 3px; }
-  .wind-row {
-    margin-top: 8px; padding-top: 8px; border-top: 1px solid #ddd;
-  }
+  .wind-row { margin-top: 0; }
   .wind-row.hidden { display: none; }
   .wind-row label { display: block; margin: 4px 0 1px; }
   .wind-row input[type="range"] { width: 100%; vertical-align: middle; }
@@ -402,6 +413,12 @@ legend.onAdd = function () {
       '<span class="legend-toggle">&minus;</span>' +
     '</div>' +
     '<div class="legend-body">' +
+      '<div class="legend-tabs">' +
+        '<button type="button" class="legend-tab active" data-tab="nayta">Näytä</button>' +
+        '<button type="button" class="legend-tab" data-tab="tuuli" id="tab-tuuli">Tuuli</button>' +
+        '<button type="button" class="legend-tab" data-tab="lisaa">Lisää</button>' +
+      '</div>' +
+      '<div class="tab-panel" data-panel="nayta">' +
       '<span class="swatch" style="background:#00ff00"></span>Hyvä<br>' +
       '<span class="swatch" style="background:#ffff00"></span>Kohtalainen<br>' +
       '<span class="swatch" style="background:#ff0000"></span>Heikko<br>' +
@@ -418,14 +435,24 @@ legend.onAdd = function () {
         '<label><input type="radio" name="display-mode" value="paddle"> Melottavuus (vesi)</label>' +
         '<small id="prime-note" class="impl-note"></small>' +
       '</div>' +
-      '<div class="radio-row">' +
+      '</div>' +
+
+      '<div class="tab-panel hidden" data-panel="lisaa">' +
+      '<div class="radio-row" style="margin-top:0;padding-top:0;border-top:none">' +
         '<span class="radio-row-label">Toteutus (vertailua varten)</span>' +
         '<label id="impl-old-label"><input type="radio" name="impl-choice" value="old" checked> Nykyinen</label>' +
         '<label><input type="radio" name="impl-choice" value="new"> Uusi (3,5×3,5 m)</label>' +
         '<small id="impl-note" class="impl-note"></small>' +
       '</div>' +
+      '<div class="settings-row">' +
+        '<a href="settings.html">⚙ Asetukset</a>' +
+        '<div id="settings-summary" class="settings-summary"></div>' +
+      '</div>' +
+      '</div>' +
+
+      '<div class="tab-panel hidden" data-panel="tuuli">' +
       '<div class="wind-row" id="wind-row">' +
-        '<span class="radio-row-label">Tuuli</span>' +
+        '<span class="radio-row-label">Lähde</span>' +
         '<div class="wind-source">' +
           '<label><input type="radio" name="wind-source" value="kasin" checked> Käsin</label>' +
           '<label><input type="radio" name="wind-source" value="fmi"> Ilmatieteen laitos</label>' +
@@ -445,9 +472,6 @@ legend.onAdd = function () {
         '<input type="range" id="wind-gust" min="0" max="35" step="0.5" value="13">' +
         '<small id="wind-source" class="impl-note"></small>' +
       '</div>' +
-      '<div class="settings-row">' +
-        '<a href="settings.html">⚙ Asetukset</a>' +
-        '<div id="settings-summary" class="settings-summary"></div>' +
       '</div>' +
     '</div>';
 
@@ -460,6 +484,13 @@ legend.onAdd = function () {
     const collapsing = !body.classList.contains('collapsed');
     body.classList.toggle('collapsed', collapsing);
     toggle.innerHTML = collapsing ? '&plus;' : '&minus;';
+  });
+
+  div.querySelectorAll('.legend-tab').forEach((b) => {
+    b.addEventListener('click', () => {
+      setLegendTab(b.dataset.tab);
+      if (b.dataset.tab === 'tuuli') drawWindDial();
+    });
   });
 
   div.querySelectorAll('input[name="wind-source"]').forEach((el) => {
@@ -529,6 +560,20 @@ legend.addTo(map);
 // varitettyja kuvia, jotka on laskettu KAIKILLA tekijoilla - se ei siis voi
 // noudattaa tekijavalintoja, joten se lukitaan pois kaytosta heti kun jokin
 // tekija on poistettu (ja palautetaan takaisin kun kaikki ovat taas mukana).
+// Legendan valilehdet: koko sisalto ei mahdu kerralla nayttoon, joten
+// nakyvissa on yksi lohko kerrallaan.
+let activeLegendTab = 'nayta';
+
+function setLegendTab(name) {
+  activeLegendTab = name;
+  document.querySelectorAll('.legend-tab').forEach((b) => {
+    b.classList.toggle('active', b.dataset.tab === name);
+  });
+  document.querySelectorAll('.tab-panel').forEach((el) => {
+    el.classList.toggle('hidden', el.dataset.panel !== name);
+  });
+}
+
 // Tuulikompassi: nuoli osoittaa siihen SUUNTAAN JOHON tuuli puhaltaa (eli
 // suunnasta poispain, kuten saakartoissa), ja sen pituus seka vari kertovat
 // voimakkuuden. Piirretaan SVG:na ilman kirjastoja, samaan tapaan kuin
@@ -592,11 +637,14 @@ function updateLegendFromSettings() {
   const swampNote = document.getElementById('swamp-note');
   if (swampNote) swampNote.style.display = currentFactors.swamp ? '' : 'none';
 
-  // Tuulisaadin nakyy vain kun suojaisuus on mukana pisteytyksessa.
+  // Tuuli-valilehti nakyy vain kun tuulella on vaikutusta: suojaisuustekija
+  // paalla tai melottavuuskerros valittuna.
   const windRow = document.getElementById('wind-row');
-  if (windRow) {
+  const windTab = document.getElementById('tab-tuuli');
+  if (windRow && windTab) {
     const on = (factorMask() & FACTOR_BITS.shelter) !== 0 || currentDisplay === 'paddle';
-    windRow.classList.toggle('hidden', !on);
+    windTab.classList.toggle('hidden', !on);
+    if (!on && activeLegendTab === 'tuuli') setLegendTab('nayta');
     // Puuskat vaikuttavat vain melottavuuteen, ei rantautumispisteytykseen.
     const gustOn = currentDisplay === 'paddle';
     ['wind-gust', 'wind-gust-value'].forEach((id) => {
