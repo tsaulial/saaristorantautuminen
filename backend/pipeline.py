@@ -1897,3 +1897,178 @@ def get_or_compute_fetch_levels(tile_id, buildings_path, force=False):
 
     np.savez_compressed(cache_path, fetch=fetch_levels, obstacle=obs_levels)
     return fetch_levels, obs_levels, buffer_small
+
+
+# --- MELOTTAVUUS: OLOSUHTEET VEDEN PAALLA ---
+#
+# Tahan asti arvioitiin vain rantaa. Matkamelojalle olennainen kysymys on
+# kuitenkin, paaseeko sinne: merenselan ylitys 12 m/s puuskissa on eri asia
+# kuin sama matka suojaisia salmia pitkin.
+#
+# Sama pyyhkaisymatkakoneisto (compute_fetch_and_obstacle) kelpaa
+# sellaisenaan - vain pistejoukko vaihtuu rantaruuduista vesiruutuihin.
+#
+# OMA KARKEAMPI RUUDUKKO: merta on mosaiikissa 84,7 % eli 4,6 miljoonaa
+# 10 m ruutua, mika olisi liikaa. Vesipisteet otetaan 50 m valein, jolloin
+# niita on saman verran kuin rantaruutuja. Aallokkokentta on veden paalla
+# sileä, joten 50 m riittaa hyvin - ja tallennettavat kuvat ovat vain
+# 120x120 ruutua per tiili.
+WATER_GRID_M = 50.0
+
+# Melonnan vaikeusrajat. AALLOKKO ja PUUSKA pidetaan erillaan, koska ne
+# vaikuttavat eri asioihin: aallokko tulee jatkuvasta tuulesta ja maaraa
+# veneen liikkeen, puuska maaraa kasiteltavyyden (kaatumisriski, kurssissa
+# pysyminen). Sama 0,4 m aallokko on eri asia tasaisessa 8 m/s tuulessa kuin
+# 6 m/s tuulessa jossa on 13 m/s puuskia.
+#
+# Vaikeus on HUONOMMAN mukaan: kumpi tahansa yksin riittaa tekemaan
+# melonnasta vaativaa.
+#
+# Rajat ovat arvioita eivatka julkaistu standardi - kalibroitava mittaamalla
+# kuten suojaisuuden parametrit.
+PADDLE_WAVE_LIMITS = (0.20, 0.40, 0.70)   # helppo | kohtalainen | vaativa | ei suositella
+PADDLE_GUST_LIMITS = (8.0, 12.0, 16.0)
+PADDLE_CLASSES = ("helppo", "kohtalainen", "vaativa", "ei suositella")
+
+
+def _piecewise_class(value, limits):
+    """Jatkuva 0-3 luokka-asteikko annetuilla rajoilla: 0 kun arvo on 0,
+    1/2/3 rajojen kohdalla, valissa lineaarinen. Jatkuva eika porrastettu,
+    jotta kartasta tulee sileä eika laikukas."""
+    v = np.asarray(value, dtype=np.float64)
+    a, b, c = limits
+    out = np.where(v < a, v / a,
+          np.where(v < b, 1.0 + (v - a) / (b - a),
+          np.where(v < c, 2.0 + (v - b) / (c - b),
+                   3.0)))
+    return np.clip(out, 0.0, 3.0)
+
+
+def paddle_difficulty(fetch_m, wind_speed, gust_speed, obstacle_h):
+    """Melonnan vaikeus 0-1 (0 = helppo, 1 = ei suositella).
+    **Selaimen (frontend/index.html: paddleDifficulty) on laskettava tasan
+    samoin.**"""
+    u_eff = sheltered_wind(wind_speed, fetch_m, obstacle_h)
+    hs = WAVE_COEFF * u_eff * np.sqrt(fetch_m)
+    gust_eff = sheltered_wind(gust_speed, fetch_m, obstacle_h)
+    wave = _piecewise_class(hs, PADDLE_WAVE_LIMITS)
+    gust = _piecewise_class(gust_eff, PADDLE_GUST_LIMITS)
+    return np.maximum(wave, gust) / 3.0
+
+
+def _tile_water_grid(tile, mosaic_shape, origin):
+    """Tiilen vesiruudukon (WATER_GRID_M) mosaiikki-indeksit ja koko."""
+    ox, oy = origin
+    n = int(round((tile.bounds[2] - tile.bounds[0]) / WATER_GRID_M))
+    step = int(round(WATER_GRID_M / FETCH_GRID_M))
+    col0 = int(round((tile.bounds[0] - ox) / FETCH_GRID_M))
+    row0 = int(round((oy - tile.bounds[3]) / FETCH_GRID_M))
+    rows = np.clip(row0 + np.arange(n) * step, 0, mosaic_shape[0] - 1)
+    cols = np.clip(col0 + np.arange(n) * step, 0, mosaic_shape[1] - 1)
+    rr, cc = np.meshgrid(rows, cols, indexing="ij")
+    return rr, cc, n
+
+
+def get_or_compute_water_global(buildings_path, force=False):
+    """Pyyhkaisymatkat ja esteiden korkeudet KAIKKIEN tiilien vesiruuduille
+    kerralla - sama peruste kuin rantaruuduilla: sade kulkee tiilirajojen yli
+    ja sadehaarukka on 13-kertainen."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_path = CACHE_DIR / "_water_global.npz"
+    if not force and cache_path.exists():
+        data = np.load(cache_path)
+        return data["cells"], data["fetch"], data["obstacle"]
+
+    sea, (ox, oy) = get_or_compute_sea_mosaic(force=force)
+    height = get_or_compute_height_mosaic(buildings_path, force=force)
+
+    flats = []
+    for tile in tiles.get_registry().values():
+        rr, cc, _n = _tile_water_grid(tile, sea.shape, (ox, oy))
+        water = sea[rr, cc]
+        flats.append((rr[water] * sea.shape[1] + cc[water]).ravel())
+    cells = np.unique(np.concatenate(flats))
+    rows, cols = np.divmod(cells, sea.shape[1])
+
+    fetch, obstacle = compute_fetch_and_obstacle((rows, cols), sea, height)
+    np.savez_compressed(cache_path, cells=cells, fetch=fetch, obstacle=obstacle)
+    return cells, fetch, obstacle
+
+
+def get_or_compute_water_levels(tile_id, buildings_path, force=False):
+    """Kvantisoidut pyyhkaisymatkat ja esteiden korkeudet tiilen
+    vesiruudukolla. Palauttaa (fetch_levels, obstacle_levels, water_mask),
+    kaikki muotoa (n, n, ...) missa n = 6000 m / WATER_GRID_M."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_path = CACHE_DIR / f"{tile_id}_water.npz"
+    if not force and cache_path.exists():
+        data = np.load(cache_path)
+        return data["fetch"], data["obstacle"], data["water"].astype(bool)
+
+    registry = tiles.get_registry()
+    if tile_id not in registry:
+        raise KeyError(f"Tuntematon tile_id: {tile_id}")
+    tile = registry[tile_id]
+
+    sea, (ox, oy) = get_or_compute_sea_mosaic(force=force)
+    cells, fetch_all, obs_all = get_or_compute_water_global(buildings_path, force=force)
+    rr, cc, n = _tile_water_grid(tile, sea.shape, (ox, oy))
+    water = sea[rr, cc]
+
+    fetch_levels = np.zeros((n, n, FETCH_SECTORS), dtype=np.uint8)
+    obs_levels = np.zeros((n, n, FETCH_SECTORS), dtype=np.uint8)
+    flat = rr[water] * sea.shape[1] + cc[water]
+    pos = np.searchsorted(cells, flat)
+    fetch_levels[water] = quantise_fetch(fetch_all[pos])
+    obs_levels[water] = quantise_obstacle(obs_all[pos])
+
+    np.savez_compressed(cache_path, fetch=fetch_levels, obstacle=obs_levels, water=water)
+    return fetch_levels, obs_levels, water
+
+
+def get_or_compute_water_png(tile_id, buildings_path, part="a", force=False):
+    """Vesiruudukon pyyhkaisymatkat ja esteiden korkeudet kuvina, sama
+    nibble-pakkaus kuin rantadatassa. part: "a"/"b" = pyyhkaisymatka,
+    "obsa"/"obsb" = esteen korkeus.
+
+    Alfa on tassa MERKITSEVA (0 = maata, ei arvioitavaa vetta) toisin kuin
+    fetch-kuvissa: vesiruudukossa maa-alueet on rajattava pois, ja koska
+    kuvat ovat vain 120x120, esikerrotun alfan pyoristys ei ole ongelma -
+    arvot luetaan vain vesiruuduista."""
+    if part not in ("a", "b", "obsa", "obsb"):
+        raise ValueError(f"Tuntematon part: {part}")
+
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    png_path = CACHE_DIR / f"{tile_id}_water{part}.png"
+    meta_path = CACHE_DIR / f"{tile_id}.json"
+    if not force and png_path.exists() and meta_path.exists():
+        return png_path.read_bytes(), json.loads(meta_path.read_text())
+
+    fetch_levels, obs_levels, water = get_or_compute_water_levels(
+        tile_id, buildings_path, force=force
+    )
+    levels = obs_levels if part.startswith("obs") else fetch_levels
+    base = 6 if part.endswith("b") else 0
+    chan = [(levels[:, :, base + 2 * i] << 4) | levels[:, :, base + 2 * i + 1] for i in range(3)]
+    r, g, b = chan
+    a = np.where(water, 255, 0).astype(np.uint8)
+
+    ok, encoded = cv2.imencode(".png", np.dstack([b, g, r, a]))
+    if not ok:
+        raise RuntimeError("PNG-enkoodaus epaonnistui")
+    png_bytes = encoded.tobytes()
+
+    raw = get_or_compute_raw(tile_id, buildings_path)
+    meta = {
+        "tile_id": tile_id,
+        "bounds_epsg3067": bounds_tuple_to_dict(array_bounds(*raw["score"].shape, raw["map_transform"])),
+        "n_buildings": raw["n_buildings"],
+        "rock_pct": raw["rock_pct"],
+        "swamp_pct": raw["swamp_pct"],
+        "shoreline_px": raw["shoreline_px"],
+        "buffer_px": raw["buffer_px"],
+    }
+    png_path.write_bytes(png_bytes)
+    if not meta_path.exists():
+        meta_path.write_text(json.dumps(meta, indent=2))
+    return png_bytes, meta

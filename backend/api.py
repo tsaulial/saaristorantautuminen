@@ -146,6 +146,20 @@ def get_fetch_png(tile_id: str, part: str):
     return Response(content=png_bytes, media_type="image/png")
 
 
+@app.get("/api/water/{tile_id}/{part}.png")
+def get_water_png(tile_id: str, part: str):
+    """Melottavuuden lahtodata vesiruudukolla (ks.
+    pipeline.get_or_compute_water_png): pyyhkaisymatka ja esteen korkeus
+    12 ilmansuuntaan, 50 m ruudukolla."""
+    try:
+        png_bytes, _meta = pipeline.get_or_compute_water_png(tile_id, str(BUILDINGS_PATH), part=part)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Tuntematon tile_id: {tile_id}")
+    except ValueError as err:
+        raise HTTPException(status_code=404, detail=str(err))
+    return Response(content=png_bytes, media_type="image/png")
+
+
 @app.get("/api/shelter-thresholds")
 def get_shelter_thresholds():
     """Tuulesta riippuvat "parhaat X %" -kynnysarvot (ks.

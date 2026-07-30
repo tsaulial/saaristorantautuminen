@@ -46,6 +46,7 @@ URL_REPLACEMENTS = {
     "`/api/prime/${tileId}.png`": "`cache/${tileId}_prime.png`",
     "fetch('/api/factor-thresholds')": "fetch('factor_thresholds.json')",
     "`/api/fetch/${tileId}/${part}.png`": "`cache/${tileId}_fetch${part}.png`",
+    "`/api/water/${tileId}/${part}.png`": "`cache/${tileId}_water${part}.png`",
     "fetch('/api/prime-thresholds')": "fetch('prime_thresholds.json')",
     "fetch('/api/shelter-thresholds')": "fetch('shelter_thresholds.json')",
     "const tileList = await res.json();": "const tileList = (await res.json()).tiles;",
@@ -111,6 +112,12 @@ def build():
                 tile_id, str(BUILDINGS_PATH), part=part
             )
             (DOCS_CACHE_DIR / f"{tile_id}_fetch{part}.png").write_bytes(fetch_bytes)
+
+            # Melottavuuden lahtodata vesiruudukolla (50 m, 120x120 per tiili).
+            water_bytes, _ = pipeline.get_or_compute_water_png(
+                tile_id, str(BUILDINGS_PATH), part=part
+            )
+            (DOCS_CACHE_DIR / f"{tile_id}_water{part}.png").write_bytes(water_bytes)
 
         tile_entries.append({"tile_id": tile_id, "bounds_epsg3067": meta["bounds_epsg3067"]})
 

@@ -201,9 +201,37 @@ function shelterScoreFromLevel(level, windSpeed, obstacleH) {
   return shelterScoreFromFetch(FETCH_LEVEL_METRES[level], windSpeed, obstacleH);
 }
 
-// Tuulen tila. Oletus on kasin valittu; Ilmatieteen laitoksen haku
-// (vaihe 2) korvaa naman kun se on kaytettavissa.
-let currentWind = { direction: 180, speed: 7.5, source: 'kasin' };
+// --- Melottavuus (ks. backend/pipeline.py: MELOTTAVUUS-lohko) ---
+// Aallokko ja puuska pidetaan erillaan, koska ne vaikuttavat eri asioihin:
+// aallokko maaraa veneen liikkeen, puuska kasiteltavyyden. Vaikeus on
+// HUONOMMAN mukaan.
+const PADDLE_WAVE_LIMITS = [0.20, 0.40, 0.70];
+const PADDLE_GUST_LIMITS = [8.0, 12.0, 16.0];
+const PADDLE_CLASSES = ['helppo', 'kohtalainen', 'vaativa', 'ei suositella'];
+// Mitattu puuskakerroin Ilmatieteen laitoksen ennusteista: 1,58-2,10.
+const DEFAULT_GUST_FACTOR = 1.75;
+
+function piecewiseClass(v, limits) {
+  const [a, b, c] = limits;
+  let out;
+  if (v < a) out = v / a;
+  else if (v < b) out = 1 + (v - a) / (b - a);
+  else if (v < c) out = 2 + (v - b) / (c - b);
+  else out = 3;
+  return out < 0 ? 0 : out > 3 ? 3 : out;
+}
+
+// Melonnan vaikeus 0-1. **Backendin (paddle_difficulty) on laskettava tasan
+// samoin.**
+function paddleDifficulty(fetchM, windSpeed, gustSpeed, obstacleH) {
+  const hs = WAVE_COEFF * shelteredWind(windSpeed, fetchM, obstacleH) * Math.sqrt(fetchM);
+  const gustEff = shelteredWind(gustSpeed, fetchM, obstacleH);
+  return Math.max(piecewiseClass(hs, PADDLE_WAVE_LIMITS),
+                  piecewiseClass(gustEff, PADDLE_GUST_LIMITS)) / 3;
+}
+
+// Tuulen tila. Oletus on kasin valittu; ennustehaku (vaihe 2) korvaa naman.
+let currentWind = { direction: 180, speed: 7.5, gust: 7.5 * 1.75, source: 'kasin' };
 
 function factorMask() {
   return FACTOR_KEYS.reduce((mask, key) => (currentFactors[key] ? mask | FACTOR_BITS[key] : mask), 0);
@@ -265,6 +293,7 @@ legend.onAdd = function () {
       '<span class="swatch" style="background:#ff0000"></span>Heikko<br>' +
       '<span class="swatch" style="background:#ff00ff"></span>Paras <span id="top-percent-swatch"></span>% (oma kerros)<br>' +
       '<span class="swatch" style="background:#7b2ff7"></span>Kärkipaikat (oma kerros)<br>' +
+      '<small id="paddle-note" class="impl-note"></small>' +
       '<small>Rantaviivan laatu perustuu 5–15&nbsp;m puskurivyöhykkeeseen.' +
       '<span id="swamp-note"><br>Suo alentaa pistettä merkittävästi.</span></small>' +
       '<div class="radio-row">' +
@@ -272,6 +301,7 @@ legend.onAdd = function () {
         '<label><input type="radio" name="display-mode" value="score" checked> Rantautumispisteytys</label>' +
         '<label><input type="radio" name="display-mode" value="top"> Parhaat rantautumispaikat</label>' +
         '<label><input type="radio" name="display-mode" value="prime"> Kärkipaikat</label>' +
+        '<label><input type="radio" name="display-mode" value="paddle"> Melottavuus (vesi)</label>' +
         '<small id="prime-note" class="impl-note"></small>' +
       '</div>' +
       '<div class="radio-row">' +
@@ -287,6 +317,8 @@ legend.onAdd = function () {
         '<input type="range" id="wind-dir" min="0" max="355" step="5" value="180">' +
         '<label for="wind-speed">Nopeus: <span id="wind-speed-value"></span> m/s</label>' +
         '<input type="range" id="wind-speed" min="0" max="20" step="0.5" value="7.5">' +
+        '<label for="wind-gust">Puuskat: <span id="wind-gust-value"></span> m/s</label>' +
+        '<input type="range" id="wind-gust" min="0" max="35" step="0.5" value="13">' +
         '<small id="wind-source" class="impl-note"></small>' +
       '</div>' +
       '<div class="settings-row">' +
@@ -316,6 +348,16 @@ legend.onAdd = function () {
   });
   windSpeed.addEventListener('input', () => {
     currentWind.speed = Number(windSpeed.value);
+    // Puuska seuraa nopeutta mitatulla kertoimella kunnes sita saadetaan
+    // erikseen - muuten kayttajan pitaisi muistaa siirtaa molempia.
+    currentWind.gust = Math.max(currentWind.speed, currentWind.speed * DEFAULT_GUST_FACTOR);
+    currentWind.source = 'kasin';
+    updateLegendFromSettings();
+    refreshActive();
+  });
+  const windGust = div.querySelector('#wind-gust');
+  windGust.addEventListener('input', () => {
+    currentWind.gust = Math.max(Number(windGust.value), currentWind.speed);
     currentWind.source = 'kasin';
     updateLegendFromSettings();
     refreshActive();
@@ -410,8 +452,18 @@ function updateLegendFromSettings() {
   // Tuulisaadin nakyy vain kun suojaisuus on mukana pisteytyksessa.
   const windRow = document.getElementById('wind-row');
   if (windRow) {
-    const on = (factorMask() & FACTOR_BITS.shelter) !== 0;
+    const on = (factorMask() & FACTOR_BITS.shelter) !== 0 || currentDisplay === 'paddle';
     windRow.classList.toggle('hidden', !on);
+    // Puuskat vaikuttavat vain melottavuuteen, ei rantautumispisteytykseen.
+    const gustOn = currentDisplay === 'paddle';
+    ['wind-gust', 'wind-gust-value'].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) {
+        const holder = el.tagName === 'INPUT' ? el : el.parentElement;
+        holder.style.display = gustOn ? '' : 'none';
+        if (el.tagName === 'SPAN') el.parentElement.style.display = gustOn ? '' : 'none';
+      }
+    });
     if (on) {
       const dirs = ['pohjoisesta', 'koillisesta', 'idästä', 'kaakosta',
                     'etelästä', 'lounaasta', 'lännestä', 'luoteesta'];
@@ -422,6 +474,12 @@ function updateLegendFromSettings() {
         dirs[Math.round(((deg % 360) + 360) % 360 / 45) % 8] + ' (' + Math.round(deg) + '°)';
       document.getElementById('wind-speed-value').textContent =
         currentWind.speed.toFixed(1).replace('.', ',');
+      const gustEl = document.getElementById('wind-gust');
+      if (gustEl) {
+        gustEl.value = String(currentWind.gust);
+        document.getElementById('wind-gust-value').textContent =
+          currentWind.gust.toFixed(1).replace('.', ',');
+      }
       // Avoimen rannan aallokko antaa kayttajalle mittakaavan sille, mita
       // nykyinen tuuli tarkoittaa.
       const openHs = WAVE_COEFF * currentWind.speed * Math.sqrt(FETCH_LEVEL_METRES[FETCH_LEVEL_METRES.length - 1]);
@@ -441,6 +499,14 @@ function updateLegendFromSettings() {
 
   drawWindDial();
 
+  const paddleNote = document.getElementById('paddle-note');
+  if (paddleNote) {
+    paddleNote.textContent = currentDisplay === 'paddle'
+      ? 'Melottavuus värittää meren: vihreä helppo, punainen ei suositella. '
+        + 'Vaikeus määräytyy aallokon TAI puuskien mukaan, kumpi on huonompi.'
+      : '';
+  }
+
   const primeNote = document.getElementById('prime-note');
   if (primeNote) {
     primeNote.textContent = currentDisplay === 'prime'
@@ -455,13 +521,13 @@ function updateLegendFromSettings() {
 
   // VANHASTA toteutuksesta ei ole esilaskettuja kuvia karkipaikoille sen
   // paremmin kuin osittaisille tekijavalinnoillekaan.
-  const oldAvailable = allFactorsOn && currentDisplay !== 'prime';
+  const oldAvailable = allFactorsOn && currentDisplay !== 'prime' && currentDisplay !== 'paddle';
   oldRadio.disabled = !oldAvailable;
   oldLabel.classList.toggle('disabled', !oldAvailable);
   note.textContent = oldAvailable
     ? ''
-    : (currentDisplay === 'prime'
-        ? 'Kärkipaikoista ei ole esilaskettuja kuvia.'
+    : ((currentDisplay === 'prime' || currentDisplay === 'paddle')
+        ? 'Tästä kerroksesta ei ole esilaskettuja kuvia.'
         : 'Nykyinen-toteutus on esilaskettu kaikilla tekijöillä eikä tue valintoja.');
 
   if (!oldAvailable && currentImpl === 'old') {
@@ -609,6 +675,70 @@ async function ensureShelterThresholds() {
 // Pyyhkaisymatkat: 12 sektoria a 4 bittia kahdessa kuvassa (ks.
 // backend/pipeline.py: get_or_compute_fetch_png). Puretaan kerran per tiili
 // yhdeksi Uint8Array-taulukoksi jossa on 12 arvoa per ruutu.
+// Melottavuuden lahtodata omalla 50 m ruudukollaan (120x120 per tiili) -
+// eri ruudukko kuin rantakerroksissa, koska tassa varitetaan MERI eika
+// rantaviiva. Alfa on tassa merkitseva: 0 = maata.
+const waterImageCache = new Map();
+
+async function loadWaterLevels(tileId) {
+  if (waterImageCache.has(tileId)) return waterImageCache.get(tileId);
+  const [a, b, oa, ob] = await Promise.all(['a', 'b', 'obsa', 'obsb'].map((part) =>
+    loadImageData(`/api/water/${tileId}/${part}.png`, `${tileId} water ${part}`)
+  ));
+  const w = a.width, h = a.height, n = w * h;
+  const levels = new Uint8Array(n * FETCH_SECTORS);
+  const obstacles = new Uint8Array(n * FETCH_SECTORS);
+  const water = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    water[i] = a.data[i * 4 + 3] > 0 ? 1 : 0;
+    for (let c = 0; c < 3; c++) {
+      const va = a.data[i * 4 + c], vb = b.data[i * 4 + c];
+      const wa = oa.data[i * 4 + c], wb = ob.data[i * 4 + c];
+      levels[i * FETCH_SECTORS + 2 * c] = va >> 4;
+      levels[i * FETCH_SECTORS + 2 * c + 1] = va & 15;
+      levels[i * FETCH_SECTORS + 6 + 2 * c] = vb >> 4;
+      levels[i * FETCH_SECTORS + 6 + 2 * c + 1] = vb & 15;
+      obstacles[i * FETCH_SECTORS + 2 * c] = wa >> 4;
+      obstacles[i * FETCH_SECTORS + 2 * c + 1] = wa & 15;
+      obstacles[i * FETCH_SECTORS + 6 + 2 * c] = wb >> 4;
+      obstacles[i * FETCH_SECTORS + 6 + 2 * c + 1] = wb & 15;
+    }
+  }
+  const res = { levels, obstacles, water, width: w, height: h };
+  waterImageCache.set(tileId, res);
+  return res;
+}
+
+// Melottavuuskerros: varittaa MEREN, ei rantaviivaa. Ruudukko on karkea
+// (50 m) ja kentta sileä, joten Leaflet saa skaalata kuvan vapaasti.
+async function renderPaddleTile(tileId) {
+  const key = `${tileId}|paddle|${currentWind.direction.toFixed(0)}|` +
+              `${currentWind.speed.toFixed(1)}|${currentWind.gust.toFixed(1)}`;
+  if (renderResultCache.has(key)) return renderResultCache.get(key);
+
+  const { levels, obstacles, water, width: w, height: h } = await loadWaterLevels(tileId);
+  const wf = fetchWeights(currentWind.direction);
+  const out = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0; i < w * h; i++) {
+    if (!water[i]) continue;
+    const fa = FETCH_LEVEL_METRES[levels[i * FETCH_SECTORS + wf.lo]];
+    const fb = FETCH_LEVEL_METRES[levels[i * FETCH_SECTORS + wf.hi]];
+    const fetchM = fa + (fb - fa) * wf.frac;
+    const ha = dequantiseObstacle(obstacles[i * FETCH_SECTORS + wf.lo]);
+    const hb = dequantiseObstacle(obstacles[i * FETCH_SECTORS + wf.hi]);
+    const obstacleH = ha + (hb - ha) * wf.frac;
+    const d = paddleDifficulty(fetchM, currentWind.speed, currentWind.gust, obstacleH);
+    const [r, g, b] = SCORE_COLOR_LUT[Math.round((1 - d) * 255)];
+    out[i * 4] = r; out[i * 4 + 1] = g; out[i * 4 + 2] = b; out[i * 4 + 3] = 130;
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  canvas.getContext('2d').putImageData(new ImageData(out, w, h), 0, 0);
+  const url = canvas.toDataURL('image/png');
+  renderResultCache.set(key, url);
+  return url;
+}
+
 async function loadFetchLevels(tileId) {
   if (fetchImageCache.has(tileId)) return fetchImageCache.get(tileId);
   const [a, b, oa, ob] = await Promise.all(['a', 'b', 'obsa', 'obsb'].map((part) =>
@@ -921,11 +1051,13 @@ async function refreshNew() {
   const myGeneration = ++newRenderGeneration;
   const mask = factorMask();
   if (currentDisplay === 'prime') await ensurePrimeThresholds();
-  if (mask & FACTOR_BITS.shelter) await ensureShelterThresholds();
+  if (currentDisplay !== 'paddle' && (mask & FACTOR_BITS.shelter)) await ensureShelterThresholds();
   const rendered = await Promise.all(
     visible.map(async (tile) => ({
       tile,
-      dataUrl: await renderFactorTile(tile.tile_id, currentDisplay, currentThickness, currentTopPercent, mask),
+      dataUrl: currentDisplay === 'paddle'
+        ? await renderPaddleTile(tile.tile_id)
+        : await renderFactorTile(tile.tile_id, currentDisplay, currentThickness, currentTopPercent, mask),
     }))
   );
   if (myGeneration !== newRenderGeneration) return; // uudempi pyynto on jo kaynnissa/valmis, hylataan tama
