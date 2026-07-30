@@ -223,7 +223,7 @@ const DEFAULT_TOP_PERCENT = 7;
 // Painot: pidettava samassa kuin backend/score_engine.py (SLOPE_WEIGHT,
 // DIST_WEIGHT) ja backend/pipeline.py (ROCK_WEIGHT). Suo ei ole painotettu
 // termi vaan kertova rangaistus, joten sille ei nayteta prosenttiosuutta.
-const WEIGHTS = { slope: 0.50, dist: 0.35, rock: 0.15, shelter: 0.40 };
+const WEIGHTS = { slope: 0.50, dist: 0.35, rock: 0.15, shelter: 0.70 };
 const FACTOR_KEYS = ['slope', 'dist', 'rock', 'swamp', 'shelter'];
 // Suojaisuus on oletuksena POIS: sen kanssa pisteytys riippuu tuulesta ja
 // vaatii verkkohaun.

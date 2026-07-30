@@ -123,14 +123,14 @@ const ROCK_SCORE_YES = 1.0;
 const ROCK_SCORE_NO = 0.2;
 const SWAMP_PENALTY_FACTOR = 0.5;
 const TIEBREAK_EPSILON = 1e-4;
-const SHELTER_WEIGHT = 0.40;
+const SHELTER_WEIGHT = 0.70;
 
 // --- Suojaisuus (ks. backend/pipeline.py: SUOJAISUUS-lohko) ---
 // Aallonkorkeus tuulen nopeudesta ja pyyhkaisymatkasta:
 //   Hs ~ WAVE_COEFF * U * sqrt(F)
 const WAVE_COEFF = 5.1e-4;
-const SHELTER_CALM_M = 0.10;
-const SHELTER_ROUGH_M = 0.60;
+const SHELTER_CALM_M = 0.05;
+const SHELTER_ROUGH_M = 0.30;
 const FETCH_SECTORS = 12;
 
 // Fetch-tasojen metrimaarat KIINTEANA taulukkona, ei exp/log-laskuna:

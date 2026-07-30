@@ -1501,9 +1501,20 @@ def get_or_compute_fetch_levels(tile_id, buildings_path, force=False):
 #
 # Pistemaara on 1 kun aallokko on melojalle merkityksetonta ja 0 kun se
 # tekee rantautumisen hankalaksi, valissa lineaarinen.
+#
+# **Kiristetty mittausten perusteella** (aiemmin 0,10-0,60 m). Vanhoilla
+# arvoilla tekija ei kaytannossa erotellut mitaan: pyyhkaisymatkan mediaani
+# pahimmassa suunnassa on 2241 m, mista 14 m/s tuottaa 0,34 m aallokon eli
+# pistemaaran 0,52 - myrskyssakin puolet saaristosta sai yli puolet
+# pisteista, ja vain 8,2 % jai alle 0,5:n. Lisaksi tekijan lisaaminen NOSTI
+# kokonaispisteen keskiarvoa (+0,031 viela 14 m/s:ssa), koska suojaisuuden
+# keskiarvo oli korkeampi kuin muiden tekijoiden ja painojen normalisointi
+# veti pistetta ylospain - suojaisuus paalle teki kartasta vihreamman, ei
+# punaisemman. 0,30 m on kajakille realistinen raja, jonka yli kallio-
+# rantaan rantautuminen muuttuu hankalaksi.
 WAVE_COEFF = 5.1e-4
-SHELTER_CALM_M = 0.10
-SHELTER_ROUGH_M = 0.60
+SHELTER_CALM_M = 0.05
+SHELTER_ROUGH_M = 0.30
 
 # Kvantisoitujen fetch-tasojen metrimaarat KIINTEANA TAULUKKONA, ei
 # exp/log-laskuna. Syy on tarkkuus: numpy ja selaimen JS kayttavat eri
@@ -1530,7 +1541,10 @@ ALL_FACTORS_MASK = NO_SHELTER_MASK | FACTOR_SHELTER  # 31
 FACTOR_BITS["shelter"] = FACTOR_SHELTER
 
 # Tuulelle altis ranta on melojalle yhta ratkaiseva kuin maaston jyrkkyys.
-SHELTER_WEIGHT = 0.40
+# Nostettu 0,40 -> 0,70 samasta syysta kuin SHELTER_ROUGH_M kiristettiin:
+# 0,40 antoi suojaisuudelle vain 28,6 %:n osuuden viiden tekijan kesken,
+# jolloin nollapistekaan ei pudottanut kokonaispistetta kuin 0,286.
+SHELTER_WEIGHT = 0.70
 
 # Tuulen nopeusluokat kynnysarvoja varten. Selain PYORISTAA nopeuden
 # lahimman luokan edustusarvoon ja suunnan lahimpaan sektoriin - se EI
