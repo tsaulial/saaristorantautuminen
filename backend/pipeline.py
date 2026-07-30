@@ -1944,12 +1944,22 @@ def _piecewise_class(value, limits):
     return np.clip(out, 0.0, 3.0)
 
 
-def paddle_difficulty(fetch_m, wind_speed, gust_speed, obstacle_h):
+def paddle_difficulty(fetch_m, wind_speed, gust_speed, obstacle_h, met_wave_m=None):
     """Melonnan vaikeus 0-1 (0 = helppo, 1 = ei suositella).
     **Selaimen (frontend/index.html: paddleDifficulty) on laskettava tasan
-    samoin.**"""
+    samoin.**
+
+    met_wave_m: MET Norwayn aallokkoennuste, jos saatavilla. Sekoitetaan oman
+    mallin arvioon painolla joka kertoo kuinka lahella pyyhkaisymatkan KATTOA
+    ollaan: suojaisassa poukamassa luotetaan omaan 10 m malliin (MET:n
+    muutaman kilometrin hila ei nae sinne), avomerella MET:iin, koska oma
+    malli katkaisee matkan MAX_FETCH_M:iin ja aliarvioi siella aallokkoa
+    n. 25 % (mitattu MET:ia vastaan)."""
     u_eff = sheltered_wind(wind_speed, fetch_m, obstacle_h)
     hs = WAVE_COEFF * u_eff * np.sqrt(fetch_m)
+    if met_wave_m is not None:
+        w = np.minimum(np.asarray(fetch_m, dtype=np.float64) / MAX_FETCH_M, 1.0)
+        hs = (1.0 - w) * hs + w * met_wave_m
     gust_eff = sheltered_wind(gust_speed, fetch_m, obstacle_h)
     wave = _piecewise_class(hs, PADDLE_WAVE_LIMITS)
     gust = _piecewise_class(gust_eff, PADDLE_GUST_LIMITS)
