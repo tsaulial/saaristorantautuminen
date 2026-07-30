@@ -609,7 +609,7 @@ def _rank_byte(values, sorted_global):
 
 
 def score_from_components(slope_b, dist_b, rock_bit, swamp_bit, factor_mask,
-                          fetch_level=None, wind_speed=None):
+                          fetch_level=None, wind_speed=None, fetch_m=None):
     """Pistemaara 0-1 valituista tekijoista, 8-bittisiksi kvantisoiduista
     osatekijoista. **Tama on backendin puoli sopimuksesta** - selaimen
     (frontend/index.html: scoreFromComponents) on laskettava TASAN samoin,
@@ -634,9 +634,13 @@ def score_from_components(slope_b, dist_b, rock_bit, swamp_bit, factor_mask,
         total = total + ROCK_WEIGHT * np.where(rock_bit, ROCK_SCORE_YES, ROCK_SCORE_NO)
         weight_sum += ROCK_WEIGHT
     if factor_mask & FACTOR_SHELTER:
-        if fetch_level is None or wind_speed is None:
-            raise ValueError("Suojaisuustekija vaatii fetch_level- ja wind_speed-arvot")
-        total = total + SHELTER_WEIGHT * shelter_score_from_level(fetch_level, wind_speed)
+        if wind_speed is None or (fetch_level is None and fetch_m is None):
+            raise ValueError("Suojaisuustekija vaatii pyyhkaisymatkan ja wind_speed-arvon")
+        # fetch_m (metrit) on selaimen kayttama polku: se interpoloi kahden
+        # sektorin valilla eika kvantisoi tulosta takaisin tasoksi.
+        shelter = (shelter_score_from_fetch(fetch_m, wind_speed) if fetch_m is not None
+                   else shelter_score_from_level(fetch_level, wind_speed))
+        total = total + SHELTER_WEIGHT * shelter
         weight_sum += SHELTER_WEIGHT
 
     score = total / weight_sum if weight_sum > 0 else np.ones(slope_b.shape, dtype=np.float64)
@@ -646,11 +650,11 @@ def score_from_components(slope_b, dist_b, rock_bit, swamp_bit, factor_mask,
 
 
 def rank_from_components(slope_b, dist_b, rock_bit, swamp_bit, tiebreak_b, factor_mask,
-                         fetch_level=None, wind_speed=None):
+                         fetch_level=None, wind_speed=None, fetch_m=None):
     """Pistemaara + tasapelinpurku - kaytetaan VAIN "parhaat X %" -valintaan,
     ei varitykseen (sama jako kuin score/rank_score, ks. TIEBREAK_EPSILON)."""
     score = score_from_components(slope_b, dist_b, rock_bit, swamp_bit, factor_mask,
-                                  fetch_level=fetch_level, wind_speed=wind_speed)
+                                  fetch_level=fetch_level, wind_speed=wind_speed, fetch_m=fetch_m)
     return score + TIEBREAK_EPSILON * (tiebreak_b / 255.0)
 
 
@@ -1546,34 +1550,39 @@ FACTOR_BITS["shelter"] = FACTOR_SHELTER
 # jolloin nollapistekaan ei pudottanut kokonaispistetta kuin 0,286.
 SHELTER_WEIGHT = 0.70
 
-# Tuulen nopeusluokat kynnysarvoja varten. Selain PYORISTAA nopeuden
-# lahimman luokan edustusarvoon ja suunnan lahimpaan sektoriin - se EI
-# interpoloi. Interpolointi tuottaisi pistemaaria joita esilasketut
-# kynnysarvot eivat vastaa, jolloin "parhaat 7 %" ei enaa olisi 7 %.
-# Yhden havaintoaseman tuulen suunnassa on joka tapauksessa enemman
-# epavarmuutta kuin sektorin 30 astetta.
-WIND_SPEED_CLASSES = [2.0, 4.5, 7.5, 10.5, 14.0]
+def fetch_at_bearing(levels, bearing_deg):
+    """Pyyhkaisymatka metreina mielivaltaiselle tuulen suunnalle: kahden
+    lahimman sektorin lineaarinen interpolointi. Tama on mahdollista vasta
+    sen jalkeen kun kynnysarvot irrotettiin tuulesta (ks.
+    compute_shelter_thresholds) - aiemmin suunta oli pakko pyoristaa
+    sektoriin, jotta esilasketut kynnykset vastasivat naytettya pistemaaraa.
 
-
-def wind_speed_class(wind_speed):
-    """Lahin nopeusluokan indeksi - sama sopimus selaimen kanssa."""
-    diffs = [abs(wind_speed - c) for c in WIND_SPEED_CLASSES]
-    return int(np.argmin(diffs))
-
-
-def wind_sector(bearing_deg):
-    """Tuulen suunta (aste, 0=pohjoinen, suunta JOSTA tuulee) -> lahin sektori."""
+    levels on taulukko jonka viimeinen ulottuvuus on FETCH_SECTORS."""
     step = 360.0 / FETCH_SECTORS
-    return int(round((bearing_deg % 360.0) / step)) % FETCH_SECTORS
+    pos = (bearing_deg % 360.0) / step
+    lo = int(np.floor(pos)) % FETCH_SECTORS
+    hi = (lo + 1) % FETCH_SECTORS
+    frac = pos - np.floor(pos)
+    a = FETCH_LEVEL_METRES[levels[..., lo]]
+    b = FETCH_LEVEL_METRES[levels[..., hi]]
+    return a + (b - a) * frac
+
+
+def shelter_score_from_fetch(fetch_m, wind_speed):
+    """Suojaisuuspistemaara 0-1 pyyhkaisymatkasta (metreina) ja tuulen
+    nopeudesta. **Selaimen (frontend/index.html: shelterScoreFromFetch) on
+    laskettava tasan samoin.**"""
+    hs = WAVE_COEFF * wind_speed * np.sqrt(fetch_m)
+    return np.clip((SHELTER_ROUGH_M - hs) / (SHELTER_ROUGH_M - SHELTER_CALM_M), 0.0, 1.0)
 
 
 def shelter_score_from_level(fetch_level, wind_speed):
-    """Suojaisuuspistemaara 0-1 kvantisoidusta pyyhkaisymatkasta ja tuulen
-    nopeudesta. **Selaimen (frontend/index.html: shelterScoreFromLevel) on
-    laskettava tasan samoin.**"""
-    fetch_m = FETCH_LEVEL_METRES[np.asarray(fetch_level, dtype=np.int64)]
-    hs = WAVE_COEFF * wind_speed * np.sqrt(fetch_m)
-    return np.clip((SHELTER_ROUGH_M - hs) / (SHELTER_ROUGH_M - SHELTER_CALM_M), 0.0, 1.0)
+    """Kuten yllä, mutta kvantisoidusta tasosta. Selain interpoloi kahden
+    sektorin valilla ja kayttaa siksi metriversiota - se on mahdollista
+    koska kynnysarvot lasketaan TYYNESSA eivatka riipu tuulesta lainkaan
+    (ks. compute_shelter_thresholds)."""
+    return shelter_score_from_fetch(FETCH_LEVEL_METRES[np.asarray(fetch_level, dtype=np.int64)],
+                                    wind_speed)
 
 
 def get_or_compute_fetch_png(tile_id, buildings_path, part="a", force=False):
@@ -1633,56 +1642,60 @@ def get_or_compute_fetch_png(tile_id, buildings_path, part="a", force=False):
 
 def compute_shelter_thresholds(buildings_path, force=False):
     """"Parhaat X %" -kynnysarvot niille tekijayhdistelmille joissa
-    SUOJAISUUS on mukana. Nama riippuvat tuulesta, joten avaimia on kolme:
-    {"<maski>": {"<sektori>": {"<nopeusluokka>": {"<prosentti>": kynnys}}}}.
+    SUOJAISUUS on mukana: {"normal"|"prime": {"<maski>": {"<prosentti>": kynnys}}}.
 
-    Lasketaan seka tavalliselle ("normal") etta karkipaikkojen ("prime")
-    kerrokselle, koska molemmat kayttavat pistemaaraa eri osatekijoista."""
+    **Kynnys lasketaan TYYNESSA** (tuulennopeus 0, jolloin suojaisuuspiste on
+    1 kaikkialla) ja sita sovelletaan sellaisenaan kaikkiin tuuliin. "Parhaat
+    7 %" tarkoittaa siis "paikat jotka olisivat parhaan 7 %:n joukossa
+    tyynella", ja tuuli voi vain PUDOTTAA paikkoja pois - ei koskaan tuoda
+    lisaa.
+
+    Aiemmin kynnys laskettiin erikseen jokaiselle tuulisuunnalle ja
+    -nopeudelle, jolloin valittuja oli aina tasan X % saasta riippumatta.
+    Valinta kylla kiristyi oikein (14 m/s:ssa valittujen pyyhkaisymatkan
+    mediaani oli 50 m eli pienin mahdollinen), mutta koska MAARA ei
+    muuttunut, kartta nayttti yhta taydelta myrskyssa kuin tyynella eika
+    tuulen voimakkuus nakynyt kayttajalle lainkaan.
+
+    Kaksi seurausta: kynnystiedosto kutistuu 493 kt -> parisen kilotavua, ja
+    koska kynnys ei enaa riipu tuulesta, selaimen ei tarvitse pyoristaa
+    tuulen suuntaa sektoriin eika nopeutta luokkaan - se voi interpoloida
+    pyyhkaisymatkan sektorien valilla ja kayttaa tarkkaa nopeutta."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_path = CACHE_DIR / "_shelter_thresholds.json"
     if not force and cache_path.exists():
         return json.loads(cache_path.read_text())
 
-    normal, prime, fetch, tiebreak = [], [], [], []
+    normal, prime, tiebreak = [], [], []
     for tid in tiles.get_registry():
         f = get_or_compute_factor_arrays(tid, buildings_path, force=force)
         p = get_or_compute_prime_arrays(tid, buildings_path, force=force)
-        lv, _ = get_or_compute_fetch_levels(tid, buildings_path, force=force)
         buf = f["buffer"]
         if not buf.any():
             continue
         normal.append((f["slope_b"][buf], f["dist_b"][buf], f["rock_bit"][buf], f["swamp_bit"][buf]))
         prime.append((p["slope_b"][buf], p["dist_b"][buf], p["rock_bit"][buf], p["swamp_bit"][buf]))
-        fetch.append(lv[buf])
         tiebreak.append(f["tiebreak_b"][buf])
 
     def merge(parts):
         return tuple(np.concatenate(c) for c in zip(*parts))
 
-    n_slope, n_dist, n_rock, n_swamp = merge(normal)
-    p_slope, p_dist, p_rock, p_swamp = merge(prime)
-    fetch_all = np.concatenate(fetch)
     tb_all = np.concatenate(tiebreak)
-
     shelter_masks = [m for m in range(1, ALL_FACTORS_MASK + 1) if m & FACTOR_SHELTER]
     out = {"normal": {}, "prime": {}}
-    for layer, (s, d, r, w) in (("normal", (n_slope, n_dist, n_rock, n_swamp)),
-                                ("prime", (p_slope, p_dist, p_rock, p_swamp))):
+    for layer, parts in (("normal", normal), ("prime", prime)):
+        s, d, r, w = merge(parts)
         for mask in shelter_masks:
-            per_mask = {}
-            for sector in range(FETCH_SECTORS):
-                level = fetch_all[:, sector]
-                per_sector = {}
-                for ci, speed in enumerate(WIND_SPEED_CLASSES):
-                    rank = rank_from_components(
-                        s, d, r, w, tb_all, mask, fetch_level=level, wind_speed=speed
-                    )
-                    per_sector[str(ci)] = {
-                        str(pct): float(np.percentile(rank, top_percent_to_percentile(pct)))
-                        for pct in TOP_PERCENT_PRESETS
-                    }
-                per_mask[str(sector)] = per_sector
-            out[layer][str(mask)] = per_mask
+            # Tuulennopeus 0 -> suojaisuuspiste 1 kaikkialla, jolloin
+            # pyyhkaisymatkalla ei ole merkitysta ja kynnys kuvaa
+            # nimenomaan tyynen olosuhteen parhaita.
+            rank = rank_from_components(s, d, r, w, tb_all, mask,
+                                        fetch_level=np.zeros(len(s), dtype=np.int64),
+                                        wind_speed=0.0)
+            out[layer][str(mask)] = {
+                str(pct): float(np.percentile(rank, top_percent_to_percentile(pct)))
+                for pct in TOP_PERCENT_PRESETS
+            }
 
     cache_path.write_text(json.dumps(out))
     return out

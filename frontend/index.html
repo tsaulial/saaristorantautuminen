@@ -144,32 +144,29 @@ const FETCH_LEVEL_METRES = [
   1047.3729, 1531.9435, 2240.7024, 3277.3709,
   4793.6576, 7011.4594, 10255.3348, 15000.0000,
 ];
-const WIND_SPEED_CLASSES = [2.0, 4.5, 7.5, 10.5, 14.0];
-
-// Tuulen suunta PYORISTETAAN lahimpaan sektoriin ja nopeus lahimpaan
-// luokkaan - EI interpoloida. Interpolointi tuottaisi pistemaaria joita
-// esilasketut kynnysarvot eivat vastaa, jolloin "parhaat 7 %" ei enaa olisi
-// 7 %. Yhden havaintoaseman tuulessa on joka tapauksessa enemman
-// epavarmuutta kuin sektorin 30 astetta.
-function windSector(bearingDeg) {
+// Pyyhkaisymatka mielivaltaiselle tuulen suunnalle: kahden lahimman
+// sektorin lineaarinen interpolointi. Tama on mahdollista vasta sen jalkeen
+// kun kynnysarvot irrotettiin tuulesta (ks. backend/pipeline.py:
+// compute_shelter_thresholds) - aiemmin suunta oli pakko pyoristaa 30
+// asteeseen ja nopeus viiteen luokkaan, jotta esilasketut kynnykset
+// vastasivat naytettya pistemaaraa.
+function fetchWeights(bearingDeg) {
   const step = 360 / FETCH_SECTORS;
-  return ((Math.round(((bearingDeg % 360) + 360) % 360 / step) % FETCH_SECTORS) + FETCH_SECTORS) % FETCH_SECTORS;
+  const pos = ((((bearingDeg % 360) + 360) % 360)) / step;
+  const lo = Math.floor(pos) % FETCH_SECTORS;
+  return { lo, hi: (lo + 1) % FETCH_SECTORS, frac: pos - Math.floor(pos) };
 }
 
-function windSpeedClass(speed) {
-  let best = 0;
-  for (let i = 1; i < WIND_SPEED_CLASSES.length; i++) {
-    if (Math.abs(speed - WIND_SPEED_CLASSES[i]) < Math.abs(speed - WIND_SPEED_CLASSES[best])) best = i;
-  }
-  return best;
-}
-
-// Suojaisuuspistemaara 0-1. **Backendin (shelter_score_from_level) on
-// laskettava tasan samoin.**
-function shelterScoreFromLevel(level, windSpeed) {
-  const hs = WAVE_COEFF * windSpeed * Math.sqrt(FETCH_LEVEL_METRES[level]);
+// Suojaisuuspistemaara 0-1 pyyhkaisymatkasta (metreina). **Backendin
+// (shelter_score_from_fetch) on laskettava tasan samoin.**
+function shelterScoreFromFetch(fetchM, windSpeed) {
+  const hs = WAVE_COEFF * windSpeed * Math.sqrt(fetchM);
   const s = (SHELTER_ROUGH_M - hs) / (SHELTER_ROUGH_M - SHELTER_CALM_M);
   return s < 0 ? 0 : s > 1 ? 1 : s;
+}
+
+function shelterScoreFromLevel(level, windSpeed) {
+  return shelterScoreFromFetch(FETCH_LEVEL_METRES[level], windSpeed);
 }
 
 // Tuulen tila. Oletus on kasin valittu; Ilmatieteen laitoksen haku
@@ -254,9 +251,9 @@ legend.onAdd = function () {
       '<div class="wind-row" id="wind-row">' +
         '<span class="radio-row-label">Tuuli</span>' +
         '<label for="wind-dir">Suunta: <span id="wind-dir-value"></span></label>' +
-        '<input type="range" id="wind-dir" min="0" max="11" step="1" value="6">' +
+        '<input type="range" id="wind-dir" min="0" max="355" step="5" value="180">' +
         '<label for="wind-speed">Nopeus: <span id="wind-speed-value"></span> m/s</label>' +
-        '<input type="range" id="wind-speed" min="0" max="4" step="1" value="2">' +
+        '<input type="range" id="wind-speed" min="0" max="20" step="0.5" value="7.5">' +
         '<small id="wind-source" class="impl-note"></small>' +
       '</div>' +
       '<div class="settings-row">' +
@@ -279,13 +276,13 @@ legend.onAdd = function () {
   const windDir = div.querySelector('#wind-dir');
   const windSpeed = div.querySelector('#wind-speed');
   windDir.addEventListener('input', () => {
-    currentWind.direction = Number(windDir.value) * (360 / FETCH_SECTORS);
+    currentWind.direction = Number(windDir.value);
     currentWind.source = 'kasin';
     updateLegendFromSettings();
     refreshActive();
   });
   windSpeed.addEventListener('input', () => {
-    currentWind.speed = WIND_SPEED_CLASSES[Number(windSpeed.value)];
+    currentWind.speed = Number(windSpeed.value);
     currentWind.source = 'kasin';
     updateLegendFromSettings();
     refreshActive();
@@ -333,18 +330,22 @@ function updateLegendFromSettings() {
     const on = (factorMask() & FACTOR_BITS.shelter) !== 0;
     windRow.classList.toggle('hidden', !on);
     if (on) {
-      const dirs = ['N', 'NNE', 'ENE', 'E', 'ESE', 'SSE', 'S', 'SSW', 'WSW', 'W', 'WNW', 'NNW'];
-      const sector = windSector(currentWind.direction);
-      const speedClass = windSpeedClass(currentWind.speed);
-      document.getElementById('wind-dir').value = String(sector);
-      document.getElementById('wind-speed').value = String(speedClass);
+      const dirs = ['pohjoisesta', 'koillisesta', 'idästä', 'kaakosta',
+                    'etelästä', 'lounaasta', 'lännestä', 'luoteesta'];
+      const deg = currentWind.direction;
+      document.getElementById('wind-dir').value = String(deg);
+      document.getElementById('wind-speed').value = String(currentWind.speed);
       document.getElementById('wind-dir-value').textContent =
-        dirs[sector] + ' (' + Math.round(sector * 360 / FETCH_SECTORS) + '°)';
+        dirs[Math.round(((deg % 360) + 360) % 360 / 45) % 8] + ' (' + Math.round(deg) + '°)';
       document.getElementById('wind-speed-value').textContent =
-        WIND_SPEED_CLASSES[speedClass].toString().replace('.', ',');
+        currentWind.speed.toFixed(1).replace('.', ',');
+      // Avoimen rannan aallokko antaa kayttajalle mittakaavan sille, mita
+      // nykyinen tuuli tarkoittaa.
+      const openHs = WAVE_COEFF * currentWind.speed * Math.sqrt(FETCH_LEVEL_METRES[FETCH_LEVEL_METRES.length - 1]);
       document.getElementById('wind-source').textContent =
-        'Lähde: ' + currentWind.source + '. Suunta pyöristetään 30°:n ja nopeus '
-        + 'viiteen luokkaan, jotta esilasketut kynnykset pätevät.';
+        'Lähde: ' + currentWind.source + '. Avoimella rannalla aallokko olisi nyt noin '
+        + (openHs * 100).toFixed(0) + ' cm. Kärkipaikat näyttää vain ne paikat, jotka '
+        + 'kelpaisivat myös tyynellä — kova tuuli siis vähentää niitä.';
     }
   }
 
@@ -684,7 +685,7 @@ const renderResultCache = new Map();
 // jyrkkyys tuottaisi korkeintaan 0,50 pistetta ja koko kartta nayttaisi
 // punaiselta. Suo on kertova rangaistus (ei painotettu termi); jos VAIN suo
 // on valittuna, pohjapistemaara on 1.0.
-function scoreFromComponents(slopeByte, distByte, rockBit, swampBit, mask, fetchLevel, windSpeed) {
+function scoreFromComponents(slopeByte, distByte, rockBit, swampBit, mask, fetchM, windSpeed) {
   let total = 0;
   let weightSum = 0;
   if (mask & FACTOR_BITS.slope) { total += SLOPE_WEIGHT * (slopeByte / 255); weightSum += SLOPE_WEIGHT; }
@@ -694,7 +695,7 @@ function scoreFromComponents(slopeByte, distByte, rockBit, swampBit, mask, fetch
     weightSum += ROCK_WEIGHT;
   }
   if (mask & FACTOR_BITS.shelter) {
-    total += SHELTER_WEIGHT * shelterScoreFromLevel(fetchLevel, windSpeed);
+    total += SHELTER_WEIGHT * shelterScoreFromFetch(fetchM, windSpeed);
     weightSum += SHELTER_WEIGHT;
   }
   let score = weightSum > 0 ? total / weightSum : 1.0;
@@ -706,7 +707,7 @@ async function renderFactorTile(tileId, displayMode, thicknessPx, topPercent, ma
   // Tuuli kuuluu valimuistiavaimeen vain kun suojaisuus on mukana - muuten
   // sen muuttuminen mitatoisi valimuistin turhaan.
   const windKey = (mask & FACTOR_BITS.shelter)
-    ? `|${windSector(currentWind.direction)}|${windSpeedClass(currentWind.speed)}`
+    ? `|${currentWind.direction.toFixed(0)}|${currentWind.speed.toFixed(1)}`
     : '';
   const cacheKey = `${tileId}|${displayMode}|${thicknessPx}|${topPercent}|${mask}${windKey}`;
   if (renderResultCache.has(cacheKey)) return renderResultCache.get(cacheKey);
@@ -734,16 +735,21 @@ async function renderFactorTile(tileId, displayMode, thicknessPx, topPercent, ma
 
   // Suojaisuus lukee valitun sektorin pyyhkaisymatkan omasta kuvaparistaan.
   const useShelter = (mask & FACTOR_BITS.shelter) !== 0;
-  const sector = useShelter ? windSector(currentWind.direction) : 0;
+  const wf = useShelter ? fetchWeights(currentWind.direction) : null;
   const windSpeed = currentWind.speed;
   const fetchLevels = useShelter ? (await loadFetchLevels(tileId)).levels : null;
 
   for (let i = 0; i < w * h; i++) {
     if (data[i * 4 + 3] === 0) { alpha[i] = 0; continue; }
     const bits = data[i * 4 + 2];
-    const level = useShelter ? fetchLevels[i * FETCH_SECTORS + sector] : 0;
+    let fetchM = 0;
+    if (useShelter) {
+      const a = FETCH_LEVEL_METRES[fetchLevels[i * FETCH_SECTORS + wf.lo]];
+      const b = FETCH_LEVEL_METRES[fetchLevels[i * FETCH_SECTORS + wf.hi]];
+      fetchM = a + (b - a) * wf.frac;
+    }
     const score = scoreFromComponents(data[i * 4], data[i * 4 + 1], bits & 1, bits & 2, mask,
-                                      level, windSpeed);
+                                      fetchM, windSpeed);
     scoreByte[i] = Math.round(score * 255);
     if (displayMode === 'score') {
       alpha[i] = 1;
@@ -797,14 +803,13 @@ async function renderFactorTile(tileId, displayMode, thicknessPx, topPercent, ma
 function thresholdFor(mask, topPercent, layer) {
   let value;
   if (mask & FACTOR_BITS.shelter) {
-    const sector = windSector(currentWind.direction);
-    const speedClass = windSpeedClass(currentWind.speed);
+    // Kynnys on laskettu TYYNESSA eika riipu tuulesta: "parhaat X %"
+    // tarkoittaa "paikat jotka olisivat parhaan X %:n joukossa tyynella",
+    // ja tuuli voi vain pudottaa paikkoja pois.
     value = shelterThresholds
       && shelterThresholds[layer]
       && shelterThresholds[layer][String(mask)]
-      && shelterThresholds[layer][String(mask)][String(sector)]
-      && shelterThresholds[layer][String(mask)][String(sector)][String(speedClass)]
-      && shelterThresholds[layer][String(mask)][String(sector)][String(speedClass)][String(topPercent)];
+      && shelterThresholds[layer][String(mask)][String(topPercent)];
   } else {
     const table = layer === 'prime' ? primeThresholds : factorThresholds;
     value = table && table[String(mask)] && table[String(mask)][String(topPercent)];
