@@ -66,12 +66,18 @@
   .wind-dial .hub { fill: #5a6570; }
   /* Melottavuusnakyman tietopallo: klikkaamalla karttaa saa esiin
      paikkakohtaiset olosuhteet, klikkaamalla palloa se menee piiloon. */
-  .paddle-bubble {
-    width: 104px; height: 104px; border-radius: 50%;
-    background: rgba(255,255,255,.94); border: 2px solid #1769aa;
-    box-shadow: 0 2px 8px rgba(0,0,0,.3); cursor: pointer;
+  .paddle-bubble { width: 124px; height: 124px; position: relative; cursor: pointer; }
+  /* Reunaviiva ON aallonkorkeuden mittari: tyynella se on ympyra ja
+     aallokon kasvaessa se aaltoilee sita voimakkaammin. Siksi kehys on
+     SVG-polku eika CSS-reunus. */
+  .paddle-bubble .pb-ring {
+    position: absolute; inset: 0; filter: drop-shadow(0 2px 5px rgba(0,0,0,.3));
+  }
+  .paddle-bubble .pb-content {
+    position: absolute; inset: 0;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
-    font-size: 11px; line-height: 1.25; color: #1c1f22; text-align: center;
+    font-size: 11px; line-height: 1.2; color: #1c1f22; text-align: center;
+    padding: 0 14px;   /* pidä teksti irti aaltoilevasta reunasta */
   }
   .paddle-bubble .pb-speed { font-size: 15px; font-weight: 700; }
   .paddle-bubble .pb-sub { color: #5a6570; font-size: 10px; }
@@ -623,6 +629,27 @@ function waterConditionsAt(latlng) {
 const COMPASS_8 = ['pohjoisesta', 'koillisesta', 'idästä', 'kaakosta',
                    'etelästä', 'lounaasta', 'lännestä', 'luoteesta'];
 
+// Aaltoileva kehä: sade r = R + A*sin(lobes*kulma). Amplitudi kasvaa
+// aallonkorkeuden mukana, joten tyyni nayttaa ympyralta ja kova aallokko
+// selvasti mutkaiselta. Taysi mutkaisuus saavutetaan siina aallonkorkeudessa
+// jossa melonta ei enaa ole suositeltavaa (PADDLE_WAVE_LIMITS-ylin raja).
+const WAVE_RING_LOBES = 12;
+const WAVE_RING_AMP_MAX = 6;      // px
+const WAVE_RING_R = 54;           // px, keskipiste 62,62 -> mahtuu 124 px kuvaan
+
+function wavyCirclePath(hs) {
+  const amp = Math.min((hs || 0) / PADDLE_WAVE_LIMITS[2], 1) * WAVE_RING_AMP_MAX;
+  const steps = 180;
+  let d = '';
+  for (let i = 0; i < steps; i++) {
+    const a = (i / steps) * Math.PI * 2;
+    const r = WAVE_RING_R + amp * Math.sin(WAVE_RING_LOBES * a);
+    const x = 62 + Math.cos(a) * r, y = 62 + Math.sin(a) * r;
+    d += (i === 0 ? 'M' : 'L') + x.toFixed(2) + ' ' + y.toFixed(2);
+  }
+  return d + 'Z';
+}
+
 function bubbleHtml(cond) {
   const deg = currentWind.direction;
   const name = COMPASS_8[Math.round(((deg % 360) + 360) % 360 / 45) % 8];
@@ -635,7 +662,11 @@ function bubbleHtml(cond) {
     ? `<div class="pb-wave" style="color:${stroke}">aalto ${Math.round(cond.hs * 100)} cm</div>`
     : '<div class="pb-sub">maalla</div>';
   return '<div class="paddle-bubble">'
-    + `<svg width="30" height="30" viewBox="-15 -15 30 30">`
+    + `<svg class="pb-ring" viewBox="0 0 124 124">`
+    + `<path d="${wavyCirclePath(cond ? cond.hs : 0)}" fill="rgba(255,255,255,.94)" `
+    + `stroke="${stroke}" stroke-width="2.5" stroke-linejoin="round"/></svg>`
+    + '<div class="pb-content">'
+    + `<svg width="26" height="26" viewBox="-15 -15 30 30">`
     + `<line x1="${(-dx * 0.6).toFixed(1)}" y1="${(-dy * 0.6).toFixed(1)}" `
     + `x2="${dx.toFixed(1)}" y2="${dy.toFixed(1)}" stroke="${stroke}" stroke-width="3" stroke-linecap="round"/>`
     + `<polygon points="${dx.toFixed(1)},${dy.toFixed(1)} `
@@ -646,12 +677,12 @@ function bubbleHtml(cond) {
     + `<div class="pb-sub">puuska ${currentWind.gust.toFixed(1).replace('.', ',')}</div>`
     + `<div class="pb-sub">${name}</div>`
     + wave
-    + '</div>';
+    + '</div></div>';
 }
 
 function bubbleIcon(cond) {
   return L.divIcon({
-    className: '', html: bubbleHtml(cond), iconSize: [104, 104], iconAnchor: [52, 52],
+    className: '', html: bubbleHtml(cond), iconSize: [124, 124], iconAnchor: [62, 62],
   });
 }
 
