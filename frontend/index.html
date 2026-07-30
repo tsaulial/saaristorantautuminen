@@ -84,8 +84,7 @@
      kokoa kasvatettu. */
   .paddle-bubble .pb-sub { color: #333a40; font-size: 11px; }
   .paddle-bubble .pb-wave {
-    font-weight: 700; margin-top: 2px; font-size: 10.5px; letter-spacing: -0.2px;
-    white-space: nowrap;
+    font-weight: 700; font-size: 11.5px; white-space: nowrap; color: #14181b;
   }
   .paddle-bubble svg { display: block; margin-bottom: 1px; }
   .status {
@@ -451,6 +450,8 @@ legend.onAdd = function () {
       '<small id="paddle-note" class="impl-note"></small>' +
       '<small>Rantaviivan laatu perustuu 5–15&nbsp;m puskurivyöhykkeeseen.' +
       '<span id="swamp-note"><br>Suo alentaa pistettä merkittävästi.</span></small>' +
+      '<small class="impl-note">Klikkaa karttaa: saat siihen kohtaan pallon, jossa on tuuli, ' +
+      'puuskat ja aallonkorkeus. Pallon klikkaus poistaa sen.</small>' +
       '<div class="radio-row">' +
         '<span class="radio-row-label">Näytä</span>' +
         '<label><input type="radio" name="display-mode" value="score" checked> Rantautumispisteytys</label>' +
@@ -592,7 +593,7 @@ legend.addTo(map);
 // suunta muuttuvat.
 // Palloja voi olla mielivaltainen maara: kartan klikkaus lisaa uuden,
 // pallon klikkaus poistaa juuri sen.
-let paddleBubbles = [];    // [{ latlng, marker }]
+let infoBubbles = [];    // [{ latlng, marker }]
 
 // Vesiruudukon arvot klikatussa pisteessa. Palauttaa null jos kohta on maalla
 // tai aineiston ulkopuolella. Kayttaa jo ladattua valimuistia - kerros on
@@ -670,10 +671,14 @@ function bubbleHtml(cond) {
   // Kehä on graafinen elementti (WCAG-raja 3:1) ja osittain kartan paalla,
   // joten se tarvitsee tummennusta enemman kuin ensin arvioin: 0,70 jai
   // vihrealla 2,9:1 ja keltaisella 2,3:1.
+  // TEKSTI EI OLE VARIKOODATTU. Ensin varitin senkin vaikeusasteen mukaan ja
+  // tummensin varia kunnes mittarit nayttivat hyvalta, mutta oliivinvihrea
+  // 5,0:1 lapaisee WCAG:n eika silti erotu silmalle. Varisignaali on jo
+  // kehassa ja nuolessa, joten teksti saa parhaan mahdollisen kontrastin.
   const stroke = dim(0.60);     // kehä
-  const inkColour = dim(0.45);  // teksti ja nuoli
+  const inkColour = dim(0.45);  // nuoli
   const wave = cond
-    ? `<div class="pb-wave" style="color:${inkColour}">aalto ${Math.round(cond.hs * 100)} cm</div>`
+    ? `<div class="pb-wave">aalto ${Math.round(cond.hs * 100)} cm</div>`
     : '<div class="pb-sub">maalla</div>';
   return '<div class="paddle-bubble">'
     + `<svg class="pb-ring" viewBox="0 0 124 124">`
@@ -689,9 +694,22 @@ function bubbleHtml(cond) {
     + '</svg>'
     + `<div class="pb-speed">${currentWind.speed.toFixed(1).replace('.', ',')} m/s</div>`
     + `<div class="pb-sub">puuska ${currentWind.gust.toFixed(1).replace('.', ',')}</div>`
-    + `<div class="pb-sub">${name}</div>`
     + wave
+    + `<div class="pb-sub">${name}</div>`
     + '</div></div>';
+}
+
+// Vesiruudukko ladataan tarvittaessa: melottavuustilassa se on jo muistissa,
+// muissa tiloissa ei ole. Kuvat ovat pienia (n. 90 kt/tiili), joten lataus
+// klikkauksen yhteydessa on halpa.
+async function ensureWaterFor(latlng) {
+  const y = latlng.lat, x = latlng.lng;
+  const tile = tileListCache.find((tl) => {
+    const b = tl.bounds_epsg3067;
+    return x >= b.minx && x < b.maxx && y >= b.miny && y < b.maxy;
+  });
+  if (!tile || waterImageCache.has(tile.tile_id)) return;
+  try { await loadWaterLevels(tile.tile_id); } catch (err) { /* pallo toimii ilman aallokkoa */ }
 }
 
 function bubbleIcon(cond) {
@@ -702,32 +720,65 @@ function bubbleIcon(cond) {
 
 // Kaikkien pallojen luvut lasketaan uudelleen - tuuli tai ennustehetki on
 // voinut muuttua, ja jokainen pallo on eri paikassa eli eri olosuhteissa.
-function updatePaddleBubbles() {
-  paddleBubbles.forEach((b) => b.marker.setIcon(bubbleIcon(waterConditionsAt(b.latlng))));
+function updateInfoBubbles() {
+  infoBubbles.forEach((b) => b.marker.setIcon(bubbleIcon(waterConditionsAt(b.latlng))));
 }
 
-function removePaddleBubble(bubble) {
+function removeInfoBubble(bubble) {
   map.removeLayer(bubble.marker);
-  paddleBubbles = paddleBubbles.filter((b) => b !== bubble);
+  infoBubbles = infoBubbles.filter((b) => b !== bubble);
+  saveViewState();
 }
 
-function clearPaddleBubbles() {
-  paddleBubbles.forEach((b) => map.removeLayer(b.marker));
-  paddleBubbles = [];
+function clearInfoBubbles() {
+  infoBubbles.forEach((b) => map.removeLayer(b.marker));
+  infoBubbles = [];
 }
 
-function addPaddleBubble(latlng) {
+async function addInfoBubble(latlng) {
   const marker = L.marker(latlng, { icon: bubbleIcon(null), interactive: true }).addTo(map);
   const bubble = { latlng, marker };
-  marker.on('click', (e) => { L.DomEvent.stop(e); removePaddleBubble(bubble); });
-  paddleBubbles.push(bubble);
-  marker.setIcon(bubbleIcon(waterConditionsAt(latlng)));
+  marker.on('click', (e) => { L.DomEvent.stop(e); removeInfoBubble(bubble); });
+  infoBubbles.push(bubble);
+  saveViewState();
+  await ensureWaterFor(latlng);
+  if (infoBubbles.includes(bubble)) marker.setIcon(bubbleIcon(waterConditionsAt(latlng)));
 }
 
-map.on('click', (e) => {
-  if (currentDisplay !== 'paddle') return;
-  addPaddleBubble(e.latlng);
-});
+// Pallon saa mihin tahansa nayttotilaan: tuuli ja aallokko ovat sen paikan
+// ominaisuuksia riippumatta siita, mita kartalla juuri nyt varitetaan.
+map.on('click', (e) => { addInfoBubble(e.latlng); });
+
+// --- Kartan tilan muistaminen ---
+//
+// Asetussivu on OMA SIVUNSA, joten sielta palatessa kartta latautuu alusta
+// ja menettaisi sijaintinsa, zoominsa, nayttotilansa ja pallonsa. Tila
+// tallennetaan siksi omaan localStorage-avaimeensa (eri kuin asetukset,
+// joita asetussivu kirjoittaa).
+const VIEW_KEY = 'rantautuminen-nakyma';
+
+function saveViewState() {
+  if (!tileListCache.length) return;
+  try {
+    const c = map.getCenter();
+    localStorage.setItem(VIEW_KEY, JSON.stringify({
+      lat: c.lat, lng: c.lng, zoom: map.getZoom(),
+      display: currentDisplay, impl: currentImpl, tab: activeLegendTab,
+      wind: currentWind, hour: forecastHour,
+      bubbles: infoBubbles.map((b) => [b.latlng.lat, b.latlng.lng]),
+    }));
+  } catch (err) { /* yksityinen selaustila tms. - tila ei vain sailly */ }
+}
+
+function loadViewState() {
+  try {
+    const s = JSON.parse(localStorage.getItem(VIEW_KEY));
+    if (!s || !isFinite(s.lat) || !isFinite(s.lng) || !isFinite(s.zoom)) return null;
+    return s;
+  } catch (err) {
+    return null;
+  }
+}
 
 // Legendan valilehdet: koko sisalto ei mahdu kerralla nayttoon, joten
 // nakyvissa on yksi lohko kerrallaan.
@@ -741,6 +792,7 @@ function setLegendTab(name) {
   document.querySelectorAll('.tab-panel').forEach((el) => {
     el.classList.toggle('hidden', el.dataset.panel !== name);
   });
+  saveViewState();
 }
 
 // Tuulikompassi: nuoli osoittaa siihen SUUNTAAN JOHON tuuli puhaltaa (eli
@@ -811,7 +863,8 @@ function updateLegendFromSettings() {
   const windRow = document.getElementById('wind-row');
   const windTab = document.getElementById('tab-tuuli');
   if (windRow && windTab) {
-    const on = (factorMask() & FACTOR_BITS.shelter) !== 0 || currentDisplay === 'paddle';
+    const on = (factorMask() & FACTOR_BITS.shelter) !== 0
+      || currentDisplay === 'paddle' || infoBubbles.length > 0;
     windTab.classList.toggle('hidden', !on);
     if (!on && activeLegendTab === 'tuuli') setLegendTab('nayta');
     // Puuskat vaikuttavat vain melottavuuteen, ei rantautumispisteytykseen.
@@ -901,9 +954,7 @@ function updateLegendFromSettings() {
   if (paddleNote) {
     paddleNote.textContent = currentDisplay === 'paddle'
       ? 'Melottavuus värittää meren: vihreä helppo, punainen ei suositella. '
-        + 'Vaikeus määräytyy aallokon TAI puuskien mukaan, kumpi on huonompi. '
-        + 'Klikkaa karttaa niin monesta kohdasta kuin haluat — kukin pallo näyttää '
-        + 'sen paikan olosuhteet. Pallon klikkaus poistaa sen.'
+        + 'Vaikeus määräytyy aallokon TAI puuskien mukaan, kumpi on huonompi.'
       : '';
   }
 
@@ -1477,9 +1528,10 @@ function activeGroup() {
 
 function refreshActive() {
   if (!tileListCache.length) return;
-  // Pallo piiloon kun poistutaan melottavuusnakymasta - sen luvut eivat
-  // tarkoita mitaan muissa kerroksissa.
-  if (currentDisplay !== 'paddle') clearPaddleBubbles(); else updatePaddleBubbles();
+  saveViewState();
+  // Pallot sailyvat nakymasta toiseen - tuuli ja aallokko eivat riipu siita
+  // mita kartalla varitetaan.
+  updateInfoBubbles();
   refreshBase();
   if (currentImpl === 'old') {
     refreshOld();
@@ -1524,18 +1576,56 @@ async function init() {
   tileListCache = tileList;
   updateLegendFromSettings();
 
+  // Palautetaan edellinen tila jos sellainen on - esimerkiksi asetussivulta
+  // palatessa. Muuten avataan oletusnakyma.
+  const saved = loadViewState();
+  if (saved) {
+    if (['score', 'top', 'prime', 'paddle'].includes(saved.display)) currentDisplay = saved.display;
+    if (['old', 'new'].includes(saved.impl)) currentImpl = saved.impl;
+    if (saved.wind && isFinite(saved.wind.speed) && isFinite(saved.wind.direction)) {
+      currentWind = {
+        direction: saved.wind.direction, speed: saved.wind.speed,
+        gust: isFinite(saved.wind.gust) ? saved.wind.gust : saved.wind.speed * DEFAULT_GUST_FACTOR,
+        source: ['kasin', 'fmi', 'met'].includes(saved.wind.source) ? saved.wind.source : 'kasin',
+      };
+    }
+    if (isFinite(saved.hour)) forecastHour = saved.hour;
+    const radio = document.querySelector(`input[name="display-mode"][value="${currentDisplay}"]`);
+    if (radio) radio.checked = true;
+    const implRadio = document.querySelector(`input[name="impl-choice"][value="${currentImpl}"]`);
+    if (implRadio) implRadio.checked = true;
+    map.setView([saved.lat, saved.lng], saved.zoom);
+  }
+
   const allBounds = tileList.map(tileLatLngBounds);
-  if (allBounds.length) {
+  if (!saved && allBounds.length) {
     // Avataan hieman lahempaa kuin taysi "koko aineisto nakyvissa" -taso:
     // yksi zoom-askel enemman (L.CRS.Simple: 2x resoluutio per askel) eli
     // nakyvissa on karkeasti puolet koko aineiston fit-to-bounds-leveydesta.
     const overallBounds = L.latLngBounds(allBounds);
     const fitZoom = map.getBoundsZoom(overallBounds);
     map.setView(overallBounds.getCenter(), fitZoom + 1);
-  } else {
+  } else if (!saved && !allBounds.length) {
     map.setView([0, 0], -6);
   }
 
+  if (saved && saved.tab) setLegendTab(saved.tab);
+  if (saved && Array.isArray(saved.bubbles)) {
+    saved.bubbles.filter((b) => Array.isArray(b) && isFinite(b[0]) && isFinite(b[1]))
+      .forEach(([lat, lng]) => addInfoBubble(L.latLng(lat, lng)));
+  }
+  // Ennustelahde palautetaan, mutta se EI saa estaa kartan avautumista:
+  // verkkoyhteys voi olla poikki tai rajapinta alhaalla, jolloin jaadaan
+  // tallennettuun tuuleen.
+  if (currentWind.source !== 'kasin') {
+    try {
+      await loadForecasts();
+      applyForecastWind();
+    } catch (err) {
+      currentWind.source = 'kasin';
+    }
+  }
+  updateLegendFromSettings();
   switchActiveGroup();
   statusEl.remove();
 }
