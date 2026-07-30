@@ -76,12 +76,17 @@
   .paddle-bubble .pb-content {
     position: absolute; inset: 0;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
-    font-size: 11px; line-height: 1.2; color: #1c1f22; text-align: center;
+    font-size: 11px; line-height: 1.2; color: #14181b; text-align: center;
     padding: 0 14px;   /* pidä teksti irti aaltoilevasta reunasta */
   }
-  .paddle-bubble .pb-speed { font-size: 15px; font-weight: 700; }
-  .paddle-bubble .pb-sub { color: #5a6570; font-size: 10px; }
-  .paddle-bubble .pb-wave { font-weight: 600; margin-top: 1px; }
+  .paddle-bubble .pb-speed { font-size: 16px; font-weight: 700; }
+  /* Apurivit olivat liian vaaleita valkoisella: nostettu lahes mustaksi ja
+     kokoa kasvatettu. */
+  .paddle-bubble .pb-sub { color: #333a40; font-size: 11px; }
+  .paddle-bubble .pb-wave {
+    font-weight: 700; margin-top: 2px; font-size: 10.5px; letter-spacing: -0.2px;
+    white-space: nowrap;
+  }
   .paddle-bubble svg { display: block; margin-bottom: 1px; }
   .status {
     position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
@@ -656,22 +661,31 @@ function bubbleHtml(cond) {
   // Nuoli osoittaa suuntaan JOHON tuuli puhaltaa, kuten kompassissa.
   const rad = (deg + 180) * Math.PI / 180;
   const dx = Math.sin(rad) * 11, dy = -Math.cos(rad) * 11;
-  const colour = cond ? SCORE_COLOR_LUT[Math.round((1 - cond.difficulty) * 255)] : [90, 101, 112];
-  const stroke = `rgb(${colour[0]},${colour[1]},${colour[2]})`;
+  // Vaikeusasteen vari on taysin kylläinen (HSV s=v=1), eika sellaisenaan
+  // kelpaa tekstiin valkoisella: kirkkaan keltaisen kontrasti on 1,07:1 eli
+  // lukukelvoton. Savy sailytetaan mutta kirkkautta lasketaan - teksti saa
+  // rajumman tummennuksen kuin kehä, joka on paksu viiva kartan paalla.
+  const base = cond ? SCORE_COLOR_LUT[Math.round((1 - cond.difficulty) * 255)] : [90, 101, 112];
+  const dim = (f) => `rgb(${Math.round(base[0] * f)},${Math.round(base[1] * f)},${Math.round(base[2] * f)})`;
+  // Kehä on graafinen elementti (WCAG-raja 3:1) ja osittain kartan paalla,
+  // joten se tarvitsee tummennusta enemman kuin ensin arvioin: 0,70 jai
+  // vihrealla 2,9:1 ja keltaisella 2,3:1.
+  const stroke = dim(0.60);     // kehä
+  const inkColour = dim(0.45);  // teksti ja nuoli
   const wave = cond
-    ? `<div class="pb-wave" style="color:${stroke}">aalto ${Math.round(cond.hs * 100)} cm</div>`
+    ? `<div class="pb-wave" style="color:${inkColour}">aalto ${Math.round(cond.hs * 100)} cm</div>`
     : '<div class="pb-sub">maalla</div>';
   return '<div class="paddle-bubble">'
     + `<svg class="pb-ring" viewBox="0 0 124 124">`
-    + `<path d="${wavyCirclePath(cond ? cond.hs : 0)}" fill="rgba(255,255,255,.94)" `
+    + `<path d="${wavyCirclePath(cond ? cond.hs : 0)}" fill="#ffffff" `
     + `stroke="${stroke}" stroke-width="2.5" stroke-linejoin="round"/></svg>`
     + '<div class="pb-content">'
-    + `<svg width="26" height="26" viewBox="-15 -15 30 30">`
+    + `<svg width="22" height="22" viewBox="-15 -15 30 30">`
     + `<line x1="${(-dx * 0.6).toFixed(1)}" y1="${(-dy * 0.6).toFixed(1)}" `
-    + `x2="${dx.toFixed(1)}" y2="${dy.toFixed(1)}" stroke="${stroke}" stroke-width="3" stroke-linecap="round"/>`
+    + `x2="${dx.toFixed(1)}" y2="${dy.toFixed(1)}" stroke="${inkColour}" stroke-width="3.5" stroke-linecap="round"/>`
     + `<polygon points="${dx.toFixed(1)},${dy.toFixed(1)} `
     + `${(dx * 0.45 - dy * 0.32).toFixed(1)},${(dy * 0.45 + dx * 0.32).toFixed(1)} `
-    + `${(dx * 0.45 + dy * 0.32).toFixed(1)},${(dy * 0.45 - dx * 0.32).toFixed(1)}" fill="${stroke}"/>`
+    + `${(dx * 0.45 + dy * 0.32).toFixed(1)},${(dy * 0.45 - dx * 0.32).toFixed(1)}" fill="${inkColour}"/>`
     + '</svg>'
     + `<div class="pb-speed">${currentWind.speed.toFixed(1).replace('.', ',')} m/s</div>`
     + `<div class="pb-sub">puuska ${currentWind.gust.toFixed(1).replace('.', ',')}</div>`
