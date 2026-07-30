@@ -609,7 +609,8 @@ def _rank_byte(values, sorted_global):
 
 
 def score_from_components(slope_b, dist_b, rock_bit, swamp_bit, factor_mask,
-                          fetch_level=None, wind_speed=None, fetch_m=None):
+                          fetch_level=None, wind_speed=None, fetch_m=None,
+                          obstacle_h=0.0):
     """Pistemaara 0-1 valituista tekijoista, 8-bittisiksi kvantisoiduista
     osatekijoista. **Tama on backendin puoli sopimuksesta** - selaimen
     (frontend/index.html: scoreFromComponents) on laskettava TASAN samoin,
@@ -638,8 +639,9 @@ def score_from_components(slope_b, dist_b, rock_bit, swamp_bit, factor_mask,
             raise ValueError("Suojaisuustekija vaatii pyyhkaisymatkan ja wind_speed-arvon")
         # fetch_m (metrit) on selaimen kayttama polku: se interpoloi kahden
         # sektorin valilla eika kvantisoi tulosta takaisin tasoksi.
-        shelter = (shelter_score_from_fetch(fetch_m, wind_speed) if fetch_m is not None
-                   else shelter_score_from_level(fetch_level, wind_speed))
+        shelter = (shelter_score_from_fetch(fetch_m, wind_speed, obstacle_h)
+                   if fetch_m is not None
+                   else shelter_score_from_level(fetch_level, wind_speed, obstacle_h))
         total = total + SHELTER_WEIGHT * shelter
         weight_sum += SHELTER_WEIGHT
 
@@ -650,11 +652,13 @@ def score_from_components(slope_b, dist_b, rock_bit, swamp_bit, factor_mask,
 
 
 def rank_from_components(slope_b, dist_b, rock_bit, swamp_bit, tiebreak_b, factor_mask,
-                         fetch_level=None, wind_speed=None, fetch_m=None):
+                         fetch_level=None, wind_speed=None, fetch_m=None,
+                         obstacle_h=0.0):
     """Pistemaara + tasapelinpurku - kaytetaan VAIN "parhaat X %" -valintaan,
     ei varitykseen (sama jako kuin score/rank_score, ks. TIEBREAK_EPSILON)."""
     score = score_from_components(slope_b, dist_b, rock_bit, swamp_bit, factor_mask,
-                                  fetch_level=fetch_level, wind_speed=wind_speed, fetch_m=fetch_m)
+                                  fetch_level=fetch_level, wind_speed=wind_speed, fetch_m=fetch_m,
+                                  obstacle_h=obstacle_h)
     return score + TIEBREAK_EPSILON * (tiebreak_b / 255.0)
 
 
@@ -1361,84 +1365,6 @@ def get_or_compute_sea_mosaic(force=False):
     return sea, (ox, oy)
 
 
-def compute_fetch_at(points_rc, sea, max_fetch_m=MAX_FETCH_M):
-    """Pyyhkaisymatka metreina jokaiselle pisteelle (rivi, sarake) ja
-    jokaiselle sektorille. Palauttaa taulukon (n_pisteita, FETCH_SECTORS).
-
-    Sateenseuranta on vektoroitu PISTEIDEN yli, ei ruudukon yli: rantaruutuja
-    on vain kymmenia tuhansia, joten askel kerrallaan eteneminen kaikille
-    pisteille yhtaaikaa on paljon halvempaa kuin koko mosaiikin kasittely
-    (ja tarkempaa kuin kuvan kiertaminen, joka toisi resamplausvirheen).
-
-    Fetch mitataan VASTATUULEEN: sektori s vastaa suuntaa josta tuuli
-    puhaltaa, ja matka lasketaan siihen suuntaan avovetta pitkin."""
-    h, w = sea.shape
-    rows, cols = points_rc
-    n = len(rows)
-    steps = int(round(max_fetch_m / FETCH_GRID_M))
-    out = np.full((n, FETCH_SECTORS), max_fetch_m, dtype=np.float32)
-
-    for sector in range(FETCH_SECTORS):
-        bearing = np.radians(sector_bearing(sector))
-        # Pohjoinen = rivien suunnassa ylospain (rivi pienenee), ita = sarake kasvaa.
-        dr = -np.cos(bearing)
-        dc = np.sin(bearing)
-
-        # Sade LAHTEE MAALTA: naytettavat ruudut ovat puskurivyohykkeella eli
-        # 5-15 m rantaviivasta sisamaahan. Siksi matkaa ei voi laskea heti
-        # ensimmaisesta askeleesta - se osuisi maahan valittomasti ja jokainen
-        # ranta nayttaisi suojaisalta joka suunnasta (havaittu ja korjattu).
-        # Edetaan siis ensin veteen (vaihe A) ja vasta sitten mitataan
-        # yhtenainen avovesijakso (vaihe B).
-        entered = np.zeros(n, dtype=bool)
-        start_k = np.zeros(n, dtype=np.int64)
-        active = np.ones(n, dtype=bool)
-        # Oletus: vetta ei kohdattu lainkaan -> suunta osoittaa sisamaahan
-        # -> tasta suunnasta ei tule aallokkoa.
-        fetch = np.full(n, MIN_FETCH_M, dtype=np.float32)
-
-        for k in range(1, steps + 1):
-            # dr/dc ovat skalaareja, joten siirtyma pyoristetaan kerran -
-            # tama on tavallinen digitaalinen jana eika vaadi taulukkotyota.
-            rr = rows + int(round(k * dr))
-            cc = cols + int(round(k * dc))
-            valid = (rr >= 0) & (rr < h) & (cc >= 0) & (cc < w)
-
-            # Aineiston ulkopuoli = tuntematon = kasitellaan avovetena.
-            is_sea = ~valid.copy()
-            idx = valid & active
-            is_sea[idx] = sea[rr[idx], cc[idx]]
-
-            newly_entered = active & ~entered & is_sea
-            entered |= newly_entered
-            start_k[newly_entered] = k
-
-            # Jos vetta ei tavoitettu MAX_INITIAL_LAND_STEPS:n sisalla, suunta
-            # osoittaa sisamaahan ja piste on siita suunnasta suojassa.
-            if k == MAX_INITIAL_LAND_STEPS:
-                active &= entered
-                if not active.any():
-                    break
-
-            hit_land = active & entered & ~is_sea
-            if hit_land.any():
-                fetch[hit_land] = (k - start_k[hit_land]) * FETCH_GRID_M
-                active &= ~hit_land
-            if not active.any():
-                break
-
-        # Viela aktiiviset sateet ovat vedessa mutta eivat ole osuneet maahan
-        # koko matkalla - ne kulkevat aineiston ulkopuolelle tai avomerelle,
-        # joten ne saavat KATON eivatka oletusarvoa. Ilman tata rivia juuri
-        # kaikkein alttiimmat rannat merkittaisiin suojaisiksi (havaittu ja
-        # korjattu: koko aineistossa ei ollut yhtaan kattoon osunutta sadetta).
-        fetch[active] = max_fetch_m
-
-        out[:, sector] = fetch
-
-    return np.clip(out, MIN_FETCH_M, max_fetch_m)
-
-
 def quantise_fetch(fetch_m):
     """Fetch -> 0..FETCH_LEVELS-1 LOGARITMISELLA asteikolla. Aallonkorkeus
     kasvaa pyyhkaisymatkan neliojuuressa, joten lineaarinen kvantisointi
@@ -1454,47 +1380,6 @@ def dequantise_fetch(level):
     dequantiseFetch) laskee TASAN saman."""
     lo, hi = np.log(MIN_FETCH_M), np.log(MAX_FETCH_M)
     return np.exp(lo + (level / (FETCH_LEVELS - 1)) * (hi - lo))
-
-
-def get_or_compute_fetch_levels(tile_id, buildings_path, force=False):
-    """Kvantisoidut pyyhkaisymatkat (n_ruutua x FETCH_SECTORS) tiilen
-    selainruudukolla (ks. NEW_PIXEL_FACTOR) - tasan ne arvot jotka selain
-    lukee kuvista."""
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache_path = CACHE_DIR / f"{tile_id}_fetch.npy"
-
-    factors = get_or_compute_factor_arrays(tile_id, buildings_path, force=force)
-    buffer_small = factors["buffer"]
-    if not force and cache_path.exists():
-        return np.load(cache_path), buffer_small
-
-    sea, (ox, oy) = get_or_compute_sea_mosaic(force=force)
-    raw = factors["raw"]
-    transform = raw["map_transform"]
-    native_h, native_w = raw["score"].shape
-    small_h, small_w = buffer_small.shape
-
-    # Naytettavien ruutujen keskipisteet maailmakoordinaateissa -> mosaiikin
-    # ruudut. Ruutu voi olla mosaiikin ulkopuolella vain pyoristyksen takia,
-    # joten leikataan reunoihin.
-    rr, cc = np.nonzero(buffer_small)
-    x = transform.c + (cc + 0.5) * (native_w / small_w) * abs(transform.a)
-    y = transform.f - (rr + 0.5) * (native_h / small_h) * abs(transform.e)
-    mos_col = np.clip(np.rint((x - ox) / FETCH_GRID_M).astype(np.int64), 0, sea.shape[1] - 1)
-    mos_row = np.clip(np.rint((oy - y) / FETCH_GRID_M).astype(np.int64), 0, sea.shape[0] - 1)
-
-    # Sama mosaiikkiruutu toistuu monella naytettavalla ruudulla (10 m vs
-    # 3,5 m), joten lasketaan fetch vain uniikeille ruuduille.
-    flat = mos_row * sea.shape[1] + mos_col
-    uniq, inverse = np.unique(flat, return_inverse=True)
-    u_rows, u_cols = np.divmod(uniq, sea.shape[1])
-    fetch_uniq = compute_fetch_at((u_rows, u_cols), sea)
-    levels_uniq = quantise_fetch(fetch_uniq)
-
-    levels = np.zeros((small_h, small_w, FETCH_SECTORS), dtype=np.uint8)
-    levels[rr, cc] = levels_uniq[inverse]
-    np.save(cache_path, levels)
-    return levels, buffer_small
 
 
 # --- SUOJAISUUS VIIDENTENA TEKIJANA ---
@@ -1568,21 +1453,49 @@ def fetch_at_bearing(levels, bearing_deg):
     return a + (b - a) * frac
 
 
-def shelter_score_from_fetch(fetch_m, wind_speed):
-    """Suojaisuuspistemaara 0-1 pyyhkaisymatkasta (metreina) ja tuulen
-    nopeudesta. **Selaimen (frontend/index.html: shelterScoreFromFetch) on
-    laskettava tasan samoin.**"""
-    hs = WAVE_COEFF * wind_speed * np.sqrt(fetch_m)
+# Este hiljentaa tuulta takanaan sita enemman mita korkeampi se on ja mita
+# lahempana ollaan. Matala luoto ei siis tuota tuulensuojaa lainkaan, vaikka
+# se katkaiseekin aallon - juuri tama erottelu puuttui aiemmin.
+#
+# Tarkistus lahtoarvoilla (0,6 ja 8): 2 m luoto 200 m paassa -> kerroin 1,00
+# (ei suojaa); 10 m saari 200 m paassa -> 0,83; 10 m saari 50 m paassa -> 0,56.
+WIND_SHELTER_MAX = 0.6
+WIND_SHELTER_K = 8.0
+
+
+def sheltered_wind(wind_speed, fetch_m, obstacle_h):
+    """Esteen takana vaimentunut tuuli. Etaisyydeksi otetaan pyyhkaisymatkan
+    PUOLIVALI, koska aallokko kasvaa koko matkan varrella eika vain rannassa."""
+    h = np.maximum(np.asarray(obstacle_h, dtype=np.float64), 0.0)
+    x = np.asarray(fetch_m, dtype=np.float64) / 2.0
+    # h=0 (ei estetta tai aineiston reuna) -> ei vaimennusta.
+    scale = WIND_SHELTER_K * np.maximum(h, 1e-9)
+    factor = 1.0 - WIND_SHELTER_MAX * np.exp(-x / scale)
+    return wind_speed * np.where(h > 0.0, factor, 1.0)
+
+
+def shelter_score_from_fetch(fetch_m, wind_speed, obstacle_h=0.0):
+    """Suojaisuuspistemaara 0-1 pyyhkaisymatkasta (metreina), tuulen
+    nopeudesta ja esteen korkeudesta. **Selaimen
+    (frontend/index.html: shelterScoreFromFetch) on laskettava tasan samoin.**
+
+    HUOM: tassa on ainoa exp() koko jaetussa sopimuksessa, eivatka numpy ja
+    JS takaa sille bitilleen samaa tulosta (ero luokkaa 1e-16). Se ei haittaa,
+    koska KYNNYSARVOT lasketaan tuulennopeudella 0, jolloin koko
+    tuulensuojatermi on merkityksetön - ristiintarkistus sallii siksi
+    hiuksenhienon eron vain talta osin."""
+    u_eff = sheltered_wind(wind_speed, fetch_m, obstacle_h)
+    hs = WAVE_COEFF * u_eff * np.sqrt(fetch_m)
     return np.clip((SHELTER_ROUGH_M - hs) / (SHELTER_ROUGH_M - SHELTER_CALM_M), 0.0, 1.0)
 
 
-def shelter_score_from_level(fetch_level, wind_speed):
+def shelter_score_from_level(fetch_level, wind_speed, obstacle_h=0.0):
     """Kuten yllä, mutta kvantisoidusta tasosta. Selain interpoloi kahden
     sektorin valilla ja kayttaa siksi metriversiota - se on mahdollista
     koska kynnysarvot lasketaan TYYNESSA eivatka riipu tuulesta lainkaan
     (ks. compute_shelter_thresholds)."""
     return shelter_score_from_fetch(FETCH_LEVEL_METRES[np.asarray(fetch_level, dtype=np.int64)],
-                                    wind_speed)
+                                    wind_speed, obstacle_h)
 
 
 def get_or_compute_fetch_png(tile_id, buildings_path, part="a", force=False):
@@ -1597,7 +1510,7 @@ def get_or_compute_fetch_png(tile_id, buildings_path, part="a", force=False):
     A<255 pyoristaisi arvoja ja A=0 nollaisi ne (sama syy joka pakotti
     tasapelinpurun omaan kuvaansa). Peittomaskina toimii factors-kuvan alfa,
     joka on selaimessa jo ladattu."""
-    if part not in ("a", "b"):
+    if part not in ("a", "b", "obsa", "obsb"):
         raise ValueError(f"Tuntematon part: {part}")
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -1609,8 +1522,11 @@ def get_or_compute_fetch_png(tile_id, buildings_path, part="a", force=False):
     if tile_id not in tiles.get_registry():
         raise KeyError(f"Tuntematon tile_id: {tile_id}")
 
-    levels, _buffer = get_or_compute_fetch_levels(tile_id, buildings_path, force=force)
-    base = 0 if part == "a" else 6
+    fetch_levels, obs_levels, _buffer = get_or_compute_fetch_levels(
+        tile_id, buildings_path, force=force
+    )
+    levels = obs_levels if part.startswith("obs") else fetch_levels
+    base = 6 if part.endswith("b") else 0
     chan = [
         (levels[:, :, base + 2 * i] << 4) | levels[:, :, base + 2 * i + 1]
         for i in range(3)
@@ -1699,3 +1615,285 @@ def compute_shelter_thresholds(buildings_path, force=False):
 
     cache_path.write_text(json.dumps(out))
     return out
+
+
+
+
+# --- ESTEEN TEHOLLINEN KORKEUS ---
+#
+# Kaikki maa ei ole samanlainen este. Matala luoto katkaisee aallon mutta EI
+# tuulta - sen takana tuulee yhta kovaa kuin edessa. Korkea, puustoinen saari
+# taas hiljentaa myos tuulen. Erottelu vaatii esteen korkeuden.
+#
+# MML:n korkeusmalli on MAANPINTAMALLI: puusto ei sisally siihen lainkaan,
+# joten matala mutta puustoinen saari nayttaisi luodolta. Kayttajan antama
+# saanto: suurilla saarilla peruskartan valkoinen voi olla metsaa, pienilla
+# ei. Kasvillisuuslisa annetaan siksi SAAREN KOON perusteella - ei
+# varitunnistuksella, jota ei tassa saaristossa voi luottaa.
+#
+# Mitattu perustelu koolle: alle 0,1 ha luodot ovat mediaanikorkeudeltaan
+# 0,9 m, 0,5-2 ha saaret 2,2 m ja yli 10 ha saaret 6,8 m. Saaren koko siis
+# ennustaa korkeutta vahvasti. 900 maakomponentista 67 % on alle 1 ha, mutta
+# ne kattavat vain 1,8 % maapinta-alasta.
+#
+# Paljas kallio ja avosuo eivat saa kasvillisuuslisaa vaikka olisivat
+# suurella saarella - molemmat maskit ovat jo raakavalimuistissa, joten
+# uutta varikynnysta ei tarvitse virittaa.
+MIN_VEG_ISLAND_HA = 1.0
+VEG_HEIGHT_M = 12.0
+
+
+def get_or_compute_height_mosaic(buildings_path, force=False):
+    """Esteen tehollinen korkeus (m) samalla karkealla ruudukolla kuin
+    merimosaiikki. Ruudun arvo on DEM:n MAKSIMI ruudussa - este on
+    korkeimman kohtansa mittainen tuulen kannalta - plus mahdollinen
+    kasvillisuuslisa."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_path = CACHE_DIR / "_height_mosaic.npy"
+    if not force and cache_path.exists():
+        return np.load(cache_path)
+
+    sea, (ox, oy) = get_or_compute_sea_mosaic(force=force)
+    h, w = sea.shape
+    height = np.zeros((h, w), dtype=np.float32)
+    veg_ok = np.zeros((h, w), dtype=bool)
+
+    for tile in tiles.get_registry().values():
+        dem, transform, _crs, nodata, pixel_size = score_engine.read_dem(str(tile.dem_path))
+        dem = np.where(dem == nodata, 0.0, dem).astype(np.float32)
+        factor = int(round(FETCH_GRID_M / pixel_size))
+        hh, ww = dem.shape[0] // factor, dem.shape[1] // factor
+        # Maksimi ruudussa (reshape-lohkotus on nopein tapa)
+        dem_small = dem[:hh * factor, :ww * factor].reshape(hh, factor, ww, factor).max(axis=(1, 3))
+
+        raw = get_or_compute_raw(tile.tile_id, buildings_path, force=force)
+        native_factor = int(round(FETCH_GRID_M / abs(raw["map_transform"].a)))
+        bare = raw["rock_mask"] | raw["swamp_mask"]
+        bh, bw = bare.shape[0] // native_factor, bare.shape[1] // native_factor
+        bare_small = (bare[:bh * native_factor, :bw * native_factor]
+                      .reshape(bh, native_factor, bw, native_factor).mean(axis=(1, 3))) >= 0.5
+
+        col = int(round((tile.bounds[0] - ox) / FETCH_GRID_M))
+        row = int(round((oy - tile.bounds[3]) / FETCH_GRID_M))
+        hh2, ww2 = min(hh, bh), min(ww, bw)
+        target = (slice(row, row + hh2), slice(col, col + ww2))
+        height[target] = np.maximum(height[target], dem_small[:hh2, :ww2])
+        veg_ok[target] |= ~bare_small[:hh2, :ww2]
+
+    # Kasvillisuuslisa vain riittavan suurilla saarilla
+    land = ~sea
+    labels, n = ndimage_label(land, structure=np.ones((3, 3), dtype=bool))
+    if n:
+        sizes = np.bincount(labels.ravel())
+        min_cells = MIN_VEG_ISLAND_HA * 10000.0 / (FETCH_GRID_M ** 2)
+        big = np.zeros(len(sizes), dtype=bool)
+        big[1:] = sizes[1:] >= min_cells
+        height = height + VEG_HEIGHT_M * (big[labels] & veg_ok & land)
+
+    height = height.astype(np.float32)
+    np.save(cache_path, height)
+    return height
+
+
+
+# Yksi sade per sektori antoi pienelle luodolle liian pitkan suojan: 30 m
+# levea luoto 200 m paassa peittaa vain noin 8 astetta, mutta yksi sade
+# katkesi siihen kuin se olisi peittanyt koko sektorin. Aallokko saapuu
+# leveammalta sektorilta sen ohi ja taitse.
+#
+# Korvattu SAVILLEN TEHOLLISELLA PYYHKAISYMATKALLA, joka on merenkulun
+# vakiokaytanto: jokaiselle sektorille lasketaan 13 sadetta +-45 asteen
+# haarukassa ja niista painotettu keskiarvo
+#
+#     F_eff = summa(F_i * cos^2 a_i) / summa(cos a_i)
+#
+# Kapea luoto poistaa naista vain yhden tai kaksi, jolloin tehollinen matka
+# pysyy pitkana; levea saari peittaa kaikki. Tama on samalla halvempi kuin
+# aallon lapaisyn mallintaminen, koska tallennettava data ei kasva.
+#
+# Sama sadehaarukka antaa esteen korkeuden: se painotetaan samoin, jolloin
+# yhden kapean sateen taakse jaava korkea saari ei tuota tuulensuojaa
+# leveasti - mika on fysikaalisesti oikein.
+RAY_SPREAD_DEG = 45.0
+RAY_STEP_DEG = 7.5
+RAY_OFFSETS = np.arange(-RAY_SPREAD_DEG, RAY_SPREAD_DEG + 0.001, RAY_STEP_DEG)
+
+# Esteen korkeus luetaan vasta osuman TAKAA: rantaviiva itsessaan on aina
+# matala, ja pelkka osumapiste antoi mittauksissa mediaaniksi 1,1 m kun
+# oikea arvo on 4,1 m.
+OBSTACLE_LOOKAHEAD_M = 100.0
+OBSTACLE_MAX_M = 20.0
+OBSTACLE_LEVELS = 16
+
+
+def quantise_obstacle(height_m):
+    """Esteen korkeus -> 0..OBSTACLE_LEVELS-1, LINEAARISESTI (toisin kuin
+    pyyhkaisymatka): tuulensuoja riippuu korkeudesta suunnilleen lineaarisesti
+    eika tarvitse logaritmista tarkkuutta matalassa paassa."""
+    t = np.clip(height_m, 0.0, OBSTACLE_MAX_M) / OBSTACLE_MAX_M
+    return np.clip(np.rint(t * (OBSTACLE_LEVELS - 1)), 0, OBSTACLE_LEVELS - 1).astype(np.uint8)
+
+
+def dequantise_obstacle(level):
+    """quantise_obstacle:n kaanteisfunktio - selain laskee tasan saman
+    (pelkkaa kerto- ja jakolaskua, joten bitilleen sama molemmissa)."""
+    return np.asarray(level, dtype=np.float64) * (OBSTACLE_MAX_M / (OBSTACLE_LEVELS - 1))
+
+
+def _march_ray(rows, cols, sea, height, bearing_deg, max_fetch_m):
+    """Yksi sade: palauttaa (pyyhkaisymatka, esteen korkeus) jokaiselle
+    pisteelle. Ks. vaiheiden A ja B selitys alla - sade lahtee maalta, joten
+    ensin on edettava veteen."""
+    h, w = sea.shape
+    n = len(rows)
+    steps = int(round(max_fetch_m / FETCH_GRID_M))
+    look = int(round(OBSTACLE_LOOKAHEAD_M / FETCH_GRID_M))
+    bearing = np.radians(bearing_deg)
+    dr, dc = -np.cos(bearing), np.sin(bearing)
+
+    entered = np.zeros(n, dtype=bool)
+    start_k = np.zeros(n, dtype=np.int64)
+    active = np.ones(n, dtype=bool)
+    fetch = np.full(n, MIN_FETCH_M, dtype=np.float32)
+    obstacle = np.zeros(n, dtype=np.float32)
+
+    for k in range(1, steps + 1):
+        rr = rows + int(round(k * dr))
+        cc = cols + int(round(k * dc))
+        valid = (rr >= 0) & (rr < h) & (cc >= 0) & (cc < w)
+        is_sea = ~valid.copy()
+        idx = valid & active
+        is_sea[idx] = sea[rr[idx], cc[idx]]
+
+        newly = active & ~entered & is_sea
+        entered |= newly
+        start_k[newly] = k
+
+        if k == MAX_INITIAL_LAND_STEPS:
+            active &= entered
+            if not active.any():
+                break
+
+        hit = active & entered & ~is_sea
+        if hit.any():
+            fetch[hit] = (k - start_k[hit]) * FETCH_GRID_M
+            hv = np.zeros(n, dtype=np.float32)
+            for j in range(look + 1):
+                r2 = np.clip(rows + int(round((k + j) * dr)), 0, h - 1)
+                c2 = np.clip(cols + int(round((k + j) * dc)), 0, w - 1)
+                hv = np.maximum(hv, height[r2, c2])
+            obstacle[hit] = hv[hit]
+            active &= ~hit
+        if not active.any():
+            break
+
+    # Maahan osumattomat sateet kulkevat aineiston ulkopuolelle tai
+    # avomerelle: ne saavat KATON eivatka oletusarvoa, ja este on 0.
+    fetch[active] = max_fetch_m
+    return np.clip(fetch, MIN_FETCH_M, max_fetch_m), obstacle
+
+
+def compute_fetch_and_obstacle(points_rc, sea, height, max_fetch_m=MAX_FETCH_M):
+    """Tehollinen pyyhkaisymatka ja esteen korkeus jokaiselle pisteelle ja
+    sektorille: (n, FETCH_SECTORS) x 2."""
+    rows, cols = points_rc
+    n = len(rows)
+    fetch_out = np.zeros((n, FETCH_SECTORS), dtype=np.float32)
+    obs_out = np.zeros((n, FETCH_SECTORS), dtype=np.float32)
+
+    cos1 = np.cos(np.radians(RAY_OFFSETS))
+    cos2 = cos1 ** 2
+    denom_f = cos1.sum()
+    denom_h = cos2.sum()
+
+    # Sama suunta toistuu eri sektoreissa, joten sateet lasketaan kerran
+    # per uniikki suunta ja yhdistetaan sen jalkeen.
+    bearings = {}
+    for sector in range(FETCH_SECTORS):
+        for off in RAY_OFFSETS:
+            bearings.setdefault(round((sector_bearing(sector) + off) % 360.0, 3), None)
+    for b in bearings:
+        bearings[b] = _march_ray(rows, cols, sea, height, b, max_fetch_m)
+
+    for sector in range(FETCH_SECTORS):
+        acc_f = np.zeros(n, dtype=np.float64)
+        acc_h = np.zeros(n, dtype=np.float64)
+        for off, c1, c2 in zip(RAY_OFFSETS, cos1, cos2):
+            f_i, h_i = bearings[round((sector_bearing(sector) + off) % 360.0, 3)]
+            acc_f += f_i * c2
+            acc_h += h_i * c2
+        fetch_out[:, sector] = acc_f / denom_f
+        obs_out[:, sector] = acc_h / denom_h
+
+    return np.clip(fetch_out, MIN_FETCH_M, max_fetch_m), obs_out
+
+
+def get_or_compute_fetch_global(buildings_path, force=False):
+    """Laskee pyyhkaisymatkat ja esteiden korkeudet KAIKKIEN tiilien
+    rantaruuduille kerralla. Globaali siksi, etta sade kulkee tiilirajojen
+    yli - ja koska sadehaarukka on 13-kertainen, sama suunta kannattaa
+    laskea vain kerran koko aineistolle."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_path = CACHE_DIR / "_fetch_global.npz"
+    if not force and cache_path.exists():
+        data = np.load(cache_path)
+        return data["cells"], data["fetch"], data["obstacle"]
+
+    sea, (ox, oy) = get_or_compute_sea_mosaic(force=force)
+    height = get_or_compute_height_mosaic(buildings_path, force=force)
+
+    all_cells = []
+    for tid in tiles.get_registry():
+        cells, _shape = _tile_mosaic_cells(tid, buildings_path, sea.shape, (ox, oy), force=force)
+        all_cells.append(cells)
+    cells = np.unique(np.concatenate(all_cells))
+    rows, cols = np.divmod(cells, sea.shape[1])
+
+    fetch, obstacle = compute_fetch_and_obstacle((rows, cols), sea, height)
+    np.savez_compressed(cache_path, cells=cells, fetch=fetch, obstacle=obstacle)
+    return cells, fetch, obstacle
+
+
+def _tile_mosaic_cells(tile_id, buildings_path, mosaic_shape, origin, force=False):
+    """Tiilen naytettavien ruutujen vastaavat mosaiikkiruudut (litistettyna)."""
+    ox, oy = origin
+    factors = get_or_compute_factor_arrays(tile_id, buildings_path, force=force)
+    buffer_small = factors["buffer"]
+    raw = factors["raw"]
+    transform = raw["map_transform"]
+    native_h, native_w = raw["score"].shape
+    small_h, small_w = buffer_small.shape
+
+    rr, cc = np.nonzero(buffer_small)
+    x = transform.c + (cc + 0.5) * (native_w / small_w) * abs(transform.a)
+    y = transform.f - (rr + 0.5) * (native_h / small_h) * abs(transform.e)
+    mos_col = np.clip(np.rint((x - ox) / FETCH_GRID_M).astype(np.int64), 0, mosaic_shape[1] - 1)
+    mos_row = np.clip(np.rint((oy - y) / FETCH_GRID_M).astype(np.int64), 0, mosaic_shape[0] - 1)
+    return mos_row * mosaic_shape[1] + mos_col, (rr, cc, buffer_small.shape)
+
+
+def get_or_compute_fetch_levels(tile_id, buildings_path, force=False):
+    """Kvantisoidut pyyhkaisymatkat JA esteiden korkeudet tiilen
+    selainruudukolla (ks. NEW_PIXEL_FACTOR) - tasan ne arvot jotka selain
+    lukee kuvista. Palauttaa (fetch_levels, obstacle_levels, buffer)."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_path = CACHE_DIR / f"{tile_id}_fetch.npz"
+
+    factors = get_or_compute_factor_arrays(tile_id, buildings_path, force=force)
+    buffer_small = factors["buffer"]
+    if not force and cache_path.exists():
+        data = np.load(cache_path)
+        return data["fetch"], data["obstacle"], buffer_small
+
+    sea, (ox, oy) = get_or_compute_sea_mosaic(force=force)
+    cells, fetch_all, obs_all = get_or_compute_fetch_global(buildings_path, force=force)
+    flat, (rr, cc, shape) = _tile_mosaic_cells(tile_id, buildings_path, sea.shape, (ox, oy), force=force)
+
+    pos = np.searchsorted(cells, flat)
+    fetch_levels = np.zeros((*shape, FETCH_SECTORS), dtype=np.uint8)
+    obs_levels = np.zeros((*shape, FETCH_SECTORS), dtype=np.uint8)
+    fetch_levels[rr, cc] = quantise_fetch(fetch_all[pos])
+    obs_levels[rr, cc] = quantise_obstacle(obs_all[pos])
+
+    np.savez_compressed(cache_path, fetch=fetch_levels, obstacle=obs_levels)
+    return fetch_levels, obs_levels, buffer_small

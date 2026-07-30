@@ -45,6 +45,12 @@
   .wind-row.hidden { display: none; }
   .wind-row label { display: block; margin: 4px 0 1px; }
   .wind-row input[type="range"] { width: 100%; vertical-align: middle; }
+  .wind-dial { display: block; margin: 4px auto 2px; width: 108px; height: 108px; }
+  .wind-dial .ring { fill: #fbfcfd; stroke: #c8d0d6; stroke-width: 1.5; }
+  .wind-dial .tick { stroke: #c8d0d6; stroke-width: 1; }
+  .wind-dial .card { fill: #7a8590; font-size: 11px; font-weight: 600; }
+  .wind-dial .arrow { stroke-linecap: round; stroke-linejoin: round; }
+  .wind-dial .hub { fill: #5a6570; }
   .status {
     position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
     background: white; padding: 6px 14px; border-radius: 4px;
@@ -159,14 +165,40 @@ function fetchWeights(bearingDeg) {
 
 // Suojaisuuspistemaara 0-1 pyyhkaisymatkasta (metreina). **Backendin
 // (shelter_score_from_fetch) on laskettava tasan samoin.**
-function shelterScoreFromFetch(fetchM, windSpeed) {
-  const hs = WAVE_COEFF * windSpeed * Math.sqrt(fetchM);
+// Este hiljentaa tuulta takanaan sita enemman mita korkeampi se on ja mita
+// lahempana ollaan. Matala luoto ei siis tuota tuulensuojaa lainkaan, vaikka
+// se katkaiseekin aallon. Pidettava samassa kuin backend/pipeline.py:
+// WIND_SHELTER_MAX / WIND_SHELTER_K / sheltered_wind.
+const WIND_SHELTER_MAX = 0.6;
+const WIND_SHELTER_K = 8.0;
+const OBSTACLE_MAX_M = 20.0;
+const OBSTACLE_LEVELS = 16;
+
+function dequantiseObstacle(level) {
+  return level * (OBSTACLE_MAX_M / (OBSTACLE_LEVELS - 1));
+}
+
+function shelteredWind(windSpeed, fetchM, obstacleH) {
+  if (!(obstacleH > 0)) return windSpeed;
+  // Etaisyydeksi pyyhkaisymatkan PUOLIVALI: aallokko kasvaa koko matkan
+  // varrella eika vain rannassa.
+  const factor = 1 - WIND_SHELTER_MAX * Math.exp(-(fetchM / 2) / (WIND_SHELTER_K * obstacleH));
+  return windSpeed * factor;
+}
+
+// Suojaisuuspistemaara 0-1. **Backendin (shelter_score_from_fetch) on
+// laskettava tasan samoin.** Tassa on ainoa exp() koko jaetussa
+// sopimuksessa, eivatka JS ja numpy takaa sille bitilleen samaa tulosta
+// (ero luokkaa 1e-16). Se ei haittaa, koska kynnysarvot lasketaan
+// tuulennopeudella 0, jolloin koko tuulensuojatermi on merkityksetön.
+function shelterScoreFromFetch(fetchM, windSpeed, obstacleH) {
+  const hs = WAVE_COEFF * shelteredWind(windSpeed, fetchM, obstacleH) * Math.sqrt(fetchM);
   const s = (SHELTER_ROUGH_M - hs) / (SHELTER_ROUGH_M - SHELTER_CALM_M);
   return s < 0 ? 0 : s > 1 ? 1 : s;
 }
 
-function shelterScoreFromLevel(level, windSpeed) {
-  return shelterScoreFromFetch(FETCH_LEVEL_METRES[level], windSpeed);
+function shelterScoreFromLevel(level, windSpeed, obstacleH) {
+  return shelterScoreFromFetch(FETCH_LEVEL_METRES[level], windSpeed, obstacleH);
 }
 
 // Tuulen tila. Oletus on kasin valittu; Ilmatieteen laitoksen haku
@@ -250,6 +282,7 @@ legend.onAdd = function () {
       '</div>' +
       '<div class="wind-row" id="wind-row">' +
         '<span class="radio-row-label">Tuuli</span>' +
+        '<svg id="wind-dial" class="wind-dial" viewBox="0 0 120 120" aria-hidden="true"></svg>' +
         '<label for="wind-dir">Suunta: <span id="wind-dir-value"></span></label>' +
         '<input type="range" id="wind-dir" min="0" max="355" step="5" value="180">' +
         '<label for="wind-speed">Nopeus: <span id="wind-speed-value"></span> m/s</label>' +
@@ -311,6 +344,56 @@ legend.addTo(map);
 // varitettyja kuvia, jotka on laskettu KAIKILLA tekijoilla - se ei siis voi
 // noudattaa tekijavalintoja, joten se lukitaan pois kaytosta heti kun jokin
 // tekija on poistettu (ja palautetaan takaisin kun kaikki ovat taas mukana).
+// Tuulikompassi: nuoli osoittaa siihen SUUNTAAN JOHON tuuli puhaltaa (eli
+// suunnasta poispain, kuten saakartoissa), ja sen pituus seka vari kertovat
+// voimakkuuden. Piirretaan SVG:na ilman kirjastoja, samaan tapaan kuin
+// asetussivun jakaumakuvaaja.
+function drawWindDial() {
+  const svg = document.getElementById('wind-dial');
+  if (!svg) return;
+  const cx = 60, cy = 60, r = 50;
+  const speed = currentWind.speed;
+  // 0-18 m/s -> nuolen pituus ja vari (vihrea -> keltainen -> punainen)
+  const t = Math.min(speed / 18, 1);
+  const len = 12 + t * 30;
+  const hue = (1 - t) * 120;
+  const colour = `hsl(${hue.toFixed(0)}, 85%, 42%)`;
+  const width = 2.5 + t * 4;
+
+  // Tuuli TULEE suunnasta d, joten nuoli osoittaa suuntaan d+180.
+  const rad = (currentWind.direction + 180) * Math.PI / 180;
+  const dx = Math.sin(rad), dy = -Math.cos(rad);
+  const tipX = cx + dx * len, tipY = cy + dy * len;
+  const tailX = cx - dx * len * 0.55, tailY = cy - dy * len * 0.55;
+  // Karjen siivet
+  const back = 9 + t * 4, side = 5 + t * 2.5;
+  const bx = tipX - dx * back, by = tipY - dy * back;
+  const px = -dy * side, py = dx * side;
+
+  let s = `<circle class="ring" cx="${cx}" cy="${cy}" r="${r}"/>`;
+  for (let a = 0; a < 360; a += 30) {
+    const rr = (a % 90 === 0) ? 8 : 4;
+    const ra = a * Math.PI / 180;
+    const sx = cx + Math.sin(ra) * r, sy = cy - Math.cos(ra) * r;
+    s += `<line class="tick" x1="${sx.toFixed(1)}" y1="${sy.toFixed(1)}" ` +
+         `x2="${(sx - Math.sin(ra) * rr).toFixed(1)}" y2="${(sy + Math.cos(ra) * rr).toFixed(1)}"/>`;
+  }
+  [['P', 0], ['I', 90], ['E', 180], ['L', 270]].forEach(([label, a]) => {
+    const ra = a * Math.PI / 180;
+    const lx = cx + Math.sin(ra) * (r - 16), ly = cy - Math.cos(ra) * (r - 16) + 4;
+    s += `<text class="card" x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" text-anchor="middle">${label}</text>`;
+  });
+  if (speed > 0) {
+    s += `<line class="arrow" x1="${tailX.toFixed(1)}" y1="${tailY.toFixed(1)}" ` +
+         `x2="${tipX.toFixed(1)}" y2="${tipY.toFixed(1)}" stroke="${colour}" stroke-width="${width.toFixed(1)}"/>`;
+    s += `<polygon points="${tipX.toFixed(1)},${tipY.toFixed(1)} ` +
+         `${(bx + px).toFixed(1)},${(by + py).toFixed(1)} ${(bx - px).toFixed(1)},${(by - py).toFixed(1)}" ` +
+         `fill="${colour}"/>`;
+  }
+  s += `<circle class="hub" cx="${cx}" cy="${cy}" r="3"/>`;
+  svg.innerHTML = s;
+}
+
 function updateLegendFromSettings() {
   // VANHA toteutus on esilaskettu neljalla tekijalla ilman tuulta, joten se
   // kelpaa vain kun valinta on tasan se.
@@ -355,6 +438,8 @@ function updateLegendFromSettings() {
     summary.textContent =
       'Tekijät: ' + active.join(', ') + ' · paksuus ' + currentThickness + ' px · parhaat ' + currentTopPercent + ' %';
   }
+
+  drawWindDial();
 
   const primeNote = document.getElementById('prime-note');
   if (primeNote) {
@@ -526,22 +611,27 @@ async function ensureShelterThresholds() {
 // yhdeksi Uint8Array-taulukoksi jossa on 12 arvoa per ruutu.
 async function loadFetchLevels(tileId) {
   if (fetchImageCache.has(tileId)) return fetchImageCache.get(tileId);
-  const [a, b] = await Promise.all(['a', 'b'].map((part) =>
+  const [a, b, oa, ob] = await Promise.all(['a', 'b', 'obsa', 'obsb'].map((part) =>
     loadImageData(`/api/fetch/${tileId}/${part}.png`, `${tileId} fetch ${part}`)
   ));
   const n = a.width * a.height;
   const levels = new Uint8Array(n * FETCH_SECTORS);
+  const obstacles = new Uint8Array(n * FETCH_SECTORS);
   for (let i = 0; i < n; i++) {
     for (let c = 0; c < 3; c++) {
-      const va = a.data[i * 4 + c];
-      const vb = b.data[i * 4 + c];
+      const va = a.data[i * 4 + c], vb = b.data[i * 4 + c];
+      const wa = oa.data[i * 4 + c], wb = ob.data[i * 4 + c];
       levels[i * FETCH_SECTORS + 2 * c] = va >> 4;
       levels[i * FETCH_SECTORS + 2 * c + 1] = va & 15;
       levels[i * FETCH_SECTORS + 6 + 2 * c] = vb >> 4;
       levels[i * FETCH_SECTORS + 6 + 2 * c + 1] = vb & 15;
+      obstacles[i * FETCH_SECTORS + 2 * c] = wa >> 4;
+      obstacles[i * FETCH_SECTORS + 2 * c + 1] = wa & 15;
+      obstacles[i * FETCH_SECTORS + 6 + 2 * c] = wb >> 4;
+      obstacles[i * FETCH_SECTORS + 6 + 2 * c + 1] = wb & 15;
     }
   }
-  const result = { levels, width: a.width, height: a.height };
+  const result = { levels, obstacles, width: a.width, height: a.height };
   fetchImageCache.set(tileId, result);
   return result;
 }
@@ -685,7 +775,7 @@ const renderResultCache = new Map();
 // jyrkkyys tuottaisi korkeintaan 0,50 pistetta ja koko kartta nayttaisi
 // punaiselta. Suo on kertova rangaistus (ei painotettu termi); jos VAIN suo
 // on valittuna, pohjapistemaara on 1.0.
-function scoreFromComponents(slopeByte, distByte, rockBit, swampBit, mask, fetchM, windSpeed) {
+function scoreFromComponents(slopeByte, distByte, rockBit, swampBit, mask, fetchM, windSpeed, obstacleH) {
   let total = 0;
   let weightSum = 0;
   if (mask & FACTOR_BITS.slope) { total += SLOPE_WEIGHT * (slopeByte / 255); weightSum += SLOPE_WEIGHT; }
@@ -695,7 +785,7 @@ function scoreFromComponents(slopeByte, distByte, rockBit, swampBit, mask, fetch
     weightSum += ROCK_WEIGHT;
   }
   if (mask & FACTOR_BITS.shelter) {
-    total += SHELTER_WEIGHT * shelterScoreFromFetch(fetchM, windSpeed);
+    total += SHELTER_WEIGHT * shelterScoreFromFetch(fetchM, windSpeed, obstacleH);
     weightSum += SHELTER_WEIGHT;
   }
   let score = weightSum > 0 ? total / weightSum : 1.0;
@@ -737,19 +827,24 @@ async function renderFactorTile(tileId, displayMode, thicknessPx, topPercent, ma
   const useShelter = (mask & FACTOR_BITS.shelter) !== 0;
   const wf = useShelter ? fetchWeights(currentWind.direction) : null;
   const windSpeed = currentWind.speed;
-  const fetchLevels = useShelter ? (await loadFetchLevels(tileId)).levels : null;
+  const fetchData = useShelter ? await loadFetchLevels(tileId) : null;
+  const fetchLevels = fetchData ? fetchData.levels : null;
+  const obstacleLevels = fetchData ? fetchData.obstacles : null;
 
   for (let i = 0; i < w * h; i++) {
     if (data[i * 4 + 3] === 0) { alpha[i] = 0; continue; }
     const bits = data[i * 4 + 2];
-    let fetchM = 0;
+    let fetchM = 0, obstacleH = 0;
     if (useShelter) {
       const a = FETCH_LEVEL_METRES[fetchLevels[i * FETCH_SECTORS + wf.lo]];
       const b = FETCH_LEVEL_METRES[fetchLevels[i * FETCH_SECTORS + wf.hi]];
       fetchM = a + (b - a) * wf.frac;
+      const oa2 = dequantiseObstacle(obstacleLevels[i * FETCH_SECTORS + wf.lo]);
+      const ob2 = dequantiseObstacle(obstacleLevels[i * FETCH_SECTORS + wf.hi]);
+      obstacleH = oa2 + (ob2 - oa2) * wf.frac;
     }
     const score = scoreFromComponents(data[i * 4], data[i * 4 + 1], bits & 1, bits & 2, mask,
-                                      fetchM, windSpeed);
+                                      fetchM, windSpeed, obstacleH);
     scoreByte[i] = Math.round(score * 255);
     if (displayMode === 'score') {
       alpha[i] = 1;

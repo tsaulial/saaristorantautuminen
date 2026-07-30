@@ -104,8 +104,9 @@ def build():
         (DOCS_CACHE_DIR / f"{tile_id}_prime.png").write_bytes(prime_bytes)
         meta = meta or prime_meta
 
-        # Pyyhkaisymatkat suojaisuustekijaa varten (12 sektoria kahdessa kuvassa).
-        for part in ("a", "b"):
+        # Pyyhkaisymatkat ja esteiden korkeudet suojaisuustekijaa varten:
+        # 12 sektoria kummallekin, kaksi kuvaa per suure.
+        for part in ("a", "b", "obsa", "obsb"):
             fetch_bytes, _ = pipeline.get_or_compute_fetch_png(
                 tile_id, str(BUILDINGS_PATH), part=part
             )
