@@ -189,6 +189,12 @@ Etene kehityksessä seuraavassa järjestyksessä:
    * `docs/` tyhjennetään ja luodaan uudelleen joka ajolla (`shutil.rmtree`) — ei käsin editoitavaksi.
    * Lopputulos: `docs/` on ~583 MB, 2475 välimuistitiedostoa (+ `index.html`, `tiles.json`, `.nojekyll`) (11 tiiltä × (4 tasoa × (1 basemap + 5 overlay-paksuutta + 5 paksuutta × 10 %-esiasetusta top-kerrokselle = 50) + 1 UUDEN toteutuksen koodattu kuva, ks. kohdan 4 vertailu-löydös)), itsenäinen kokonaisuus. `.nojekyll`-tiedosto mukana estämässä GitHub Pagesin Jekyll-käsittelyä. Build kestää n. 6–7 min ensimmäisellä ajolla (välimuistista uudelleen n. 10 s).
 
+   * **`docs/` EI OLE ENÄÄ VERSIONHALLINNASSA (2026-07-31), ja julkaisu on siksi tällä hetkellä poikki.** Hakemisto on kokonaan johdettua — `build_static.py` tyhjentää ja luo sen joka ajolla seuratusta lähtöaineistosta — mutta sitä oli silti versioitu, jolloin git-historian blobeista **83 % (647 Mt / 778 Mt) oli pelkkää välimuistia**. Repo kasvoi niin isoksi, ettei sitä voinut enää siirtää työkalujen välillä. Historia kirjoitettiin uusiksi (`git filter-repo --path docs --invert-paths`), `docs/` lisättiin `.gitignoreen`, ja tulos on: seurattuja tiedostoja 2 637 → **44**, `.git` 582 Mt → **161 Mt**, tuore klooni **290 Mt**. Kaikki 25 committia säilyivät, koska yksikään ei koskenut pelkkää `docs/`:ia — mutta **commit-tunnisteet muuttuivat**, joten tätä vanhemmat SHA-viittaukset tässä dokumentissa eivät enää täsmää. Loput 129 Mt on lähtöaineistoa (`karttakuva-mll/`, `korkeusmalli-mml/`, `rakennukset-mll/`), joka pidettiin seurattuna toisinnettavuuden vuoksi.
+
+     **Seuraus: GitHub Pages oli tilassa "Deploy from a branch: `main` `/docs`", eikä `main`issa ole enää `docs/`-kansiota — sivusto palauttaa 404:n kunnes julkaisutapa ratkaistaan.** Tämä hyväksyttiin tietoisesti. Kaksi vaihtoehtoa, kumpaakaan ei ole vielä valittu:
+     - **Erillinen julkaisurepo**: `docs/` pushataan omaan repoonsa. Säilyttää nykyisen "push ja live parissa minuutissa" -työnkulun eikä vaadi CI:tä, mutta julkaisuosoite muuttuu.
+     - **GitHub Actions**: workflow ajaa `build_static.py`:n ja julkaisee tuloksen artefaktina ilman committia. Mahdollista, koska koko putken syöte (30 seurattua tiedostoa) on repossa ja `output/cache/` on johdettua. Vaatii rasterio/geopandas-asennuksen ajurille, ja **kylmän ajon kesto on todentamatta** — yllä mainittu 6–7 min koskee ajoa, jossa `output/cache/` on jo olemassa. Tyhjästä ajo laskee koko putken eikä sitä ole mitattu.
+
 ---
 
 ## 6. Natiivisovellus (iOS/Android) — tuleva suunta, EI toteuteta vielä
