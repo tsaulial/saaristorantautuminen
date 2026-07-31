@@ -67,6 +67,14 @@
   /* Melottavuusnakyman tietopallo: klikkaamalla karttaa saa esiin
      paikkakohtaiset olosuhteet, klikkaamalla palloa se menee piiloon. */
   .paddle-bubble { width: 124px; height: 124px; position: relative; cursor: pointer; }
+  .paddle-bubble.varoitus { width: 158px; height: 158px; }
+  .paddle-bubble.varoitus .pb-content { padding: 0 20px; }
+  /* Varoitus: olosuhteet heikkenevat oleellisesti 3 h sisalla. Punainen ja
+     lihavoitu, jotta erottuu muista riveista - kontrasti 7,4:1 valkoisella. */
+  .paddle-bubble .pb-warn {
+    margin-top: 2px; padding-top: 2px; border-top: 1px solid #d8dade;
+    color: #a4161a; font-size: 10.5px; font-weight: 700; line-height: 1.25;
+  }
   /* Reunaviiva ON aallonkorkeuden mittari: tyynella se on ympyra ja
      aallokon kasvaessa se aaltoilee sita voimakkaammin. Siksi kehys on
      SVG-polku eika CSS-reunus. */
@@ -606,7 +614,10 @@ let infoBubbles = [];    // [{ latlng, marker }]
 // Vesiruudukon arvot klikatussa pisteessa. Palauttaa null jos kohta on maalla
 // tai aineiston ulkopuolella. Kayttaa jo ladattua valimuistia - kerros on
 // piirretty, joten data on muistissa.
-function waterConditionsAt(latlng) {
+// Tuuli ja ennustehetki ovat PARAMETREJA, jotta tulevat tunnit voidaan laskea
+// tasan samalla koodilla kuin nykyhetki (ks. deteriorationWarning). Oletukset
+// ovat nykytila, joten kutsut ilman argumentteja toimivat kuten ennenkin.
+function waterConditionsAt(latlng, wind = currentWind, hour = forecastHour) {
   const y = latlng.lat, x = latlng.lng;   // L.CRS.Simple: suoraan EPSG:3067-metrit
   for (const tile of tileListCache) {
     const b = tile.bounds_epsg3067;
@@ -619,7 +630,7 @@ function waterConditionsAt(latlng) {
     if (col < 0 || col >= width || row < 0 || row >= height) return null;
     const i = row * width + col;
     if (!water[i]) return null;            // maata
-    const wf = fetchWeights(currentWind.direction);
+    const wf = fetchWeights(wind.direction);
     const fa = FETCH_LEVEL_METRES[levels[i * FETCH_SECTORS + wf.lo]];
     const fb = FETCH_LEVEL_METRES[levels[i * FETCH_SECTORS + wf.hi]];
     const fetchM = fa + (fb - fa) * wf.frac;
@@ -628,16 +639,103 @@ function waterConditionsAt(latlng) {
     const obstacleH = oa + (ob - oa) * wf.frac;
     // Sama aallonkorkeus kuin kerroksen varitys kayttaa, MET-sekoitus mukaan
     // lukien - muuten luku ja vari kertoisivat eri asiaa.
-    let hs = WAVE_COEFF * shelteredWind(currentWind.speed, fetchM, obstacleH) * Math.sqrt(fetchM);
-    const metWave = metWaveAt(forecastHour);
+    let hs = WAVE_COEFF * shelteredWind(wind.speed, fetchM, obstacleH) * Math.sqrt(fetchM);
+    const metWave = metWaveAt(hour);
     if (metWave != null && isFinite(metWave)) {
       const w = Math.min(fetchM / FETCH_LEVEL_METRES[FETCH_LEVEL_METRES.length - 1], 1);
       hs = (1 - w) * hs + w * metWave;
     }
     return { fetchM, obstacleH, hs,
-             difficulty: paddleDifficulty(fetchM, currentWind.speed, currentWind.gust, obstacleH, metWave) };
+             difficulty: paddleDifficulty(fetchM, wind.speed, wind.gust, obstacleH, metWave) };
   }
   return null;
+}
+
+// --- VAROITUS OLOSUHTEIDEN HEIKKENEMISESTA ---
+//
+// Vaarallinen tilanne melojalle ei ole se, etta olosuhteet ovat kovat - sen
+// nakee kartalta - vaan se, etta lahtee helppoon keliin ja jaa kiinni
+// muutokseen. Pallo varoittaa siksi erikseen, jos olosuhteet heikkenevat
+// OLEELLISESTI seuraavan kolmen tunnin aikana.
+//
+// "Oleellisesti" mitataan SAMALLA asteikolla jolla vesikerros varitetaan
+// (piecewiseClass, 0-3 luokka-askelta) - jos varoituksella olisi oma
+// mittarinsa, pallo ja kartta kertoisivat eri asiaa. Ehto on kaksiosainen:
+//
+//   A) olosuhteet YLITTAVAT "ei suositella" -rajan 3 h sisalla, vaikka
+//      eivat ole siella nyt. Tama on tarkein tapaus eika saa jaada
+//      kynnyksen alle.
+//   B) vaikeus nousee >= WARN_CLASS_RISE luokka-askelta JA paatyy
+//      vahintaan tasolle "kohtalainen". Jalkimmainen ehto estaa
+//      varoittelun muutoksista jotka pysyvat helpossa vedessa.
+//
+// Kalibrointi (kayttajan hyvaksyma): puuska 8 -> 12 m/s varoittaa (nousu
+// 1,00), puuska 9 -> 11 m/s ei (0,50); aalto 15 -> 35 cm varoittaa (1,00),
+// aalto 30 -> 40 cm ei (0,50). Rajat ovat arvioita kuten
+// PADDLE_WAVE_LIMITS ja PADDLE_GUST_LIMITS - kalibroitavissa mittaamalla.
+const WARN_HOURS = 3;
+const WARN_CLASS_RISE = 0.75;
+const WARN_MIN_CLASS = 1.0;    // tulevan tilan oltava vahintaan "kohtalainen"
+
+function windAtHour(hour) {
+  if (currentWind.source === 'kasin') return null;   // ei ennustetta = ei tulevaisuutta
+  const series = currentWind.source === 'fmi' ? forecast.fmi : forecast.met;
+  const e = seriesAt(series, hour);
+  if (!e || !isFinite(e.speed) || !isFinite(e.direction)) return null;
+  return {
+    direction: e.direction, speed: e.speed,
+    gust: isFinite(e.gust) ? Math.max(e.gust, e.speed) : e.speed * DEFAULT_GUST_FACTOR,
+  };
+}
+
+// Vaikeus 0-3 luokka-askelta annetulla tuulella ja hetkella.
+// Vedessa kaytetaan taytta mallia (aalto JA puuska, suojaisuus mukaan
+// lukien). MAALLA pyyhkaisymatkaa ei ole, joten aaltotermia ei voi laskea
+// eika tuulensuojaa tuntea - silloin kaytetaan pelkkaa puuskaluokkaa
+// suojaamattomana. Se on karkeampi mutta rehellinen: maalla pallo ei
+// muutenkaan nayta aallonkorkeutta, joten mikaan naytetty luku ei ole
+// ristiriidassa taman kanssa.
+function difficultyClassAt(latlng, wind, hour) {
+  const cond = waterConditionsAt(latlng, wind, hour);
+  if (cond) return cond.difficulty * 3;
+  return piecewiseClass(wind.gust, PADDLE_GUST_LIMITS);
+}
+
+// Palauttaa { hour, luokka, tekija, arvo } tai null.
+function deteriorationWarning(latlng) {
+  const now = windAtHour(forecastHour);
+  if (!now) return null;
+  const d0 = difficultyClassAt(latlng, now, forecastHour);
+
+  let pahin = null;
+  for (let h = 1; h <= WARN_HOURS; h++) {
+    const wind = windAtHour(forecastHour + h);
+    if (!wind) continue;
+    const d = difficultyClassAt(latlng, wind, forecastHour + h);
+    const ylittaa = d >= 3.0 && d0 < 3.0;                                  // ehto A
+    const nousee = (d - d0) >= WARN_CLASS_RISE && d >= WARN_MIN_CLASS;     // ehto B
+    if (!ylittaa && !nousee) continue;
+    if (!pahin || d > pahin.d) pahin = { hour: h, d, wind };
+  }
+  if (!pahin) return null;
+
+  // Nimetaan se tekija joka nousi eniten: aalto ja puuska tarkoittavat
+  // melojalle eri asioita (veneen liike vs. kasiteltavyys).
+  const condNyt = waterConditionsAt(latlng, now, forecastHour);
+  const condSitten = waterConditionsAt(latlng, pahin.wind, forecastHour + pahin.hour);
+  const aaltoNousu = condNyt && condSitten
+    ? piecewiseClass(condSitten.hs, PADDLE_WAVE_LIMITS) - piecewiseClass(condNyt.hs, PADDLE_WAVE_LIMITS)
+    : -Infinity;
+  const puuskaNousu = piecewiseClass(pahin.wind.gust, PADDLE_GUST_LIMITS)
+                    - piecewiseClass(now.gust, PADDLE_GUST_LIMITS);
+
+  const aalto = aaltoNousu >= puuskaNousu;
+  return {
+    hour: pahin.hour,
+    luokka: PADDLE_CLASSES[Math.min(Math.floor(pahin.d), PADDLE_CLASSES.length - 1)],
+    tekija: aalto ? 'aalto' : 'puuska',
+    arvo: aalto ? `${Math.round(condSitten.hs * 100)} cm` : `${pahin.wind.gust.toFixed(0)} m/s`,
+  };
 }
 
 const COMPASS_8 = ['pohjoisesta', 'koillisesta', 'idästä', 'kaakosta',
@@ -649,22 +747,27 @@ const COMPASS_8 = ['pohjoisesta', 'koillisesta', 'idästä', 'kaakosta',
 // jossa melonta ei enaa ole suositeltavaa (PADDLE_WAVE_LIMITS-ylin raja).
 const WAVE_RING_LOBES = 12;
 const WAVE_RING_AMP_MAX = 6;      // px
-const WAVE_RING_R = 54;           // px, keskipiste 62,62 -> mahtuu 124 px kuvaan
+const WAVE_RING_MARGIN = 8;       // px kuvan reunaan; sade = koko/2 - tama
 
-function wavyCirclePath(hs) {
+// Koko on parametri, koska varoituspallo on isompi (ks. bubbleIcon) - jos
+// mitat olisivat yha kovakoodattuja 124 px:iin, iso pallo saisi vaaran
+// kokoisen kehan keskelle kuvaa.
+function wavyCirclePath(hs, koko = 124) {
   const amp = Math.min((hs || 0) / PADDLE_WAVE_LIMITS[2], 1) * WAVE_RING_AMP_MAX;
+  const keskus = koko / 2;
+  const sade = keskus - WAVE_RING_MARGIN;
   const steps = 180;
   let d = '';
   for (let i = 0; i < steps; i++) {
     const a = (i / steps) * Math.PI * 2;
-    const r = WAVE_RING_R + amp * Math.sin(WAVE_RING_LOBES * a);
-    const x = 62 + Math.cos(a) * r, y = 62 + Math.sin(a) * r;
+    const r = sade + amp * Math.sin(WAVE_RING_LOBES * a);
+    const x = keskus + Math.cos(a) * r, y = keskus + Math.sin(a) * r;
     d += (i === 0 ? 'M' : 'L') + x.toFixed(2) + ' ' + y.toFixed(2);
   }
   return d + 'Z';
 }
 
-function bubbleHtml(cond) {
+function bubbleHtml(cond, varoitus) {
   const deg = currentWind.direction;
   const name = COMPASS_8[Math.round(((deg % 360) + 360) % 360 / 45) % 8];
   // Nuoli osoittaa suuntaan JOHON tuuli puhaltaa, kuten kompassissa.
@@ -688,9 +791,10 @@ function bubbleHtml(cond) {
   const wave = cond
     ? `<div class="pb-wave">aalto ${Math.round(cond.hs * 100)} cm</div>`
     : '<div class="pb-sub">maalla</div>';
-  return '<div class="paddle-bubble">'
-    + `<svg class="pb-ring" viewBox="0 0 124 124">`
-    + `<path d="${wavyCirclePath(cond ? cond.hs : 0)}" fill="#ffffff" `
+  const koko = varoitus ? 158 : 124;
+  return `<div class="paddle-bubble${varoitus ? ' varoitus' : ''}">`
+    + `<svg class="pb-ring" viewBox="0 0 ${koko} ${koko}">`
+    + `<path d="${wavyCirclePath(cond ? cond.hs : 0, koko)}" fill="#ffffff" `
     + `stroke="${stroke}" stroke-width="2.5" stroke-linejoin="round"/></svg>`
     + '<div class="pb-content">'
     + `<svg width="22" height="22" viewBox="-15 -15 30 30">`
@@ -704,6 +808,10 @@ function bubbleHtml(cond) {
     + `<div class="pb-sub">puuska ${currentWind.gust.toFixed(1).replace('.', ',')}</div>`
     + wave
     + `<div class="pb-sub">${name}</div>`
+    + (varoitus
+        ? `<div class="pb-warn">&#9888; +${varoitus.hour} h ${varoitus.luokka}`
+          + `<br>${varoitus.tekija} ${varoitus.arvo}</div>`
+        : '')
     + '</div></div>';
 }
 
@@ -720,16 +828,22 @@ async function ensureWaterFor(latlng) {
   try { await loadWaterLevels(tile.tile_id); } catch (err) { /* pallo toimii ilman aallokkoa */ }
 }
 
-function bubbleIcon(cond) {
+// Varoitusrivi ei mahdu 124 px palloon muun sisallon kanssa, joten pallo
+// kasvaa kun varoitus on esilla. Kasvu on samalla itsessaan signaali: pallo
+// erottuu muista jo ennen kuin tekstia ehtii lukea.
+function bubbleIcon(cond, varoitus) {
+  const koko = varoitus ? 158 : 124;
   return L.divIcon({
-    className: '', html: bubbleHtml(cond), iconSize: [124, 124], iconAnchor: [62, 62],
+    className: '', html: bubbleHtml(cond, varoitus),
+    iconSize: [koko, koko], iconAnchor: [koko / 2, koko / 2],
   });
 }
 
 // Kaikkien pallojen luvut lasketaan uudelleen - tuuli tai ennustehetki on
 // voinut muuttua, ja jokainen pallo on eri paikassa eli eri olosuhteissa.
 function updateInfoBubbles() {
-  infoBubbles.forEach((b) => b.marker.setIcon(bubbleIcon(waterConditionsAt(b.latlng))));
+  infoBubbles.forEach((b) => b.marker.setIcon(
+    bubbleIcon(waterConditionsAt(b.latlng), deteriorationWarning(b.latlng))));
 }
 
 function removeInfoBubble(bubble) {
@@ -750,7 +864,9 @@ async function addInfoBubble(latlng) {
   infoBubbles.push(bubble);
   saveViewState();
   await ensureWaterFor(latlng);
-  if (infoBubbles.includes(bubble)) marker.setIcon(bubbleIcon(waterConditionsAt(latlng)));
+  if (infoBubbles.includes(bubble)) {
+    marker.setIcon(bubbleIcon(waterConditionsAt(latlng), deteriorationWarning(latlng)));
+  }
 }
 
 // Pallon saa mihin tahansa nayttotilaan: tuuli ja aallokko ovat sen paikan
