@@ -90,6 +90,11 @@
   .paddle-bubble .pb-ring {
     position: absolute; inset: 0; z-index: 0;
     filter: drop-shadow(0 2px 5px rgba(0,0,0,.3));
+    /* Tuulipallo kasvaa puuskan mukana ja ulottuu kehan ulkopuolelle:
+       sade 54 + aaltoilu 6 + pallo 10 = 70 > kuvan puolikas 62. SVG leikkaa
+       oletuksena, joten ylivuoto on sallittava - vaihtoehtona olisi ollut
+       kutistaa kehaa niin paljon, ettei teksti olisi mahtunut sisaan. */
+    overflow: visible;
   }
   .paddle-bubble .pb-content {
     position: absolute; inset: 0; z-index: 1;
@@ -1086,7 +1091,25 @@ function bubbleHtml(cond, varoitus, tuuli, met) {
   // 5,0:1 lapaisee WCAG:n eika silti erotu silmalle. Varisignaali on jo
   // kehassa ja nuolessa, joten teksti saa parhaan mahdollisen kontrastin.
   const stroke = dim(0.60);     // kehä
-  const inkColour = dim(0.45);  // tuulipallo
+
+  // TUULIPALLON KOKO JA VARI KERTOVAT PUUSKAN VOIMAKKUUDEN.
+  //
+  // Mittarina on nimenomaan puuska eika jatkuva tuuli: puuska maaraa veneen
+  // kasiteltavyyden (kaatumisriski, kurssissa pysyminen), ja se on melojalle
+  // se ratkaiseva luku. Asteikko on PADDLE_GUST_LIMITS eli sama jolla
+  // melottavuus luokitellaan, ja vari haetaan samasta LUT:sta kuin kerroksen
+  // varitys - luvut ovat siis suoraan vertailukelpoisia.
+  //
+  // Kehä on varitetty KOKONAISVAIKEUDEN mukaan (max aalto/puuska) ja pallo
+  // pelkan puuskan mukaan. Kun ne eroavat, se on itsessaan tietoa: punainen
+  // keha ja vihrea pallo tarkoittaa etta vaikeus tulee aallokosta eika
+  // tuulesta.
+  const gustClass = piecewiseClass(tuuli.gust, PADDLE_GUST_LIMITS) / 3;   // 0..1
+  const gustBase = SCORE_COLOR_LUT[Math.round((1 - gustClass) * 255)];
+  const inkColour = `rgb(${Math.round(gustBase[0] * 0.45)},${Math.round(gustBase[1] * 0.45)},`
+                  + `${Math.round(gustBase[2] * 0.45)})`;
+  // 4 px tyynella, 10 px kun puuskat yltavat "ei suositella" -rajalle.
+  const palloR = 4 + gustClass * 6;
   const wave = cond
     ? `<div class="pb-wave">aalto ${Math.round(cond.hs * 100)} cm</div>`
     : '<div class="pb-sub">maalla</div>';
@@ -1101,7 +1124,7 @@ function bubbleHtml(cond, varoitus, tuuli, met) {
     // Se istuu TUULEN TULOSUUNTAAN (tuuliruusun kaytanto), jolloin pallo ja
     // sen alla lukeva "lounaasta" kertovat saman asian. Valkoinen reunus
     // erottaa sen kehaviivasta myos silloin kun varit ovat lahella toisiaan.
-    + `<circle cx="${piste.x.toFixed(2)}" cy="${piste.y.toFixed(2)}" r="6" `
+    + `<circle cx="${piste.x.toFixed(2)}" cy="${piste.y.toFixed(2)}" r="${palloR.toFixed(1)}" `
     + `fill="${inkColour}" stroke="#ffffff" stroke-width="2"/></svg>`
     + '<div class="pb-content">'
     + `<div class="pb-speed">${tuuli.speed.toFixed(1).replace('.', ',')} m/s</div>`
