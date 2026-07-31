@@ -117,6 +117,7 @@ def write_webp_batch(jobs, pool):
 # suffiksikaytannolla, joten pelkka polun alku tarvitsee korvata.
 URL_REPLACEMENTS = {
     "fetch('/api/tiles')": "fetch('tiles.json')",
+    "fetch('/api/wind-grid')": "fetch('wind_grid.json')",
     # Kolme visuaalista kerrosta -> .webp (ks. to_webp). Loput jaavat .png:ksi.
     "`/api/basemap/${tile.tile_id}${level.suffix}.png`": "`cache/${tile.tile_id}_base${level.suffix}.webp`",
     "`/api/overlay/${tile.tile_id}${level.suffix}_t${currentThickness}.png`":
@@ -133,6 +134,50 @@ URL_REPLACEMENTS = {
     "fetch('/api/shelter-thresholds')": "fetch('shelter_thresholds.json')",
     "const tileList = await res.json();": "const tileList = (await res.json()).tiles;",
 }
+
+
+# --- TUULIHILA ---
+#
+# Tuuli haettiin aiemmin YHDESTA kovakoodatusta pisteesta koko kartalle. Se
+# riittaa 18x30 km alueella mutta ei tavoitealueella (Suomenlahti +
+# lansirannikko + Ahvenanmaa, ~1000x450 km): mitattuna samalla hetkella tuuli
+# oli Merenkurkussa 11,6 m/s ja Peramerella 2,2 m/s eli 5,3-kertainen ero.
+# Yhdella pisteella kovin keli olisi nakynyt tyynena - virhe olisi ollut pahin
+# siella missa se on vaarallisin.
+#
+# HILA SEURAA AINEISTOA, ei bounding boxia: tiilet niputetaan WIND_GRID_M
+# ruutuihin ja vain ruutu jossa on tiilia saa pisteen. Muuten pisteita kuluisi
+# tyhjaan mereen ja sisamaahan, ja rajapinnan raja tulisi vastaan turhaan.
+#
+# Piste kirjoitetaan SEKA EPSG:3067-metreina etta lat/lon-parina, jotta selain
+# ei tarvitse projektiokirjastoa: se tyoskentelee raakoina 3067-metreina
+# (L.CRS.Simple) ja lat/lon on valmiina rajapintakutsua varten.
+WIND_GRID_M = 30000.0
+
+
+def wind_grid_points(tile_entries):
+    """Tuulihilan pisteet tiilien sijainnin perusteella."""
+    from pyproj import Transformer
+
+    solut = {}
+    for t in tile_entries:
+        b = t["bounds_epsg3067"]
+        cx = (b["minx"] + b["maxx"]) / 2.0
+        cy = (b["miny"] + b["maxy"]) / 2.0
+        solut.setdefault((int(cx // WIND_GRID_M), int(cy // WIND_GRID_M)), []).append((cx, cy))
+
+    # Pisteen paikka on siina olevien tiilien keskiarvo, ei ruudun geometrinen
+    # keskus: jos ruudussa on vain yksi tiili sen reunalla, ennuste haetaan
+    # sielta missa aineisto oikeasti on.
+    to_wgs = Transformer.from_crs("EPSG:3067", "EPSG:4326", always_xy=True)
+    pisteet = []
+    for (gx, gy), keskukset in sorted(solut.items()):
+        x = sum(c[0] for c in keskukset) / len(keskukset)
+        y = sum(c[1] for c in keskukset) / len(keskukset)
+        lon, lat = to_wgs.transform(x, y)
+        pisteet.append({"x": round(x, 1), "y": round(y, 1),
+                        "lat": round(lat, 4), "lon": round(lon, 4)})
+    return pisteet
 
 
 def build():
@@ -226,6 +271,10 @@ def build():
         "top_percent_default": pipeline.DEFAULT_TOP_PERCENT,
     }
     (DOCS_DIR / "tiles.json").write_text(json.dumps(tiles_json, indent=2))
+
+    hila = wind_grid_points(tile_entries)
+    (DOCS_DIR / "wind_grid.json").write_text(json.dumps(hila, indent=2))
+    print(f"Tuulihila: {len(hila)} pistetta ({WIND_GRID_M / 1000:.0f} km ruudukko)")
 
     # "Parhaat X %" -kynnykset kaikille 15 tekijayhdistelmalle omaan
     # tiedostoonsa (ks. pipeline.compute_factor_thresholds) - selain hakee

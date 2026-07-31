@@ -174,6 +174,20 @@ def get_prime_thresholds():
     return pipeline.compute_prime_thresholds(str(BUILDINGS_PATH))
 
 
+@app.get("/api/wind-grid")
+def wind_grid():
+    """Tuulihilan pisteet: sama laskenta kuin staattisessa buildissa, jotta
+    kehityspalvelin ja tuotanto kayttavat samaa hilaa."""
+    import build_static
+
+    registry = tiles.get_registry()
+    entries = [
+        {"tile_id": tile_id, "bounds_epsg3067": pipeline.get_tile_bounds(tile)}
+        for tile_id, tile in registry.items()
+    ]
+    return build_static.wind_grid_points(entries)
+
+
 @app.get("/api/factor-thresholds")
 def get_factor_thresholds():
     """"Parhaat X %" -kynnysarvot per tekijayhdistelma ja prosentti (ks.

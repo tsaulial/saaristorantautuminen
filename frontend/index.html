@@ -58,12 +58,6 @@
   .wind-row input[type="range"] { width: 100%; vertical-align: middle; }
   .wind-source label { display: block; font-weight: normal; cursor: pointer; margin: 1px 0; }
   #forecast-row.hidden { display: none; }
-  .wind-dial { display: block; margin: 4px auto 2px; width: 108px; height: 108px; }
-  .wind-dial .ring { fill: #fbfcfd; stroke: #c8d0d6; stroke-width: 1.5; }
-  .wind-dial .tick { stroke: #c8d0d6; stroke-width: 1; }
-  .wind-dial .card { fill: #7a8590; font-size: 11px; font-weight: 600; }
-  .wind-dial .arrow { stroke-linecap: round; stroke-linejoin: round; }
-  .wind-dial .hub { fill: #5a6570; }
   /* Melottavuusnakyman tietopallo: klikkaamalla karttaa saa esiin
      paikkakohtaiset olosuhteet, klikkaamalla palloa se menee piiloon. */
   .paddle-bubble { width: 124px; height: 124px; position: relative; cursor: pointer; }
@@ -295,105 +289,309 @@ function paddleDifficulty(fetchM, windSpeed, gustSpeed, obstacleH, metWaveM) {
 // Tuulen tila. Lahde on 'kasin', 'fmi' tai 'met'.
 let currentWind = { direction: 180, speed: 7.5, gust: 7.5 * 1.75, source: 'kasin' };
 
-// --- Saaennusteet ---
+// --- SAAENNUSTE HILANA ---
 //
-// Molemmat laitokset tarjoavat avointa dataa ILMAN API-avainta ja avoimella
-// CORS:illa, joten sovellus pysyy taysin staattisena - ilman sita tama olisi
-// vaatinut palvelimen. MET vaatii ehdoissaan tunnistavan User-Agentin, mutta
-// selain ei anna JS:n asettaa sita; todennettu ettei MET torju selaimen omaa
-// tunnistetta.
+// Tuuli haettiin aiemmin YHDESTA pisteesta koko kartalle. Mitattuna samalla
+// hetkella tuuli oli Merenkurkussa 11,6 m/s ja Peramerella 2,2 m/s (5,3x ero),
+// joten laajalla merialueella yksi piste nayttaisi kovan kelin tyynena -
+// virhe olisi pahin siella missa se on vaarallisin.
 //
-// Kumpaakin naytetaan RINNAKKAIN: ennusteiden ero on itsessaan tieto
-// epavarmuudesta. Kartan ohjaa se lahde jonka kayttaja valitsee.
-const FORECAST_LAT = 60.28, FORECAST_LON = 20.76;
-const FMI_BBOX = '20.0,59.9,21.5,60.6';
-let forecast = { fmi: null, met: null, ocean: null, error: null, loading: false };
-let forecastHour = 0;   // tunteja eteenpain valitussa ennusteessa
+// Hilapisteet tulevat build-vaiheesta (wind_grid.json) valmiiksi SEKA
+// EPSG:3067-metreina etta lat/lon-parina, joten tama tiedosto ei tarvitse
+// projektiokirjastoa: kartta tyoskentelee raakoina 3067-metreina
+// (L.CRS.Simple) ja lat/lon menee sellaisenaan rajapintakutsuun.
+//
+// Ilmatieteen laitos tarjoaa avointa dataa ilman API-avainta ja avoimella
+// CORS:illa, joten sovellus pysyy taysin staattisena.
+//
+// TODENNETTU KOKEILEMALLA: `latlon`-parametrin voi TOISTAA
+// multipointcoverage-kyselyssa, ja rajoite on URL:n pituus (~2048 merkkia)
+// EIKA pistemaara - 95 pistetta kahdella desimaalilla = 2010 merkkia toimii,
+// 100 pistetta = 2105 merkkia palauttaa HTTP 400. Siksi pyynto paloitellaan
+// URL-pituuden mukaan, ei pistemaaran.
+const FMI_WFS = 'https://opendata.fmi.fi/wfs?service=WFS&version=2.0.0&request=getFeature';
+const FMI_MAX_URL = 2000;          // varmuusmarginaali mitattuun ~2048:aan
+const WIND_IDW_NEIGHBOURS = 4;     // kaanteinen etaisyyden nelio, k lahinta
 
-function hourKey(iso) {
-  return iso.slice(0, 13);   // "2026-07-30T09"
-}
+let windGridPoints = [];   // [{x, y, lat, lon}] build-vaiheesta
+let forecast = { wind: null, wave: null, hours: [], error: null, loading: false };
+let forecastHour = 0;      // tunteja eteenpain ennusteessa
 
-async function fetchFmiForecast() {
-  const url = "https://opendata.fmi.fi/wfs?service=WFS&version=2.0.0&request=getFeature"
-    + "&storedquery_id=fmi::forecast::harmonie::surface::point::simple"
-    + `&latlon=${FORECAST_LAT},${FORECAST_LON}`
-    + "&parameters=WindSpeedMS,WindDirection,WindGust";
-  const text = await (await fetch(url)).text();
-  const doc = new DOMParser().parseFromString(text, 'application/xml');
-  const rows = new Map();
-  const els = doc.getElementsByTagNameNS('*', 'BsWfsElement');
-  for (const el of els) {
-    const time = el.getElementsByTagNameNS('*', 'Time')[0].textContent;
-    const name = el.getElementsByTagNameNS('*', 'ParameterName')[0].textContent;
-    const value = parseFloat(el.getElementsByTagNameNS('*', 'ParameterValue')[0].textContent);
-    if (!rows.has(time)) rows.set(time, { time });
-    rows.get(time)[name] = value;
+// Yksi hilakysely: palauttaa Map "lat,lon" -> [{hour, arvot...}].
+async function fetchFmiGrid(points, storedQueryId, parameters) {
+  const paloissa = [];
+  let era = [];
+  const perusPituus = (FMI_WFS + `&storedquery_id=${storedQueryId}`
+    + `&parameters=${parameters.join(',')}&timestep=60`).length;
+  let pituus = perusPituus;
+  for (const p of points) {
+    // Kaksi desimaalia = n. 1,1 km, hilalle enemman kuin riittava tarkkuus.
+    const osa = `&latlon=${p.lat.toFixed(2)},${p.lon.toFixed(2)}`;
+    if (era.length && pituus + osa.length > FMI_MAX_URL) {
+      paloissa.push(era); era = []; pituus = perusPituus;
+    }
+    era.push(p); pituus += osa.length;
   }
-  return [...rows.values()]
-    .filter((r) => isFinite(r.WindSpeedMS))
-    .map((r) => ({ time: r.time, speed: r.WindSpeedMS, direction: r.WindDirection, gust: r.WindGust }));
-}
+  if (era.length) paloissa.push(era);
 
-async function fetchMetForecast() {
-  const url = `https://api.met.no/weatherapi/locationforecast/2.0/complete?lat=${FORECAST_LAT}&lon=${FORECAST_LON}`;
-  const data = await (await fetch(url)).json();
-  return data.properties.timeseries.map((e) => {
-    const d = e.data.instant.details;
-    return { time: e.time, speed: d.wind_speed, direction: d.wind_from_direction,
-             gust: d.wind_speed_of_gust };
-  }).filter((r) => isFinite(r.speed));
-}
+  const tulos = new Map();
+  let hours = null;
+  for (const pala of paloissa) {
+    const url = FMI_WFS + `&storedquery_id=${storedQueryId}`
+      + `&parameters=${parameters.join(',')}&timestep=60`
+      + pala.map((p) => `&latlon=${p.lat.toFixed(2)},${p.lon.toFixed(2)}`).join('');
+    const text = await (await fetch(url)).text();
 
-async function fetchMetOcean() {
-  const url = `https://api.met.no/weatherapi/oceanforecast/2.0/complete?lat=${FORECAST_LAT}&lon=${FORECAST_LON}`;
-  const data = await (await fetch(url)).json();
-  return data.properties.timeseries.map((e) => ({
-    time: e.time,
-    wave: e.data.instant.details.sea_surface_wave_height,
-  })).filter((r) => isFinite(r.wave));
+    // positions- ja arvolohko ovat SAMASSA jarjestyksessa; rivi = "lat lon epoch".
+    const pos = text.match(/<gmlcov:positions>([\s\S]*?)<\/gmlcov:positions>/);
+    const val = text.match(/<gml:doubleOrNilReasonTupleList>([\s\S]*?)<\/gml:doubleOrNilReasonTupleList>/);
+    if (!pos || !val) throw new Error('odottamaton vastaus FMI:lta');
+    const prow = pos[1].trim().split('\n').filter((r) => r.trim());
+    const vrow = val[1].trim().split('\n').filter((r) => r.trim());
+    for (let i = 0; i < prow.length; i++) {
+      const pk = prow[i].trim().split(/\s+/);
+      const vk = vrow[i].trim().split(/\s+/).map(Number);
+      const avain = `${(+pk[0]).toFixed(2)},${(+pk[1]).toFixed(2)}`;
+      if (!tulos.has(avain)) tulos.set(avain, []);
+      tulos.get(avain).push({ epoch: +pk[2], arvot: vk });
+    }
+  }
+  for (const sarja of tulos.values()) sarja.sort((a, b) => a.epoch - b.epoch);
+  const eka = tulos.values().next().value;
+  hours = eka ? eka.map((e) => e.epoch) : [];
+  return { sarjat: tulos, hours };
 }
 
 async function loadForecasts() {
-  if (forecast.loading || forecast.fmi || forecast.met) return;
+  if (forecast.loading || forecast.wind) return;
   forecast.loading = true;
-  const [fmi, met, ocean] = await Promise.all([
-    fetchFmiForecast().catch((e) => { forecast.error = 'FMI: ' + e.message; return null; }),
-    fetchMetForecast().catch((e) => { forecast.error = 'MET: ' + e.message; return null; }),
-    fetchMetOcean().catch(() => null),
-  ]);
-  forecast.fmi = fmi; forecast.met = met; forecast.ocean = ocean;
-  forecast.loading = false;
-  if (fmi || met) {
+  try {
+    if (!windGridPoints.length) {
+      windGridPoints = await (await fetch('/api/wind-grid')).json();
+    }
+    // Tuuli ja aallokko SAMOISTA pisteista, jotta interpolointi on yhtenainen.
+    const [tuuli, aalto] = await Promise.all([
+      fetchFmiGrid(windGridPoints, 'fmi::forecast::harmonie::surface::point::multipointcoverage',
+                   ['WindSpeedMS', 'WindDirection', 'WindGust']),
+      fetchFmiGrid(windGridPoints, 'fmi::forecast::wam::point::multipointcoverage',
+                   ['SigWaveHeight']).catch(() => null),
+    ]);
+    forecast.wind = tuuli.sarjat;
+    forecast.hours = tuuli.hours;
+    forecast.wave = aalto ? aalto.sarjat : null;
     map.attributionControl.addAttribution(
-      'Sää: <a href="https://www.ilmatieteenlaitos.fi/avoin-data">Ilmatieteen laitos</a> ja '
-      + '<a href="https://api.met.no/">MET Norway</a> (CC BY 4.0)');
+      'Sää ja aallokko: <a href="https://www.ilmatieteenlaitos.fi/avoin-data">Ilmatieteen laitos</a> (CC BY 4.0)');
+  } catch (e) {
+    forecast.error = 'FMI: ' + e.message;
   }
+  forecast.loading = false;
+}
+
+function gridKey(p) { return `${p.lat.toFixed(2)},${p.lon.toFixed(2)}`; }
+
+// k lahinta hilapistetta painoineen (kaanteinen etaisyyden nelio).
+// Painot lasketaan EPSG:3067-metreissa, joten ne ovat aitoja etaisyyksia.
+function nearestGrid(x, y) {
+  const d = windGridPoints.map((p) => ({ p, d2: (p.x - x) ** 2 + (p.y - y) ** 2 }));
+  d.sort((a, b) => a.d2 - b.d2);
+  return d.slice(0, WIND_IDW_NEIGHBOURS);
+}
+
+// TUULI ON INTERPOLOITAVA VEKTORINA, EI ASTEINA. Asteiden keskiarvo 350 ja 10
+// on 180 eli tasan vastakkainen suunta - se olisi vaarallisin mahdollinen
+// virhe juuri suojaisuuslaskennassa.
+function windAt(latlng, hour = forecastHour) {
+  if (currentWind.source === 'kasin' || !forecast.wind) return currentWind;
+  const naapurit = nearestGrid(latlng.lng, latlng.lat);
+  let u = 0, v = 0, gust = 0, paino = 0;
+  for (const { p, d2 } of naapurit) {
+    const sarja = forecast.wind.get(gridKey(p));
+    if (!sarja || !sarja.length) continue;
+    const e = sarja[Math.min(hour, sarja.length - 1)];
+    const [nopeus, suunta, puuska] = e.arvot;
+    if (!isFinite(nopeus) || !isFinite(suunta)) continue;
+    const w = d2 < 1 ? 1e9 : 1 / d2;      // tasan hilapisteessa: ei interpolointia
+    const rad = suunta * Math.PI / 180;
+    u += w * (-nopeus * Math.sin(rad));
+    v += w * (-nopeus * Math.cos(rad));
+    gust += w * (isFinite(puuska) ? Math.max(puuska, nopeus) : nopeus * DEFAULT_GUST_FACTOR);
+    paino += w;
+  }
+  if (!paino) return currentWind;
+  u /= paino; v /= paino; gust /= paino;
+  const nopeus = Math.hypot(u, v);
+  const suunta = (Math.atan2(-u, -v) * 180 / Math.PI + 360) % 360;
+  return { direction: suunta, speed: nopeus, gust: Math.max(gust, nopeus),
+           source: currentWind.source };
+}
+
+// AALLONKORKEUS ON ERIKOISTAPAUS: WAM palauttaa saaristossa NaN, mika ei
+// tarkoita puuttuvaa mittausta vaan "malli ei kata tata aluetta".
+//
+// LAHIN PISTE RATKAISEE KATTAVUUDEN. Ensimmainen toteutus vain ohitti
+// NaN-pisteet ja interpoloi lopuista - testi paljasti etta silloin jaljelle
+// jai pelkka avomeren naapuri ja sen 1,4 m aallokko vuoti saaristoon
+// taysimaaraisena, eli tasan se mita saannon piti estaa. Jos lahin hilapiste
+// on NaN, WAM ei kata paikkaa eika arvoa ole - silloin kaytetaan pelkkaa omaa
+// pyyhkaisymatkamallia, joka on siella se oikea vastaus.
+function metWaveAt(hour = forecastHour, latlng = null) {
+  if (!forecast.wave) return null;
+  const kohde = latlng || map.getCenter();
+  const naapurit = nearestGrid(kohde.lng, kohde.lat);
+  if (!naapurit.length) return null;
+
+  const arvoPisteessa = (p) => {
+    const sarja = forecast.wave.get(gridKey(p));
+    if (!sarja || !sarja.length) return NaN;
+    return sarja[Math.min(hour, sarja.length - 1)].arvot[0];
+  };
+  if (!isFinite(arvoPisteessa(naapurit[0].p))) return null;   // WAM ei kata tata
+
+  let summa = 0, paino = 0;
+  for (const { p, d2 } of naapurit) {
+    const arvo = arvoPisteessa(p);
+    if (!isFinite(arvo)) continue;
+    const w = d2 < 1 ? 1e9 : 1 / d2;
+    summa += w * arvo; paino += w;
+  }
+  return paino ? summa / paino : null;
+}
+
+// Legendan sanallinen kuvaus NAKYVAN ALUEEN tuulesta.
+//
+// Kompassiruusu ja tarkka yksittainen lukema poistettiin tietoisesti: kun
+// tuuli vaihtelee kartalla, yksi nuoli ja yksi luku olisivat valhe. Sanallinen
+// vaihteluvali kertoo saman epatarkkuuden rehellisesti.
+//
+// Suuntien haarukka lasketaan VEKTORIKESKIARVON ymparilta, ei asteiden
+// min/max:sta - muuten pohjoisen ymparilla (350 ja 10 astetta) haarukaksi
+// tulisi "10-350" eli kaikki muut suunnat paitsi oikea.
+function windRangeText() {
+  if (!forecast.wind || !windGridPoints.length) return 'Haetaan ennustetta…';
+  const nakyvat = windGridPoints.filter((p) => {
+    const b = currentViewBounds();
+    return p.x >= b.minx && p.x <= b.maxx && p.y >= b.miny && p.y <= b.maxy;
+  });
+  const joukko = nakyvat.length ? nakyvat : windGridPoints;
+
+  let minN = Infinity, maxN = -Infinity, minP = Infinity, maxP = -Infinity;
+  let u = 0, v = 0, n = 0;
+  const suunnat = [];
+  for (const p of joukko) {
+    const sarja = forecast.wind.get(gridKey(p));
+    if (!sarja || !sarja.length) continue;
+    const [nopeus, suunta, puuska] = sarja[Math.min(forecastHour, sarja.length - 1)].arvot;
+    if (!isFinite(nopeus) || !isFinite(suunta)) continue;
+    minN = Math.min(minN, nopeus); maxN = Math.max(maxN, nopeus);
+    const pu = isFinite(puuska) ? Math.max(puuska, nopeus) : nopeus * DEFAULT_GUST_FACTOR;
+    minP = Math.min(minP, pu); maxP = Math.max(maxP, pu);
+    const rad = suunta * Math.PI / 180;
+    u += -nopeus * Math.sin(rad); v += -nopeus * Math.cos(rad);
+    suunnat.push(suunta); n++;
+  }
+  if (!n) return 'Ennustetta ei saatavilla tälle alueelle.';
+
+  const keski = (Math.atan2(-u, -v) * 180 / Math.PI + 360) % 360;
+  // Poikkeama keskisuunnasta LYHINTA TIETA ympyralla: (s - keski) kierretaan
+  // valille -180..180 ja otetaan itseisarvo. Sama kaava kuin varoituksessa.
+  let hajonta = 0;
+  for (const s of suunnat) {
+    hajonta = Math.max(hajonta, Math.abs(((s - keski + 540) % 360) - 180));
+  }
+  const nimi = (deg) => COMPASS_8[Math.round(((deg % 360) + 360) % 360 / 45) % 8];
+  const alku = nimi(keski - hajonta), loppu = nimi(keski + hajonta);
+  // Jos haarukan paat osuvat samaan ilmansuuntaan, sanotaan se kerran -
+  // "koillisesta-koillisesta" ei kerro mitaan.
+  const suuntaTeksti = (hajonta > 22.5 && alku !== loppu) ? `${alku}–${loppu}` : nimi(keski);
+
+  const väli = (a, b) => (b - a < 0.6 ? a.toFixed(1).replace('.', ',')
+                                      : `${a.toFixed(0)}–${b.toFixed(0)}`);
+  return `Tuuli ${väli(minN, maxN)} m/s ${suuntaTeksti}`
+    + `<br>puuskat ${väli(minP, maxP)} m/s`
+    + (nakyvat.length ? ` <span class="impl-note">(näkyvällä alueella, ${n} hilapistettä)</span>`
+                      : ' <span class="impl-note">(koko aineistossa)</span>');
+}
+
+// Tuulikentta yhden tiilen sisalla.
+//
+// Pikselikohtainen windAt olisi liian kallis: se lajittelee hilapisteet joka
+// kutsulla, ja tiilessa on 14 400 (vesi) tai 108 000 (rantaviiva) arvioitavaa
+// ruutua. Tuuli on kuitenkin sileä 30 km hilassa, joten riittaa interpoloida
+// NELJASSA KULMASSA ja bilineaarisesti niiden valilla.
+//
+// Naapuritiilet jakavat kulmapisteet, joten kentta on jatkuva eika
+// tiilirajoille synny nakyvaa saumaa - se olisi ollut yhden tuulen per tiili
+// -ratkaisun ongelma.
+function tileWindField(b, hour) {
+  const kulmat = [
+    windAt({ lat: b.miny, lng: b.minx }, hour), windAt({ lat: b.miny, lng: b.maxx }, hour),
+    windAt({ lat: b.maxy, lng: b.minx }, hour), windAt({ lat: b.maxy, lng: b.maxx }, hour),
+  ].map((w) => {
+    const r = w.direction * Math.PI / 180;
+    return { u: -w.speed * Math.sin(r), v: -w.speed * Math.cos(r), g: w.gust };
+  });
+  return { kulmat, b };
+}
+
+// fx, fy ovat 0..1 tiilen sisalla (fy 0 = miny). Interpolointi tehdaan
+// u/v-komponenteilla, ei asteilla - ks. windAt.
+function windInTile(kentta, fx, fy) {
+  const [a, b, c, d] = kentta.kulmat;
+  const u = (a.u * (1 - fx) + b.u * fx) * (1 - fy) + (c.u * (1 - fx) + d.u * fx) * fy;
+  const v = (a.v * (1 - fx) + b.v * fx) * (1 - fy) + (c.v * (1 - fx) + d.v * fx) * fy;
+  const g = (a.g * (1 - fx) + b.g * fx) * (1 - fy) + (c.g * (1 - fx) + d.g * fx) * fy;
+  const speed = Math.hypot(u, v);
+  return { speed, gust: Math.max(g, speed),
+           direction: (Math.atan2(-u, -v) * 180 / Math.PI + 360) % 360 };
+}
+
+// ALIHILA: renderointisilmukka ei kutsu windInTile:a pikselikohtaisesti.
+//
+// Mitattuna se maksoi rantaviivakerroksessa +68 ms per tiili (108 021
+// arvioitavaa pikselia), koska jokaiselle laskettiin atan2 ja fetchWeights.
+// Se on turhaa tyota: tuulihila on 30 km ja tiili 6 km, joten suunta muuttuu
+// tiilen sisalla alle asteen - ja pyyhkaisymatkan sektorit ovat 30 asteen
+// levyisia. Kentta lasketaan siksi WIND_SUBGRID x WIND_SUBGRID ruudukkoon
+// (750 m) ja pikseli lukee lahimman ruudun. Jaljelle jaava porras on ~0,02
+// astetta eli nakymaton, ja fetchWeights-kutsuja on 64 eika 108 021.
+const WIND_SUBGRID = 8;
+
+function windSubgrid(kentta) {
+  const ruudut = new Array(WIND_SUBGRID * WIND_SUBGRID);
+  for (let j = 0; j < WIND_SUBGRID; j++) {
+    for (let i = 0; i < WIND_SUBGRID; i++) {
+      const tuuli = windInTile(kentta, (i + 0.5) / WIND_SUBGRID, (j + 0.5) / WIND_SUBGRID);
+      ruudut[j * WIND_SUBGRID + i] = { speed: tuuli.speed, gust: tuuli.gust,
+                                       wf: fetchWeights(tuuli.direction) };
+    }
+  }
+  return ruudut;
+}
+
+// Alihilan indeksit sarakkeille ja riveille kerran per tiili. Ilman naita
+// renderointisilmukka laskisi jokaiselle pikselille jakolaskun ja
+// jakojaannoksen pelkastaan paikan selvittamiseksi - mitattuna se oli suurin
+// osa jaljelle jaaneesta lisakustannuksesta. Kuvarivi 0 on POHJOISREUNA,
+// joten rivi-indeksi kaannetaan (fy = 1 ylhaalla).
+function subgridIndex(w, h) {
+  const col = new Uint8Array(w), row = new Uint8Array(h);
+  const raja = (f) => Math.min(WIND_SUBGRID - 1, Math.max(0, (f * WIND_SUBGRID) | 0));
+  for (let x = 0; x < w; x++) col[x] = raja((x + 0.5) / w);
+  for (let y = 0; y < h; y++) row[y] = raja(1 - (y + 0.5) / h);
+  return { col, row };
+}
+
+// Tiilen tunniste tuulikentalle: valimuistiavaimeen riittaa lahde ja hetki,
+// koska kentta on niiden funktio. Kasisaadossa arvot ovat avaimessa.
+function windKey() {
+  return currentWind.source === 'kasin'
+    ? `k${currentWind.direction.toFixed(0)}|${currentWind.speed.toFixed(1)}|${currentWind.gust.toFixed(1)}`
+    : `${currentWind.source}|${forecastHour}`;
 }
 
 function seriesAt(series, hour) {
   if (!series || !series.length) return null;
   return series[Math.min(hour, series.length - 1)];
-}
-
-// MET:n aallokkoennuste valitulla hetkella - kaytetaan sekoittamaan oman
-// mallin arvio avomerella (ks. paddleDifficulty).
-function metWaveAt(hour) {
-  const e = seriesAt(forecast.ocean, hour);
-  return e ? e.wave : null;
-}
-
-// Ottaa valitun lahteen arvot kayttoon. Palauttaa true jos jokin muuttui.
-function applyForecastWind() {
-  if (currentWind.source === 'kasin') return false;
-  const series = currentWind.source === 'fmi' ? forecast.fmi : forecast.met;
-  const e = seriesAt(series, forecastHour);
-  if (!e) return false;
-  const changed = e.speed !== currentWind.speed || e.direction !== currentWind.direction;
-  currentWind.speed = e.speed;
-  currentWind.direction = e.direction;
-  currentWind.gust = isFinite(e.gust) ? Math.max(e.gust, e.speed) : e.speed * DEFAULT_GUST_FACTOR;
-  return changed;
 }
 
 function factorMask() {
@@ -496,14 +694,12 @@ legend.onAdd = function () {
         '<div class="wind-source">' +
           '<label><input type="radio" name="wind-source" value="kasin" checked> Käsin</label>' +
           '<label><input type="radio" name="wind-source" value="fmi"> Ilmatieteen laitos</label>' +
-          '<label><input type="radio" name="wind-source" value="met"> MET Norway</label>' +
         '</div>' +
         '<div id="forecast-row" class="hidden">' +
           '<label for="forecast-hour">Aika: <span id="forecast-time"></span></label>' +
           '<input type="range" id="forecast-hour" min="0" max="47" step="1" value="0">' +
           '<small id="forecast-compare" class="impl-note"></small>' +
         '</div>' +
-        '<svg id="wind-dial" class="wind-dial" viewBox="0 0 120 120" aria-hidden="true"></svg>' +
         '<label for="wind-dir">Suunta: <span id="wind-dir-value"></span></label>' +
         '<input type="range" id="wind-dir" min="0" max="355" step="5" value="180">' +
         '<label for="wind-speed">Nopeus: <span id="wind-speed-value"></span> m/s</label>' +
@@ -529,7 +725,6 @@ legend.onAdd = function () {
   div.querySelectorAll('.legend-tab').forEach((b) => {
     b.addEventListener('click', () => {
       setLegendTab(b.dataset.tab);
-      if (b.dataset.tab === 'tuuli') drawWindDial();
     });
   });
 
@@ -539,7 +734,6 @@ legend.onAdd = function () {
       if (currentWind.source !== 'kasin') {
         updateLegendFromSettings();          // näytä latausviesti heti
         await loadForecasts();
-        applyForecastWind();
       }
       updateLegendFromSettings();
       refreshActive();
@@ -547,7 +741,6 @@ legend.onAdd = function () {
   });
   div.querySelector('#forecast-hour').addEventListener('input', (e) => {
     forecastHour = Number(e.target.value);
-    applyForecastWind();
     updateLegendFromSettings();
     refreshActive();
   });
@@ -616,7 +809,8 @@ let infoBubbles = [];    // [{ latlng, marker }]
 // Tuuli ja ennustehetki ovat PARAMETREJA, jotta tulevat tunnit voidaan laskea
 // tasan samalla koodilla kuin nykyhetki (ks. deteriorationWarning). Oletukset
 // ovat nykytila, joten kutsut ilman argumentteja toimivat kuten ennenkin.
-function waterConditionsAt(latlng, wind = currentWind, hour = forecastHour) {
+function waterConditionsAt(latlng, wind = null, hour = forecastHour) {
+  wind = wind || windAt(latlng, hour);
   const y = latlng.lat, x = latlng.lng;   // L.CRS.Simple: suoraan EPSG:3067-metrit
   for (const tile of tileListCache) {
     const b = tile.bounds_epsg3067;
@@ -639,7 +833,7 @@ function waterConditionsAt(latlng, wind = currentWind, hour = forecastHour) {
     // Sama aallonkorkeus kuin kerroksen varitys kayttaa, MET-sekoitus mukaan
     // lukien - muuten luku ja vari kertoisivat eri asiaa.
     let hs = WAVE_COEFF * shelteredWind(wind.speed, fetchM, obstacleH) * Math.sqrt(fetchM);
-    const metWave = metWaveAt(hour);
+    const metWave = metWaveAt(hour, latlng);
     if (metWave != null && isFinite(metWave)) {
       const w = Math.min(fetchM / FETCH_LEVEL_METRES[FETCH_LEVEL_METRES.length - 1], 1);
       hs = (1 - w) * hs + w * metWave;
@@ -676,15 +870,12 @@ const WARN_HOURS = 3;
 const WARN_CLASS_RISE = 0.75;
 const WARN_MIN_CLASS = 1.0;    // tulevan tilan oltava vahintaan "kohtalainen"
 
-function windAtHour(hour) {
-  if (currentWind.source === 'kasin') return null;   // ei ennustetta = ei tulevaisuutta
-  const series = currentWind.source === 'fmi' ? forecast.fmi : forecast.met;
-  const e = seriesAt(series, hour);
-  if (!e || !isFinite(e.speed) || !isFinite(e.direction)) return null;
-  return {
-    direction: e.direction, speed: e.speed,
-    gust: isFinite(e.gust) ? Math.max(e.gust, e.speed) : e.speed * DEFAULT_GUST_FACTOR,
-  };
+// Tuuli TIETYSSA PAIKASSA tiettyna hetkena. Kasisaadossa tulevaisuutta ei
+// ole, joten varoitusta ei voi laskea.
+function windAtHour(latlng, hour) {
+  if (currentWind.source === 'kasin' || !forecast.wind) return null;
+  if (hour >= forecast.hours.length) return null;   // ennusteen ulkopuolella
+  return windAt(latlng, hour);
 }
 
 // Vaikeus 0-3 luokka-askelta annetulla tuulella ja hetkella.
@@ -702,13 +893,13 @@ function difficultyClassAt(latlng, wind, hour) {
 
 // Palauttaa { hour, luokka, tekija, arvo } tai null.
 function deteriorationWarning(latlng) {
-  const now = windAtHour(forecastHour);
+  const now = windAtHour(latlng, forecastHour);
   if (!now) return null;
   const d0 = difficultyClassAt(latlng, now, forecastHour);
 
   let pahin = null;
   for (let h = 1; h <= WARN_HOURS; h++) {
-    const wind = windAtHour(forecastHour + h);
+    const wind = windAtHour(latlng, forecastHour + h);
     if (!wind) continue;
     const d = difficultyClassAt(latlng, wind, forecastHour + h);
     const ylittaa = d >= 3.0 && d0 < 3.0;                                  // ehto A
@@ -778,8 +969,8 @@ function wavyCirclePath(hs, koko = 124) {
   return d + 'Z';
 }
 
-function bubbleHtml(cond, varoitus) {
-  const deg = currentWind.direction;
+function bubbleHtml(cond, varoitus, tuuli) {
+  const deg = tuuli.direction;
   const name = COMPASS_8[Math.round(((deg % 360) + 360) % 360 / 45) % 8];
   // Vaikeusasteen vari on taysin kylläinen (HSV s=v=1), eika sellaisenaan
   // kelpaa tekstiin valkoisella: kirkkaan keltaisen kontrasti on 1,07:1 eli
@@ -812,8 +1003,8 @@ function bubbleHtml(cond, varoitus) {
     + `<circle cx="${piste.x.toFixed(2)}" cy="${piste.y.toFixed(2)}" r="6" `
     + `fill="${inkColour}" stroke="#ffffff" stroke-width="2"/></svg>`
     + '<div class="pb-content">'
-    + `<div class="pb-speed">${currentWind.speed.toFixed(1).replace('.', ',')} m/s</div>`
-    + `<div class="pb-sub">puuska ${currentWind.gust.toFixed(1).replace('.', ',')}</div>`
+    + `<div class="pb-speed">${tuuli.speed.toFixed(1).replace('.', ',')} m/s</div>`
+    + `<div class="pb-sub">puuska ${tuuli.gust.toFixed(1).replace('.', ',')}</div>`
     + wave
     + `<div class="pb-sub">${name}</div>`
     + (varoitus
@@ -839,10 +1030,10 @@ async function ensureWaterFor(latlng) {
 // Varoitusrivi ei mahdu 124 px palloon muun sisallon kanssa, joten pallo
 // kasvaa kun varoitus on esilla. Kasvu on samalla itsessaan signaali: pallo
 // erottuu muista jo ennen kuin tekstia ehtii lukea.
-function bubbleIcon(cond, varoitus) {
+function bubbleIcon(cond, varoitus, tuuli) {
   const koko = varoitus ? 158 : 124;
   return L.divIcon({
-    className: '', html: bubbleHtml(cond, varoitus),
+    className: '', html: bubbleHtml(cond, varoitus, tuuli),
     iconSize: [koko, koko], iconAnchor: [koko / 2, koko / 2],
   });
 }
@@ -850,8 +1041,8 @@ function bubbleIcon(cond, varoitus) {
 // Kaikkien pallojen luvut lasketaan uudelleen - tuuli tai ennustehetki on
 // voinut muuttua, ja jokainen pallo on eri paikassa eli eri olosuhteissa.
 function updateInfoBubbles() {
-  infoBubbles.forEach((b) => b.marker.setIcon(
-    bubbleIcon(waterConditionsAt(b.latlng), deteriorationWarning(b.latlng))));
+  infoBubbles.forEach((b) => b.marker.setIcon(bubbleIcon(
+    waterConditionsAt(b.latlng), deteriorationWarning(b.latlng), windAt(b.latlng))));
 }
 
 function removeInfoBubble(bubble) {
@@ -866,14 +1057,14 @@ function clearInfoBubbles() {
 }
 
 async function addInfoBubble(latlng) {
-  const marker = L.marker(latlng, { icon: bubbleIcon(null), interactive: true }).addTo(map);
+  const marker = L.marker(latlng, { icon: bubbleIcon(null, null, windAt(latlng)), interactive: true }).addTo(map);
   const bubble = { latlng, marker };
   marker.on('click', (e) => { L.DomEvent.stop(e); removeInfoBubble(bubble); });
   infoBubbles.push(bubble);
   saveViewState();
   await ensureWaterFor(latlng);
   if (infoBubbles.includes(bubble)) {
-    marker.setIcon(bubbleIcon(waterConditionsAt(latlng), deteriorationWarning(latlng)));
+    marker.setIcon(bubbleIcon(waterConditionsAt(latlng), deteriorationWarning(latlng), windAt(latlng)));
   }
 }
 
@@ -925,56 +1116,6 @@ function setLegendTab(name) {
     el.classList.toggle('hidden', el.dataset.panel !== name);
   });
   saveViewState();
-}
-
-// Tuulikompassi: nuoli osoittaa siihen SUUNTAAN JOHON tuuli puhaltaa (eli
-// suunnasta poispain, kuten saakartoissa), ja sen pituus seka vari kertovat
-// voimakkuuden. Piirretaan SVG:na ilman kirjastoja, samaan tapaan kuin
-// asetussivun jakaumakuvaaja.
-function drawWindDial() {
-  const svg = document.getElementById('wind-dial');
-  if (!svg) return;
-  const cx = 60, cy = 60, r = 50;
-  const speed = currentWind.speed;
-  // 0-18 m/s -> nuolen pituus ja vari (vihrea -> keltainen -> punainen)
-  const t = Math.min(speed / 18, 1);
-  const len = 12 + t * 30;
-  const hue = (1 - t) * 120;
-  const colour = `hsl(${hue.toFixed(0)}, 85%, 42%)`;
-  const width = 2.5 + t * 4;
-
-  // Tuuli TULEE suunnasta d, joten nuoli osoittaa suuntaan d+180.
-  const rad = (currentWind.direction + 180) * Math.PI / 180;
-  const dx = Math.sin(rad), dy = -Math.cos(rad);
-  const tipX = cx + dx * len, tipY = cy + dy * len;
-  const tailX = cx - dx * len * 0.55, tailY = cy - dy * len * 0.55;
-  // Karjen siivet
-  const back = 9 + t * 4, side = 5 + t * 2.5;
-  const bx = tipX - dx * back, by = tipY - dy * back;
-  const px = -dy * side, py = dx * side;
-
-  let s = `<circle class="ring" cx="${cx}" cy="${cy}" r="${r}"/>`;
-  for (let a = 0; a < 360; a += 30) {
-    const rr = (a % 90 === 0) ? 8 : 4;
-    const ra = a * Math.PI / 180;
-    const sx = cx + Math.sin(ra) * r, sy = cy - Math.cos(ra) * r;
-    s += `<line class="tick" x1="${sx.toFixed(1)}" y1="${sy.toFixed(1)}" ` +
-         `x2="${(sx - Math.sin(ra) * rr).toFixed(1)}" y2="${(sy + Math.cos(ra) * rr).toFixed(1)}"/>`;
-  }
-  [['P', 0], ['I', 90], ['E', 180], ['L', 270]].forEach(([label, a]) => {
-    const ra = a * Math.PI / 180;
-    const lx = cx + Math.sin(ra) * (r - 16), ly = cy - Math.cos(ra) * (r - 16) + 4;
-    s += `<text class="card" x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" text-anchor="middle">${label}</text>`;
-  });
-  if (speed > 0) {
-    s += `<line class="arrow" x1="${tailX.toFixed(1)}" y1="${tailY.toFixed(1)}" ` +
-         `x2="${tipX.toFixed(1)}" y2="${tipY.toFixed(1)}" stroke="${colour}" stroke-width="${width.toFixed(1)}"/>`;
-    s += `<polygon points="${tipX.toFixed(1)},${tipY.toFixed(1)} ` +
-         `${(bx + px).toFixed(1)},${(by + py).toFixed(1)} ${(bx - px).toFixed(1)},${(by - py).toFixed(1)}" ` +
-         `fill="${colour}"/>`;
-  }
-  s += `<circle class="hub" cx="${cx}" cy="${cy}" r="3"/>`;
-  svg.innerHTML = s;
 }
 
 function updateLegendFromSettings() {
@@ -1041,35 +1182,21 @@ function updateLegendFromSettings() {
         if (forecast.loading) {
           cmp.textContent = 'Haetaan ennustetta…';
         } else {
-          const f = seriesAt(forecast.fmi, forecastHour);
-          const m = seriesAt(forecast.met, forecastHour);
-          const w = metWaveAt(forecastHour);
-          const fmt = (e) => e ? `${e.speed.toFixed(1)} m/s / ${Math.round(e.direction)}°`
-                                 + (isFinite(e.gust) ? `, puuska ${e.gust.toFixed(1)}` : '') : '–';
-          const series = currentWind.source === 'fmi' ? forecast.fmi : forecast.met;
-          // Aikajanan pituus seuraa valitun ennusteen pituutta: FMI antaa
-          // 50 tuntia, MET kymmenen vuorokautta.
           const slider = document.getElementById('forecast-hour');
-          slider.max = String(Math.max(0, (series ? series.length : 1) - 1));
+          slider.max = String(Math.max(0, forecast.hours.length - 1));
           if (forecastHour > Number(slider.max)) { forecastHour = Number(slider.max); }
           slider.value = String(forecastHour);
-          const active = seriesAt(series, forecastHour);
-          document.getElementById('forecast-time').textContent = active
-            ? new Date(active.time).toLocaleString('fi-FI', { weekday: 'short', hour: '2-digit', minute: '2-digit' })
+          const epoch = forecast.hours[Math.min(forecastHour, forecast.hours.length - 1)];
+          document.getElementById('forecast-time').textContent = epoch
+            ? new Date(epoch * 1000).toLocaleString('fi-FI', { weekday: 'short', hour: '2-digit', minute: '2-digit' })
             : '–';
-          cmp.innerHTML = 'FMI: ' + fmt(f) + '<br>MET: ' + fmt(m)
-            + (w != null ? '<br>MET aallokko avomerellä: ' + w.toFixed(1) + ' m' : '')
-            + (forecast.error ? '<br>' + forecast.error : '');
+          cmp.innerHTML = windRangeText() + (forecast.error ? '<br>' + forecast.error : '');
         }
       }
 
-      // Avoimen rannan aallokko antaa kayttajalle mittakaavan sille, mita
-      // nykyinen tuuli tarkoittaa.
-      const openHs = WAVE_COEFF * currentWind.speed * Math.sqrt(FETCH_LEVEL_METRES[FETCH_LEVEL_METRES.length - 1]);
       document.getElementById('wind-source').textContent =
-        'Lähde: ' + currentWind.source + '. Avoimella rannalla aallokko olisi nyt noin '
-        + (openHs * 100).toFixed(0) + ' cm. Kärkipaikat näyttää vain ne paikat, jotka '
-        + 'kelpaisivat myös tyynellä — kova tuuli siis vähentää niitä.';
+        'Kärkipaikat näyttää vain ne paikat, jotka kelpaisivat myös tyynellä '
+        + '— kova tuuli siis vähentää niitä.';
     }
   }
 
@@ -1080,7 +1207,6 @@ function updateLegendFromSettings() {
       'Tekijät: ' + active.join(', ') + ' · paksuus ' + currentThickness + ' px · parhaat ' + currentTopPercent + ' %';
   }
 
-  drawWindDial();
 
   const paddleNote = document.getElementById('paddle-note');
   if (paddleNote) {
@@ -1295,24 +1421,34 @@ async function loadWaterLevels(tileId) {
 // Melottavuuskerros: varittaa MEREN, ei rantaviivaa. Ruudukko on karkea
 // (50 m) ja kentta sileä, joten Leaflet saa skaalata kuvan vapaasti.
 async function renderPaddleTile(tileId) {
-  const metWave = metWaveAt(forecastHour);
-  const key = `${tileId}|paddle|${currentWind.direction.toFixed(0)}|`
-    + `${currentWind.speed.toFixed(1)}|${currentWind.gust.toFixed(1)}|`
-    + `${metWave == null ? 'x' : metWave.toFixed(2)}`;
+  const tile = tileListCache.find((tl) => tl.tile_id === tileId);
+  const b = tile.bounds_epsg3067;
+  // Aallokko luetaan tiilen keskelta: WAM:n vaikutus rajoittuu joka tapauksessa
+  // suuren pyyhkaisymatkan ruutuihin (sekoituspaino w = F_eff / MAX_FETCH_M),
+  // joten 6 km sisainen vaihtelu ei muuta lopputulosta merkittavasti.
+  const metWave = metWaveAt(forecastHour,
+    { lat: (b.miny + b.maxy) / 2, lng: (b.minx + b.maxx) / 2 });
+  const key = `${tileId}|paddle|${windKey()}|${metWave == null ? 'x' : metWave.toFixed(2)}`;
   if (renderResultCache.has(key)) return renderResultCache.get(key);
 
   const { levels, obstacles, water, width: w, height: h } = await loadWaterLevels(tileId);
-  const wf = fetchWeights(currentWind.direction);
+  const ruudut = windSubgrid(tileWindField(b, forecastHour));
+  const sg = subgridIndex(w, h);
   const out = new Uint8ClampedArray(w * h * 4);
+  // x ja y seurataan inkrementaalisesti; kasvatus ENNEN continue-lauseita.
+  let px = -1, py = 0;
   for (let i = 0; i < w * h; i++) {
+    if (++px === w) { px = 0; py++; }
     if (!water[i]) continue;
+    const tuuli = ruudut[sg.row[py] * WIND_SUBGRID + sg.col[px]];
+    const wf = tuuli.wf;
     const fa = FETCH_LEVEL_METRES[levels[i * FETCH_SECTORS + wf.lo]];
     const fb = FETCH_LEVEL_METRES[levels[i * FETCH_SECTORS + wf.hi]];
     const fetchM = fa + (fb - fa) * wf.frac;
     const ha = dequantiseObstacle(obstacles[i * FETCH_SECTORS + wf.lo]);
     const hb = dequantiseObstacle(obstacles[i * FETCH_SECTORS + wf.hi]);
     const obstacleH = ha + (hb - ha) * wf.frac;
-    const d = paddleDifficulty(fetchM, currentWind.speed, currentWind.gust, obstacleH, metWave);
+    const d = paddleDifficulty(fetchM, tuuli.speed, tuuli.gust, obstacleH, metWave);
     const [r, g, b] = SCORE_COLOR_LUT[Math.round((1 - d) * 255)];
     out[i * 4] = r; out[i * 4 + 1] = g; out[i * 4 + 2] = b; out[i * 4 + 3] = 130;
   }
@@ -1518,10 +1654,8 @@ function scoreFromComponents(slopeByte, distByte, rockBit, swampBit, mask, fetch
 async function renderFactorTile(tileId, displayMode, thicknessPx, topPercent, mask) {
   // Tuuli kuuluu valimuistiavaimeen vain kun suojaisuus on mukana - muuten
   // sen muuttuminen mitatoisi valimuistin turhaan.
-  const windKey = (mask & FACTOR_BITS.shelter)
-    ? `|${currentWind.direction.toFixed(0)}|${currentWind.speed.toFixed(1)}`
-    : '';
-  const cacheKey = `${tileId}|${displayMode}|${thicknessPx}|${topPercent}|${mask}${windKey}`;
+  const windOsa = (mask & FACTOR_BITS.shelter) ? `|${windKey()}` : '';
+  const cacheKey = `${tileId}|${displayMode}|${thicknessPx}|${topPercent}|${mask}${windOsa}`;
   if (renderResultCache.has(cacheKey)) return renderResultCache.get(cacheKey);
 
   const { factors, tiebreak } = await loadFactorImages(tileId);
@@ -1547,17 +1681,23 @@ async function renderFactorTile(tileId, displayMode, thicknessPx, topPercent, ma
 
   // Suojaisuus lukee valitun sektorin pyyhkaisymatkan omasta kuvaparistaan.
   const useShelter = (mask & FACTOR_BITS.shelter) !== 0;
-  const wf = useShelter ? fetchWeights(currentWind.direction) : null;
-  const windSpeed = currentWind.speed;
+  const tile = tileListCache.find((tl) => tl.tile_id === tileId);
+  const ruudut = useShelter ? windSubgrid(tileWindField(tile.bounds_epsg3067, forecastHour)) : null;
   const fetchData = useShelter ? await loadFetchLevels(tileId) : null;
   const fetchLevels = fetchData ? fetchData.levels : null;
   const obstacleLevels = fetchData ? fetchData.obstacles : null;
 
+  const sg = useShelter ? subgridIndex(w, h) : null;
+  let px = -1, py = 0;
   for (let i = 0; i < w * h; i++) {
+    if (++px === w) { px = 0; py++; }
     if (data[i * 4 + 3] === 0) { alpha[i] = 0; continue; }
     const bits = data[i * 4 + 2];
-    let fetchM = 0, obstacleH = 0;
+    let fetchM = 0, obstacleH = 0, windSpeed = 0;
     if (useShelter) {
+      const tuuli = ruudut[sg.row[py] * WIND_SUBGRID + sg.col[px]];
+      windSpeed = tuuli.speed;
+      const wf = tuuli.wf;
       const a = FETCH_LEVEL_METRES[fetchLevels[i * FETCH_SECTORS + wf.lo]];
       const b = FETCH_LEVEL_METRES[fetchLevels[i * FETCH_SECTORS + wf.hi]];
       fetchM = a + (b - a) * wf.frac;
@@ -1759,7 +1899,6 @@ async function init() {
   if (currentWind.source !== 'kasin') {
     try {
       await loadForecasts();
-      applyForecastWind();
     } catch (err) {
       currentWind.source = 'kasin';
     }
