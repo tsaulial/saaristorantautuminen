@@ -1300,6 +1300,21 @@ function dilateAlpha(alpha, w, h, radiusPx) {
 // osoittaa mista alkuperaisesta (aidosti puskurilla olevasta) pikselista
 // vari haetaan. Kahden 1D-pyyhkaisyn Chebyshev-etaisyys riittaa taman
 // kosmeettisen tarkoituksen (ei tarvitse tarkkaa euklidista lahinta).
+//
+// HAKU ETENEE ULOSPAIN KESKELTA ja katkeaa ensimmaiseen osumaan. Aiempi
+// versio kavi aina koko ikkunan (-r..+r) lapi etsien minimietaisyytta,
+// vaikka lahin osuma loytyy tyypillisesti heti.
+//
+// Mitattu 1714x1714 tiilella (peittomaskissa 108 021 px = 3,7 %) niin,
+// etta molemmat versiot poimittiin tasta tiedostosta samalla tavalla ja
+// ajettiin samassa V8-kontekstissa - muuten vertailu ei ole reilu:
+//   paksuus  1 px: 4,2 -> 3,5 ms    10 px: 79,4 -> 43,0 ms  (1,8x)
+//            5 px: 43,6 -> 21,9 ms  20 px: 133,2 -> 74,1 ms (1,8x)
+// Tulos on BITILLEEN SAMA kaikilla THICKNESS_PRESETS-arvoilla (verrattu
+// kaikki 2 937 796 pikselia seka alfasta etta lahdeindeksista): kun
+// jokaisella etaisyydella d tarkistetaan -d ennen +d:ta, tasapelit
+// ratkeavat kuten ennenkin (vanha silmukka kohtasi -d ensin ja vertasi
+// aidosti pienempaan).
 function dilateWithNearestColor(alpha, w, h, radiusPx) {
   if (radiusPx <= 0) {
     const idx = new Int32Array(w * h);
@@ -1314,15 +1329,11 @@ function dilateWithNearestColor(alpha, w, h, radiusPx) {
     for (let x = 0; x < w; x++) {
       const i = row + x;
       if (alpha[i]) { tmpAlpha[i] = 1; tmpIdx[i] = i; continue; }
-      let best = -1, bestDist = Infinity;
-      for (let dx = -radiusPx; dx <= radiusPx; dx++) {
-        const xx = x + dx;
-        if (xx >= 0 && xx < w && alpha[row + xx] && Math.abs(dx) < bestDist) {
-          bestDist = Math.abs(dx);
-          best = row + xx;
-        }
+      for (let d = 1; d <= radiusPx; d++) {
+        const xm = x - d, xp = x + d;
+        if (xm >= 0 && alpha[row + xm]) { tmpAlpha[i] = 1; tmpIdx[i] = row + xm; break; }
+        if (xp < w && alpha[row + xp]) { tmpAlpha[i] = 1; tmpIdx[i] = row + xp; break; }
       }
-      if (best >= 0) { tmpAlpha[i] = 1; tmpIdx[i] = best; }
     }
   }
 
@@ -1332,15 +1343,11 @@ function dilateWithNearestColor(alpha, w, h, radiusPx) {
     for (let y = 0; y < h; y++) {
       const i = y * w + x;
       if (tmpAlpha[i]) { outAlpha[i] = 1; outIdx[i] = tmpIdx[i]; continue; }
-      let best = -1, bestDist = Infinity;
-      for (let dy = -radiusPx; dy <= radiusPx; dy++) {
-        const yy = y + dy;
-        if (yy >= 0 && yy < h && tmpAlpha[yy * w + x] && Math.abs(dy) < bestDist) {
-          bestDist = Math.abs(dy);
-          best = tmpIdx[yy * w + x];
-        }
+      for (let d = 1; d <= radiusPx; d++) {
+        const ym = y - d, yp = y + d;
+        if (ym >= 0 && tmpAlpha[ym * w + x]) { outAlpha[i] = 1; outIdx[i] = tmpIdx[ym * w + x]; break; }
+        if (yp < h && tmpAlpha[yp * w + x]) { outAlpha[i] = 1; outIdx[i] = tmpIdx[yp * w + x]; break; }
       }
-      if (best >= 0) { outAlpha[i] = 1; outIdx[i] = best; }
     }
   }
   return { alpha: outAlpha, sourceIdx: outIdx };

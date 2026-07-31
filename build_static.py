@@ -16,9 +16,15 @@ Kaynnistys projektin juuresta:
     python3 build_static.py
 """
 
+import hashlib
+import io
 import json
+import os
 import shutil
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
+
+from PIL import Image
 
 from backend import pipeline, tiles
 
@@ -26,6 +32,81 @@ ROOT = Path(__file__).resolve().parent
 BUILDINGS_PATH = ROOT / "rakennukset-mll" / "rakennukset.gpkg"
 DOCS_DIR = ROOT / "docs"
 DOCS_CACHE_DIR = DOCS_DIR / "cache"
+
+# --- VISUAALISET KERROKSET HAVIOTTOMANA WEBP:NA ---
+#
+# docs/ oli 593 Mt, josta 580 Mt (98 %) oli visuaalisia kerroksia:
+# peruskartta ja esilasketut varikerrokset, jotka selain vain NAYTTAA
+# (L.imageOverlay). PNG on niille tehoton muoto.
+#
+# HAVIOTON VOITTI HAVIOLLISEN JOKAISELLA KUVATYYPILLA - mikä on epäintuitiivista
+# mutta selittyy sillä, ettei aineistossa ole yhtään valokuvaa: peruskartta on
+# rasteroitua kartografiaa ja kerrokset synteettisiä tasavärialueita, joissa
+# hävioton ennustus toimii erinomaisesti ja häviöllinen tuhlaa bittejä
+# reunojen "soinnutteluun". Mitattu (Pillow, 6000x6000):
+#
+#   peruskartta   9,84 Mt -> 2,28 Mt (4,3x)   [haviollinen q80: 3,99 Mt]
+#   varikerros    6,73 Mt -> 0,46 Mt (14,7x)  [haviollinen q80: 0,77 Mt]
+#   top-kerros    0,29 Mt -> 0,04 Mt (8,2x)   [haviollinen q80: 0,22 Mt]
+#
+# Kuva ei siis huonone lainkaan - visuaalisesta laadusta ei tarvinnut tinkia.
+#
+# TODENNETTU pikselitasolla lahde-PNG:ta vastaan: alfakanava on identtinen ja
+# NAKYVIEN pikselien RGB-ero on tasan 0. Tiedostot eivat silti ole tavu
+# tavulta samoja, koska libwebp nollaa RGB:n TAYSIN LAPINAKYVIEN pikselien
+# alta (A=0) pakkauksen parantamiseksi - ne arvot eivat paady ruudulle
+# koskaan. Juuri tama kaytos olisi kuitenkin tuhonnut DATAKUVAT, joissa
+# "lapinakyvakin" pikseli kantaa merkitsevaa dataa - toinen syy sille, etta
+# raja kulkee visuaalisen ja datan valissa eika muodon mukavuuden.
+#
+# DATAKUVAT (_factors, _tiebreak, _prime, _fetch*, _water*) jaavat PNG:ksi.
+# Niista selain lukee pikseliarvoja getImageData:lla ja purkaa nibble-pakatut
+# kentat, joten muodon on oltava haviotön - havioton WebP kelpaisi sinansa,
+# mutta niita on yhteensa vain 12,7 Mt eika muutos toisi mitaan.
+#
+# Raja kulkee tasan siina, kutsuuko frontend kuvalle loadImageData()
+# (= pikseliarvot, PNG) vai L.imageOverlay() (= pelkka esitys, WebP).
+WEBP_METHOD = 1   # 0-6; 1 on paras kompromissi (m=0 on 4x nopeampi mutta 20-40 % isompi)
+
+# Enkoodaus maksaa 6000x6000 kuvalla 1-2,7 s ja kuvia on ~2 460, joten
+# lampiman buildin kesto olisi noussut sekunneista tunteihin. Kaksi keinoa:
+# rinnakkaisajo (ks. write_webp_batch) ja tama valimuisti. Avain on
+# PNG-tavujen tiiviste, joten valimuisti on SISALTOOSOITTEINEN: jos lahdekuva
+# muuttuu, avain muuttuu eika vanhentunutta tulosta voi vahingossa kayttaa -
+# erillista mitatointia ei tarvita.
+WEBP_CACHE_DIR = ROOT / "output" / "cache" / "_webp"
+
+
+def to_webp(png_bytes):
+    """PNG-tavut -> haviotön WebP. Vain visuaalisille kerroksille (ks. yllä)."""
+    key = hashlib.sha1(png_bytes).hexdigest()
+    cached = WEBP_CACHE_DIR / f"{key}_lossless_m{WEBP_METHOD}.webp"
+    if cached.exists():
+        return cached.read_bytes()
+
+    buf = io.BytesIO()
+    Image.open(io.BytesIO(png_bytes)).save(
+        buf, "WEBP", lossless=True, method=WEBP_METHOD
+    )
+    out = buf.getvalue()
+
+    WEBP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cached.write_bytes(out)
+    return out
+
+
+def _encode_job(job):
+    name, png_bytes = job
+    return name, to_webp(png_bytes)
+
+
+def write_webp_batch(jobs, pool):
+    """Muuntaa ja kirjoittaa erän visuaalisia kuvia rinnakkain.
+
+    Era on yksi resoluutiotaso yhdesta tiilesta (56 kuvaa), jolloin muistissa
+    on kerrallaan korkeintaan muutama kymmenen megatavua PNG-tavuja."""
+    for name, webp_bytes in pool.map(_encode_job, jobs):
+        (DOCS_CACHE_DIR / name).write_bytes(webp_bytes)
 
 # frontend/index.html kayttaa naita tarkkoja /api/-polkuja - build-skripti
 # korvaa ne staattisilla, suhteellisilla poluilla (toimivat myos GitHub
@@ -36,11 +117,12 @@ DOCS_CACHE_DIR = DOCS_DIR / "cache"
 # suffiksikaytannolla, joten pelkka polun alku tarvitsee korvata.
 URL_REPLACEMENTS = {
     "fetch('/api/tiles')": "fetch('tiles.json')",
-    "`/api/basemap/${tile.tile_id}${level.suffix}.png`": "`cache/${tile.tile_id}_base${level.suffix}.png`",
+    # Kolme visuaalista kerrosta -> .webp (ks. to_webp). Loput jaavat .png:ksi.
+    "`/api/basemap/${tile.tile_id}${level.suffix}.png`": "`cache/${tile.tile_id}_base${level.suffix}.webp`",
     "`/api/overlay/${tile.tile_id}${level.suffix}_t${currentThickness}.png`":
-        "`cache/${tile.tile_id}${level.suffix}_t${currentThickness}.png`",
+        "`cache/${tile.tile_id}${level.suffix}_t${currentThickness}.webp`",
     "`/api/overlay/${tile.tile_id}/top${level.suffix}_t${currentThickness}_p${currentTopPercent}.png`":
-        "`cache/${tile.tile_id}_top${level.suffix}_t${currentThickness}_p${currentTopPercent}.png`",
+        "`cache/${tile.tile_id}_top${level.suffix}_t${currentThickness}_p${currentTopPercent}.webp`",
     "`/api/factors/${tileId}.png`": "`cache/${tileId}_factors.png`",
     "`/api/tiebreak/${tileId}.png`": "`cache/${tileId}_tiebreak.png`",
     "`/api/prime/${tileId}.png`": "`cache/${tileId}_prime.png`",
@@ -61,6 +143,10 @@ def build():
     registry = tiles.get_registry()
     print(f"{len(registry)} tiilta rekisterissa")
 
+    # Rinnakkaisajo vain WebP-enkoodaukselle. GIS-laskenta pysyy sarjallisena,
+    # koska se lukee ja kirjoittaa yhteista output/cache/-valimuistia.
+    pool = ProcessPoolExecutor(max_workers=os.cpu_count())
+
     tile_entries = []
     for tile_id in registry:
         print(f"  {tile_id}...")
@@ -68,15 +154,18 @@ def build():
         meta = None
         for level in pipeline.LEVEL_FACTORS:
             suffix = pipeline.LEVEL_SUFFIXES[level]
+            # Kootaan taso kerrallaan ja muunnetaan era rinnakkain - yksittain
+            # muunnettuna enkoodaus veisi tunteja (ks. write_webp_batch).
+            jobs = []
             base_bytes = pipeline.get_or_compute_basemap(tile_id, level=level)
-            (DOCS_CACHE_DIR / f"{tile_id}_base{suffix}.png").write_bytes(base_bytes)
+            jobs.append((f"{tile_id}_base{suffix}.webp", base_bytes))
 
             for thickness_px in pipeline.THICKNESS_PRESETS:
                 overlay_bytes, level_meta = pipeline.get_or_compute_overlay(
                     tile_id, str(BUILDINGS_PATH), level=level, thickness_px=thickness_px
                 )
                 meta = meta or level_meta
-                (DOCS_CACHE_DIR / f"{tile_id}{suffix}_t{thickness_px}.png").write_bytes(overlay_bytes)
+                jobs.append((f"{tile_id}{suffix}_t{thickness_px}.webp", overlay_bytes))
 
                 for top_percent in pipeline.TOP_PERCENT_PRESETS:
                     top_bytes = pipeline.get_or_compute_top(
@@ -86,9 +175,11 @@ def build():
                         thickness_px=thickness_px,
                         top_percent=top_percent,
                     )
-                    (DOCS_CACHE_DIR / f"{tile_id}_top{suffix}_t{thickness_px}_p{top_percent}.png").write_bytes(
-                        top_bytes
+                    jobs.append(
+                        (f"{tile_id}_top{suffix}_t{thickness_px}_p{top_percent}.webp", top_bytes)
                     )
+
+            write_webp_batch(jobs, pool)
 
         # Osatekijakuvapari (ks. pipeline-moduulin kanavakuvaus) - yksi pari
         # per tiili riippumatta tekijavalinnoista/paksuudesta/prosentista.
@@ -120,6 +211,8 @@ def build():
             (DOCS_CACHE_DIR / f"{tile_id}_water{part}.png").write_bytes(water_bytes)
 
         tile_entries.append({"tile_id": tile_id, "bounds_epsg3067": meta["bounds_epsg3067"]})
+
+    pool.shutdown()
 
     default_percentile = pipeline.top_percent_to_percentile(pipeline.DEFAULT_TOP_PERCENT)
     threshold = pipeline.compute_global_threshold(str(BUILDINGS_PATH), default_percentile)
