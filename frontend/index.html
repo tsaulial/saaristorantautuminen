@@ -70,11 +70,19 @@
   /* Reunaviiva ON aallonkorkeuden mittari: tyynella se on ympyra ja
      aallokon kasvaessa se aaltoilee sita voimakkaammin. Siksi kehys on
      SVG-polku eika CSS-reunus. */
+  /* Pinojarjestys on maariteltava NIMENOMAISESTI: leaflet.css sisaltaa
+     jalkelaisvalitsimen `.leaflet-map-pane svg { z-index: 200 }`, joka on
+     tarkoitettu kartan omille vektorikerroksille mutta osuu myos divIcon-
+     merkkien sisalla oleviin SVG:hin. Kehys nousi siksi tekstin PAALLE ja
+     peitti sen valkoisella taytollaan. Nuoli nakyi silti, koska sekin on SVG
+     ja sai saman noston - juuri se teki viasta harhaanjohtavan: pallo nautti
+     ehjalta, vain teksti puuttui, mika nayttaa kontrastiongelmalta. */
   .paddle-bubble .pb-ring {
-    position: absolute; inset: 0; filter: drop-shadow(0 2px 5px rgba(0,0,0,.3));
+    position: absolute; inset: 0; z-index: 0;
+    filter: drop-shadow(0 2px 5px rgba(0,0,0,.3));
   }
   .paddle-bubble .pb-content {
-    position: absolute; inset: 0;
+    position: absolute; inset: 0; z-index: 1;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     font-size: 11px; line-height: 1.2; color: #14181b; text-align: center;
     padding: 0 14px;   /* pidä teksti irti aaltoilevasta reunasta */
