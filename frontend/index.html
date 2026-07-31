@@ -61,8 +61,16 @@
   /* Melottavuusnakyman tietopallo: klikkaamalla karttaa saa esiin
      paikkakohtaiset olosuhteet, klikkaamalla palloa se menee piiloon. */
   .paddle-bubble { width: 124px; height: 124px; position: relative; cursor: pointer; }
-  .paddle-bubble.varoitus { width: 158px; height: 158px; }
-  .paddle-bubble.varoitus .pb-content { padding: 0 20px; }
+  .paddle-bubble.iso { width: 158px; height: 158px; }
+  .paddle-bubble.jattilainen { width: 196px; height: 196px; }
+  .paddle-bubble.iso .pb-content { padding: 0 20px; }
+  .paddle-bubble.jattilainen .pb-content { padding: 0 26px; }
+  /* MET-rivi on NEUTRAALI eika punainen: se kertoo epavarmuudesta, ei
+     vaarasta. Punainen on varattu varoitukselle, jotta se erottuu. */
+  .paddle-bubble .pb-met {
+    margin-top: 2px; padding-top: 2px; border-top: 1px solid #d8dade;
+    color: #35506b; font-size: 10.5px; line-height: 1.25;
+  }
   /* Varoitus: olosuhteet heikkenevat oleellisesti 3 h sisalla. Punainen ja
      lihavoitu, jotta erottuu muista riveista - kontrasti 7,4:1 valkoisella. */
   .paddle-bubble .pb-warn {
@@ -589,6 +597,98 @@ function windKey() {
     : `${currentWind.source}|${forecastHour}`;
 }
 
+// --- MET NORWAY TOISENA MIELIPITEENA (vain tietopalloissa) ---
+//
+// MET pudotettiin kerroksesta koska locationforecast on YHDEN PISTEEN
+// rajapinta jota ei saa haravoida hilaksi. Pallo on kuitenkin piste - juuri
+// se mihin rajapinta on tarkoitettu - joten sama este ei koske sita.
+//
+// MET EI SYOTA MALLIA. Pallon vari, kehan aaltoilu, vaikeusluokka ja varoitus
+// tulevat kaikki FMI-pohjaisesta laskennasta. Jos MET vaikuttaisi johonkin
+// niista, kaksi mallia kiistelisivat siita minka varinen piste on. MET on
+// merkinta, ei syote.
+//
+// Rivi nakyy VAIN KUN LAHTEET OVAT ERI MIELTA - kun ne ovat samaa mielta,
+// toinen luku ei kerro mitaan mutta veisi tilan ahtaassa pallossa. Nain ero
+// kantaa sen tiedon jota varten se on: "tama luku on epavarma".
+//
+// Suuntaero on mukana koska se on TALLE SOVELLUKSELLE tarkein erimielisyys:
+// jos lahteet ovat eri mielta tulosuunnasta, ne osoittavat vastakkaista
+// rantaa suojaisaksi.
+const MET_DIFF_SPEED = 2.0;    // m/s
+const MET_DIFF_GUST = 3.0;     // m/s
+const MET_DIFF_DIR = 45;       // astetta = yksi 8-osaisen tuuliruusun askel
+
+// Avain on pyoristetty koordinaatti (2 desimaalia ~ 1,1 km): pallo syntyy
+// yhdella klikkauksella, ja ilman valimuistia kartalla naputtelu tuottaisi
+// kymmenia pyyntoja. Sama pyoristys kuin FMI-hilakutsussa.
+const metCache = new Map();
+
+function metKey(latlng) {
+  return `${latlng.lat.toFixed(2)},${latlng.lng.toFixed(2)}`;
+}
+
+async function loadMetForPoint(latlng, lat, lon) {
+  const avain = metKey(latlng);
+  if (metCache.has(avain)) return metCache.get(avain);
+  metCache.set(avain, null);          // estaa rinnakkaiset haut samaan pisteeseen
+  try {
+    const url = `https://api.met.no/weatherapi/locationforecast/2.0/complete?lat=${lat.toFixed(3)}&lon=${lon.toFixed(3)}`;
+    const data = await (await fetch(url)).json();
+    const sarja = data.properties.timeseries.map((e) => {
+      const d = e.data.instant.details;
+      return { time: e.time, speed: d.wind_speed, direction: d.wind_from_direction,
+               gust: d.wind_speed_of_gust };
+    }).filter((r) => isFinite(r.speed));
+    metCache.set(avain, sarja);
+    metAttribution();
+    return sarja;
+  } catch (e) {
+    metCache.set(avain, null);        // ei yriteta uudestaan; kerros ei kaadu
+    return null;
+  }
+}
+
+let metAttributionAdded = false;
+function metAttribution() {
+  if (metAttributionAdded) return;
+  metAttributionAdded = true;
+  map.attributionControl.addAttribution(
+    'Vertailuennuste: <a href="https://api.met.no/">MET Norway</a> (CC BY 4.0)');
+}
+
+// Pallon paikan lat/lon: hilapisteet kantavat molemmat koordinaatistot, joten
+// muunnos saadaan interpoloimalla niista ilman projektiokirjastoa.
+function latLonForPoint(latlng) {
+  if (!windGridPoints.length) return null;
+  const naapurit = nearestGrid(latlng.lng, latlng.lat);
+  let lat = 0, lon = 0, paino = 0;
+  for (const { p, d2 } of naapurit) {
+    const w = d2 < 1 ? 1e9 : 1 / d2;
+    lat += w * p.lat; lon += w * p.lon; paino += w;
+  }
+  return paino ? { lat: lat / paino, lon: lon / paino } : null;
+}
+
+// Palauttaa { speed, gust, direction, syyt } jos lahteet ovat eri mielta,
+// muuten null. Ei koskaan hae verkosta - haku tehdaan erikseen pallon
+// lisayksessa, jotta piirto pysyy synkronisena.
+function metDisagreement(latlng, hour = forecastHour) {
+  const sarja = metCache.get(metKey(latlng));
+  if (!sarja || !sarja.length) return null;
+  const fmi = windAt(latlng, hour);
+  if (currentWind.source === 'kasin' || !forecast.wind) return null;
+  const e = sarja[Math.min(hour, sarja.length - 1)];
+  const metGust = isFinite(e.gust) ? Math.max(e.gust, e.speed) : e.speed * DEFAULT_GUST_FACTOR;
+  const dirEro = Math.abs(((e.direction - fmi.direction + 540) % 360) - 180);
+  const syyt = [];
+  if (Math.abs(e.speed - fmi.speed) >= MET_DIFF_SPEED) syyt.push('nopeus');
+  if (Math.abs(metGust - fmi.gust) >= MET_DIFF_GUST) syyt.push('puuska');
+  if (dirEro >= MET_DIFF_DIR) syyt.push('suunta');
+  if (!syyt.length) return null;
+  return { speed: e.speed, gust: metGust, direction: e.direction, syyt };
+}
+
 function seriesAt(series, hour) {
   if (!series || !series.length) return null;
   return series[Math.min(hour, series.length - 1)];
@@ -969,7 +1069,7 @@ function wavyCirclePath(hs, koko = 124) {
   return d + 'Z';
 }
 
-function bubbleHtml(cond, varoitus, tuuli) {
+function bubbleHtml(cond, varoitus, tuuli, met) {
   const deg = tuuli.direction;
   const name = COMPASS_8[Math.round(((deg % 360) + 360) % 360 / 45) % 8];
   // Vaikeusasteen vari on taysin kylläinen (HSV s=v=1), eika sellaisenaan
@@ -990,9 +1090,10 @@ function bubbleHtml(cond, varoitus, tuuli) {
   const wave = cond
     ? `<div class="pb-wave">aalto ${Math.round(cond.hs * 100)} cm</div>`
     : '<div class="pb-sub">maalla</div>';
-  const koko = varoitus ? 158 : 124;
+  const koko = bubbleKoko(varoitus, met);
+  const luokka = koko === 196 ? ' jattilainen' : (koko === 158 ? ' iso' : '');
   const piste = ringPointAt(deg, cond ? cond.hs : 0, koko);
-  return `<div class="paddle-bubble${varoitus ? ' varoitus' : ''}">`
+  return `<div class="paddle-bubble${luokka}">`
     + `<svg class="pb-ring" viewBox="0 0 ${koko} ${koko}">`
     + `<path d="${wavyCirclePath(cond ? cond.hs : 0, koko)}" fill="#ffffff" `
     + `stroke="${stroke}" stroke-width="2.5" stroke-linejoin="round"/>`
@@ -1010,6 +1111,17 @@ function bubbleHtml(cond, varoitus, tuuli) {
     + (varoitus
         ? `<div class="pb-warn">&#9888; +${varoitus.hour} h ${varoitus.luokka}`
           + `<br>${varoitus.tekija} ${varoitus.arvo}</div>`
+        : '')
+    // Rivit on pidettava LYHYINA: ympyra kapenee alaspain, ja alimmalla
+    // rivilla kaytettava leveys on vain noin 130 px. Ensimmainen yritys
+    // ("10,0 m/s, puuska 14, luoteesta") valui kehan yli molemmilta puolilta.
+    // Syylista jatettiin siksi pois naytosta - erot nakyvat suoraan numeroista
+    // ylla olevien FMI-lukujen rinnalla.
+    + (met
+        ? '<div class="pb-met">MET eri mieltä'
+          + `<br>${met.speed.toFixed(1).replace('.', ',')} m/s `
+          + `${COMPASS_8[Math.round(((met.direction % 360) + 360) % 360 / 45) % 8]}`
+          + `<br>puuska ${met.gust.toFixed(0)}</div>`
         : '')
     + '</div></div>';
 }
@@ -1030,10 +1142,18 @@ async function ensureWaterFor(latlng) {
 // Varoitusrivi ei mahdu 124 px palloon muun sisallon kanssa, joten pallo
 // kasvaa kun varoitus on esilla. Kasvu on samalla itsessaan signaali: pallo
 // erottuu muista jo ennen kuin tekstia ehtii lukea.
-function bubbleIcon(cond, varoitus, tuuli) {
-  const koko = varoitus ? 158 : 124;
+// Lisalohkoja voi olla kaksi (varoitus ja MET-erimielisyys), joten koko
+// mukautuu: kumpikin tarvitsee kaksi rivia, ja ympyran alaosassa kaytettava
+// leveys kapenee nopeasti alaspain mentaessa.
+function bubbleKoko(varoitus, met) {
+  const lohkot = (varoitus ? 1 : 0) + (met ? 1 : 0);
+  return [124, 158, 196][lohkot];
+}
+
+function bubbleIcon(cond, varoitus, tuuli, met) {
+  const koko = bubbleKoko(varoitus, met);
   return L.divIcon({
-    className: '', html: bubbleHtml(cond, varoitus, tuuli),
+    className: '', html: bubbleHtml(cond, varoitus, tuuli, met),
     iconSize: [koko, koko], iconAnchor: [koko / 2, koko / 2],
   });
 }
@@ -1042,7 +1162,8 @@ function bubbleIcon(cond, varoitus, tuuli) {
 // voinut muuttua, ja jokainen pallo on eri paikassa eli eri olosuhteissa.
 function updateInfoBubbles() {
   infoBubbles.forEach((b) => b.marker.setIcon(bubbleIcon(
-    waterConditionsAt(b.latlng), deteriorationWarning(b.latlng), windAt(b.latlng))));
+    waterConditionsAt(b.latlng), deteriorationWarning(b.latlng), windAt(b.latlng),
+    metDisagreement(b.latlng))));
 }
 
 function removeInfoBubble(bubble) {
@@ -1057,14 +1178,28 @@ function clearInfoBubbles() {
 }
 
 async function addInfoBubble(latlng) {
-  const marker = L.marker(latlng, { icon: bubbleIcon(null, null, windAt(latlng)), interactive: true }).addTo(map);
+  const marker = L.marker(latlng, { icon: bubbleIcon(null, null, windAt(latlng), null), interactive: true }).addTo(map);
   const bubble = { latlng, marker };
   marker.on('click', (e) => { L.DomEvent.stop(e); removeInfoBubble(bubble); });
   infoBubbles.push(bubble);
   saveViewState();
   await ensureWaterFor(latlng);
   if (infoBubbles.includes(bubble)) {
-    marker.setIcon(bubbleIcon(waterConditionsAt(latlng), deteriorationWarning(latlng), windAt(latlng)));
+    marker.setIcon(bubbleIcon(waterConditionsAt(latlng), deteriorationWarning(latlng),
+                              windAt(latlng), metDisagreement(latlng)));
+  }
+  // MET haetaan vasta tassa: pallo ilmestyy heti eika jaa odottamaan toista
+  // rajapintaa, ja vertailurivi taydentyy kun vastaus saapuu. Haku vain kun
+  // ennuste ohjaa karttaa - kasisaadossa ei ole mitaan mihin verrata.
+  if (currentWind.source !== 'kasin') {
+    const ll = latLonForPoint(latlng);
+    if (ll) {
+      await loadMetForPoint(latlng, ll.lat, ll.lon);
+      if (infoBubbles.includes(bubble)) {
+        marker.setIcon(bubbleIcon(waterConditionsAt(latlng), deteriorationWarning(latlng),
+                                  windAt(latlng), metDisagreement(latlng)));
+      }
+    }
   }
 }
 
