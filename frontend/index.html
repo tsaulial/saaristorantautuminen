@@ -5,7 +5,33 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Rantautumispaikkojen analysointi</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;800&display=swap">
 <style>
+  /* --- Modernist-designjarjestelman tokenit (claude.ai/design) ---
+     Otettu kayttoon vain ne joita mobiilikuori tarvitsee. Bundle
+     (_ds_bundle.js) on tyhja eli jarjestelma on pelkkaa CSS:aa, joten
+     komponenttikirjastoa ei ole porttattavana. */
+  :root {
+    --color-bg: #f3f2f2;
+    --color-surface: #eae9e9;
+    --color-text: #201e1d;
+    --color-accent: #ec3013;
+    --color-divider: color-mix(in srgb, #201e1d 40%, transparent);
+    --color-neutral-300: #d7d3d3;
+    --color-neutral-700: #605d5d;
+    --font-heading: "Archivo", system-ui, sans-serif;
+    --font-body: "Archivo", system-ui, sans-serif;
+    --space-2: 8px;  --space-3: 12px;  --space-4: 16px;
+    --shadow-md: 0 3px 10px color-mix(in srgb, #2d2b2b 16%, transparent);
+    --shadow-lg: 0 12px 32px color-mix(in srgb, #2d2b2b 22%, transparent);
+    /* Kerrosten omat varit sailyvat entisellaan: ne vastaavat kartan
+       varitysta eivatka ole designjarjestelman valittavissa. */
+    --layer-score: #1769aa;   --layer-score-off: #7d99ab;
+    --layer-prime: #7b2ff7;   --layer-prime-off: #a992c4;
+    --layer-paddle: #1f8a3d;  --layer-paddle-off: #7ea98b;
+  }
   html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; }
   #map { height: 100%; background: #cfe8ef; }
   .legend {
@@ -109,6 +135,139 @@
   .paddle-bubble .pb-wave {
     font-weight: 700; font-size: 11.5px; white-space: nowrap; color: #14181b;
   }
+  /* ══════════════ MOBIILILAYOUT ══════════════
+     Toteutettu claude.ai/design-mockupista (Karttanäkymä.dc.html).
+     KOKO LOHKO ON @media-kyselyn takana: tyopoytanakyma ei muutu lainkaan,
+     joten muutos ei voi rikkoa olemassa olevaa kayttoliittymaa.
+     Mobiilikuori EI monista tilaa - se ohjaa samoja radiopainikkeita ja
+     liukusaatimia jotka tyopoydallakin ovat, ja lukee tilansa niista.
+     Yksi totuuden lahde, kaksi esitystapaa. */
+  .m-only { display: none; }
+
+  @media (max-width: 700px) {
+    .m-only { display: block; }
+
+    /* Kartta tayttaa ruudun; kuori kelluu sen paalla kuten mockupissa. */
+    #map { font-family: var(--font-body); }
+
+    /* --- ylapalkki --- */
+    .m-top {
+      position: absolute; top: 0; left: 0; right: 0; height: 56px;
+      background: var(--color-text); display: flex; align-items: center;
+      justify-content: space-between; padding: 0 var(--space-4); z-index: 1200;
+    }
+    .m-brand {
+      font-family: var(--font-heading); font-weight: 800; font-size: 15px;
+      letter-spacing: .03em; color: #fff;
+    }
+    .m-panel-btn {
+      width: 36px; height: 36px; display: flex; align-items: center;
+      justify-content: center; background: transparent; border: none;
+      cursor: pointer; color: #fff; padding: 0;
+    }
+    .m-panel-btn:active { background: rgba(255,255,255,.15); }
+
+    /* --- liukuva paneeli: legenda saa uuden asun --- */
+    .legend {
+      position: fixed; top: 56px; right: 0; bottom: 0; width: 270px;
+      max-width: 78%; margin: 0 !important; border-radius: 0;
+      /* box-sizing on asetettava tassa: sivulla ei ole globaalia
+         reset-saantoa, joten ilman tata padding ja reunus kasvattaisivat
+         leveyden 270 -> 304 px:iin. */
+      box-sizing: border-box;
+      background: var(--color-bg); border-left: 2px solid var(--color-divider);
+      box-shadow: var(--shadow-lg); z-index: 1100; overflow-y: auto;
+      padding: var(--space-4);
+      transform: translateX(100%); transition: transform .22s ease;
+      font-family: var(--font-body);
+    }
+    /* Kayttaja voi olla ottanut liikkeen pois kayttojarjestelman asetuksista. */
+    @media (prefers-reduced-motion: reduce) { .legend { transition: none; } }
+    .legend.m-open { transform: translateX(0); }
+    /* Otsikkorivi ja kutistusnappi ovat tyopoydan kalustoa: mobiilissa
+       paneeli avataan ja suljetaan ylapalkin painikkeesta. */
+    .legend-header { display: none; }
+    .legend-body { max-height: none; overflow: visible; margin-top: 0; }
+    .legend-body.collapsed { display: block; }
+    .legend-tab { font-family: var(--font-body); }
+    /* Nayttotilan valinta on siirtynyt alapalkin valilehdille. */
+    .m-hide-modes { display: none; }
+
+    /* --- alaklusteri: aikajana + kerrosvalilehdet --- */
+    .m-bottom {
+      position: absolute; left: 0; right: 0; bottom: 0; z-index: 1200;
+      background: var(--color-bg); border-top: 2px solid var(--color-divider);
+      font-family: var(--font-body);
+    }
+    .m-time { position: relative; padding: 30px var(--space-4) var(--space-2); }
+    .m-track { position: relative; height: 4px; background: var(--color-neutral-300); }
+    .m-track-fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--color-accent); }
+    .m-track-tick { position: absolute; top: -1px; width: 2px; height: 6px; background: var(--color-text); transform: translateX(-1px); }
+    .m-track-knob {
+      position: absolute; top: 2px; width: 14px; height: 14px; border-radius: 50%;
+      background: var(--color-text); transform: translate(-50%,-50%);
+      box-shadow: 0 0 0 2px var(--color-bg);
+    }
+    .m-day { position: absolute; top: -9px; width: 1px; height: 22px; background: var(--color-neutral-700); }
+    .m-day-label {
+      position: absolute; top: 13px; transform: translateX(-50%);
+      font-size: 9.5px; color: var(--color-neutral-700); white-space: nowrap;
+    }
+    .m-clock {
+      position: absolute; top: -84px; transform: translateX(-50%);
+      display: flex; flex-direction: column; align-items: center; pointer-events: none;
+    }
+    .m-clock-face {
+      width: 72px; height: 72px; border-radius: 50%; background: var(--color-text);
+      color: #fff; display: flex; align-items: center; justify-content: center;
+      font-weight: 800; font-family: var(--font-heading); font-size: 17px;
+      box-shadow: var(--shadow-md);
+    }
+    .m-clock-stem { width: 2px; height: 16px; background: var(--color-text); }
+    /* Nakymaton liukusaadin koko janan paalla: kosketusalue on 96 px korkea
+       vaikka itse jana on 4 px - sormella osuminen ei saa vaatia tarkkuutta. */
+    .m-time-input {
+      position: absolute; left: var(--space-4); right: var(--space-4); top: -70px;
+      width: calc(100% - 32px); height: 96px; opacity: 0; cursor: pointer; margin: 0;
+    }
+    .m-time-ends {
+      display: flex; justify-content: space-between; font-size: 11px;
+      color: var(--color-neutral-700); margin-top: 6px;
+    }
+    .m-time.m-disabled { opacity: .45; }
+    .m-time.m-disabled .m-time-input { pointer-events: none; }
+
+    .m-tabs { display: flex; }
+    .m-tab {
+      flex: 1; min-width: 0; text-align: left; padding: 14px var(--space-3);
+      border: none; cursor: pointer; font-family: var(--font-heading);
+      font-weight: 800; font-size: 12.5px; letter-spacing: .03em;
+      text-transform: uppercase; color: #fff; background: var(--layer-score-off);
+      /* Pisin nimi ("KÄRKIPAIKAT") ei mahdu kapeimmille puhelimille
+         taysimittaisena; min-width:0 sallii kutistumisen ja ellipsi estaa
+         tekstia valumasta naapurin paalle. */
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .m-tab + .m-tab { border-left: 2px solid var(--color-bg); }
+    .m-tab[data-layer="score"]  { background: var(--layer-score-off); }
+    .m-tab[data-layer="prime"]  { background: var(--layer-prime-off); }
+    .m-tab[data-layer="paddle"] { background: var(--layer-paddle-off); }
+    .m-tab[data-layer="score"].m-active  { background: var(--layer-score); }
+    .m-tab[data-layer="prime"].m-active  { background: var(--layer-prime); }
+    .m-tab[data-layer="paddle"].m-active { background: var(--layer-paddle); }
+
+    /* Alle 400 px (esim. iPhone SE) kolme nimea ei mahdu 12,5 px:lla. */
+    @media (max-width: 400px) {
+      .m-tab { font-size: 11px; padding: 13px 8px; letter-spacing: 0; }
+      .m-clock-face { width: 62px; height: 62px; font-size: 15px; }
+      .m-clock { top: -76px; }
+    }
+
+    /* Leafletin oma kalusto pois alaklusterin alta. */
+    .leaflet-control-attribution { display: none; }
+    .leaflet-top.leaflet-left { top: 60px; }
+  }
+
   .status {
     position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
     background: white; padding: 6px 14px; border-radius: 4px;
@@ -118,6 +277,40 @@
 </head>
 <body>
 <div id="map"></div>
+
+<!-- MOBIILIKUORI (nakyy vain alle 700 px, ks. @media-lohko tyyleissa).
+     Sisaltaa vain kehyksen; kaikki tila asuu yha alkuperaisissa
+     saatimissa legendan sisalla. -->
+<div class="m-only m-top">
+  <span class="m-brand">RANTAUTUMINEN</span>
+  <button type="button" class="m-panel-btn" id="m-panel-btn" aria-label="Näytä asetukset ja tuuli" aria-expanded="false">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+  </button>
+</div>
+
+<div class="m-only m-bottom">
+  <div class="m-time" id="m-time">
+    <div class="m-track">
+      <div class="m-track-fill" id="m-track-fill"></div>
+      <div class="m-track-tick" id="m-track-tick"></div>
+      <div class="m-track-knob" id="m-track-knob"></div>
+      <div class="m-day" id="m-day" hidden></div>
+      <div class="m-day-label" id="m-day-label" hidden>vrk vaihtuu</div>
+    </div>
+    <div class="m-clock" id="m-clock">
+      <div class="m-clock-face" id="m-clock-face">–</div>
+      <div class="m-clock-stem"></div>
+    </div>
+    <input type="range" class="m-time-input" id="m-time-input" min="0" max="49" step="1" value="0"
+           aria-label="Ennusteen ajankohta">
+    <div class="m-time-ends"><span id="m-time-start">nyt</span><span id="m-time-end">+49 h</span></div>
+  </div>
+  <div class="m-tabs">
+    <button type="button" class="m-tab m-active" data-layer="score">Ranta</button>
+    <button type="button" class="m-tab" data-layer="prime">Kärkipaikat</button>
+    <button type="button" class="m-tab" data-layer="paddle">Melottavuus</button>
+  </div>
+</div>
 <div class="status" id="status">Ladataan tiiliä...</div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -1277,6 +1470,9 @@ function setLegendTab(name) {
 }
 
 function updateLegendFromSettings() {
+  // Mobiilikuori lukee tilansa samoista saatimista, joten se paivitetaan
+  // aina legendan mukana (funktio poistuu heti jos kuorta ei ole).
+  if (typeof syncMobileShell === 'function') setTimeout(syncMobileShell, 0);
   // VANHA toteutus on esilaskettu neljalla tekijalla ilman tuulta, joten se
   // kelpaa vain kun valinta on tasan se.
   const allFactorsOn = factorMask() === NO_SHELTER_MASK;
@@ -2000,6 +2196,144 @@ window.addEventListener('pageshow', () => {
   if (changed && tileListCache.length) switchActiveGroup();
 });
 
+// ══════════════ MOBIILIKUOREN LOGIIKKA ══════════════
+//
+// Kuori EI PIDA OMAA TILAA. Jokainen painallus ohjaa samaa radiopainiketta
+// tai liukusaadinta jota tyopoytanakymakin kayttaa, ja tila luetaan takaisin
+// niista. Nain nakymat eivat voi ajautua erilleen, ja jos mobiilikuori
+// poistettaisiin, mikaan ei rikkoutuisi.
+//
+// "Parhaat rantautumispaikat" (display-mode = "top") ei ole alapalkissa:
+// kolme valilehtea mahtuu 430 px:iin luettavana, nelja ei. Se on yha
+// valittavissa paneelin kautta, ja tulee myohemmin osaksi Ranta-valintaa.
+const MOBILE_MAX_WIDTH = 700;
+const MOBILE_TABS = ['score', 'prime', 'paddle'];
+
+function isMobileLayout() {
+  return window.matchMedia(`(max-width: ${MOBILE_MAX_WIDTH}px)`).matches;
+}
+
+function setupMobileShell() {
+  const legendEl = document.querySelector('.legend');
+  const panelBtn = document.getElementById('m-panel-btn');
+  if (!legendEl || !panelBtn) return;
+
+  // Paneelin avaus. Leaflet nappaa muuten kosketukset kartalle, joten
+  // tapahtumat on pysaytettava - sama syy kuin tietopallojen kasittelyssa.
+  const setPanel = (auki) => {
+    legendEl.classList.toggle('m-open', auki);
+    panelBtn.setAttribute('aria-expanded', String(auki));
+  };
+  panelBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setPanel(!legendEl.classList.contains('m-open'));
+  });
+  L.DomEvent.disableClickPropagation(legendEl);
+  L.DomEvent.disableScrollPropagation(legendEl);
+  // Kartan napautus sulkee paneelin: pallon lisays on kartan paatoiminto
+  // eika sen pida jaada paneelin alle.
+  map.on('click', () => setPanel(false));
+
+  // Nayttotilan radiot piiloon mobiilissa - valilehdet hoitavat saman.
+  const modeRow = document.querySelector('input[name="display-mode"]');
+  if (modeRow && modeRow.closest('.radio-row')) {
+    modeRow.closest('.radio-row').classList.add('m-hide-modes');
+  }
+
+  document.querySelectorAll('.m-tab').forEach((tab) => {
+    tab.addEventListener('click', () => {
+      const radio = document.querySelector(`input[name="display-mode"][value="${tab.dataset.layer}"]`);
+      if (radio) { radio.checked = true; radio.dispatchEvent(new Event('change', { bubbles: true })); }
+      setPanel(false);
+      syncMobileShell();
+    });
+  });
+
+  // Aikajana peilaa legendan forecast-hour-saadinta molempiin suuntiin.
+  const mSlider = document.getElementById('m-time-input');
+  mSlider.addEventListener('input', () => {
+    const src = document.getElementById('forecast-hour');
+    if (!src) return;
+    src.value = mSlider.value;
+    src.dispatchEvent(new Event('input', { bubbles: true }));
+    syncMobileShell();
+  });
+
+  syncMobileShell();
+}
+
+// Paivittaa kuoren nykyisesta tilasta. Kutsutaan aina kun legenda
+// paivittyy, jotta kuori ei jaa jalkeen.
+function syncMobileShell() {
+  if (!document.querySelector('.m-top')) return;
+
+  document.querySelectorAll('.m-tab').forEach((tab) => {
+    tab.classList.toggle('m-active', tab.dataset.layer === currentDisplay);
+  });
+  // "top" ei ole valilehdilla; korostetaan lahin sukulainen jottei
+  // alapalkki nayta silta kuin mitaan ei olisi valittuna.
+  if (!MOBILE_TABS.includes(currentDisplay)) {
+    const score = document.querySelector('.m-tab[data-layer="score"]');
+    if (score) score.classList.add('m-active');
+  }
+
+  const aika = document.getElementById('m-time');
+  const src = document.getElementById('forecast-hour');
+  const ennuste = currentWind.source !== 'kasin' && forecast.hours && forecast.hours.length > 0;
+  aika.classList.toggle('m-disabled', !ennuste);
+
+  const mSlider = document.getElementById('m-time-input');
+  const maxH = ennuste ? Math.max(0, forecast.hours.length - 1) : 0;
+  mSlider.max = String(maxH);
+  mSlider.value = String(Math.min(forecastHour, maxH));
+
+  const osuus = maxH > 0 ? (Number(mSlider.value) / maxH) * 100 : 0;
+  document.getElementById('m-track-fill').style.width = `${osuus}%`;
+  document.getElementById('m-track-tick').style.left = `${osuus}%`;
+  document.getElementById('m-track-knob').style.left = `${osuus}%`;
+  // Kello on 72 px levea ja keskitetty osoittimeen. Janan paissa se
+  // leikkautuisi ruudun ulkopuolelle, joten keskipiste rajataan puolikkaan
+  // leveyden paahan reunasta. Osoitin itse saa yha liikkua paihin asti.
+  const kello = document.getElementById('m-clock');
+  const rata = document.querySelector('.m-track');
+  if (rata && rata.offsetWidth) {
+    const puolikas = kello.offsetWidth ? kello.offsetWidth / 2 : 36;
+    const x = (osuus / 100) * rata.offsetWidth;
+    kello.style.left = `${Math.min(Math.max(x, puolikas), rata.offsetWidth - puolikas)}px`;
+  } else {
+    kello.style.left = `${osuus}%`;
+  }
+
+  // Kello nayttaa saman ajan kuin legenda; kasisaadossa ei aikaa ole.
+  const aikaTeksti = document.getElementById('forecast-time');
+  document.getElementById('m-clock-face').textContent =
+    ennuste && aikaTeksti && aikaTeksti.textContent && aikaTeksti.textContent !== '–'
+      ? aikaTeksti.textContent.replace(/^\S+\s+/, '')   // "ma 14:00" -> "14:00"
+      : '–';
+
+  document.getElementById('m-time-start').textContent = ennuste ? 'nyt' : 'käsin säädetty';
+  document.getElementById('m-time-end').textContent = ennuste ? `+${maxH} h` : '';
+
+  // Vuorokauden vaihtuminen: ensimmainen hetki jonka paiva eroaa alusta.
+  const paiva = document.getElementById('m-day');
+  const paivaLabel = document.getElementById('m-day-label');
+  let naytaPaiva = false;
+  if (ennuste && forecast.hours.length > 1) {
+    const eka = new Date(forecast.hours[0] * 1000).getDate();
+    for (let i = 1; i < forecast.hours.length; i++) {
+      if (new Date(forecast.hours[i] * 1000).getDate() !== eka) {
+        const pros = (i / maxH) * 100;
+        paiva.style.left = `${pros}%`;
+        paivaLabel.style.left = `${pros}%`;
+        naytaPaiva = true;
+        break;
+      }
+    }
+  }
+  paiva.hidden = !naytaPaiva;
+  paivaLabel.hidden = !naytaPaiva;
+}
+
 async function init() {
   const statusEl = document.getElementById('status');
   applySettings();
@@ -2062,6 +2396,7 @@ async function init() {
     }
   }
   updateLegendFromSettings();
+  setupMobileShell();
   switchActiveGroup();
   statusEl.remove();
 }
