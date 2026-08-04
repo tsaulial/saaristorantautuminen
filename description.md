@@ -27,11 +27,12 @@ Koko laskenta on tehty niin, ettei sovellus tarvitse jatkuvasti pyörivää palv
 
 ## Mitä kartalla voi säätää?
 
-Kartan oikean alakulman valikosta voi valita **kumpi kahdesta näkymästä** on esillä:
+Kartan oikean alakulman valikosta voi valita **mikä neljästä näkymästä** on esillä:
 
 - **Rantautumispisteytys** — koko rannikko väritettynä vihreästä punaiseen
 - **Parhaat rantautumispaikat** — vain kerma päältä, omalla kirkkaan magentalla värillä
 - **Kärkipaikat** — tiukempi seula, violetilla
+- **Melottavuus** — värittää meren eikä rantaa: millaista vesi on matkalla perille
 
 Samasta valikosta pääsee **asetussivulle**, jossa on kaikki muu säädettävä.
 
@@ -47,14 +48,15 @@ Kärkipaikkoja on yhtä paljon kuin parhaita rantautumispaikkojakin (oletuksena 
 
 ### Mitkä tekijät otetaan huomioon?
 
-Asetussivulla voi valita rastittamalla, **mitkä neljästä tekijästä vaikuttavat pisteytykseen**:
+Asetussivulla voi valita rastittamalla, **mitkä tekijät vaikuttavat pisteytykseen**:
 
 - ☑️ **Maaston jyrkkyys**
 - ☑️ **Suo**
 - ☑️ **Kallio**
 - ☑️ **Rakennukset**
+- ☐ **Tuulensuoja** — huomioi mistä suunnasta tuulee ja kuinka avoin ranta on sille
 
-Oletuksena kaikki ovat mukana. Jos jonkin poistaa, se häviää laskennasta kokonaan ja loppujen keskinäinen painoarvo suhteutetaan uudelleen sataan prosenttiin — sivu näyttää kunkin tekijän osuuden heti valintojen vierellä. Näin voi katsoa esimerkiksi pelkkää maaston jyrkkyyttä, tai jättää rakennukset huomiotta jos ei välitä siitä että lähistöllä on mökkejä. Vähintään yksi tekijä on oltava valittuna.
+Neljä ensimmäistä ovat oletuksena mukana. Tuulensuoja on oletuksena pois päältä, koska se muuttaa kartan sen mukaan mikä tuuli sattuu olemaan — se on hyödyllinen juuri tietylle retkelle, mutta huono yleiskuvaan. Jos jonkin poistaa, se häviää laskennasta kokonaan ja loppujen keskinäinen painoarvo suhteutetaan uudelleen sataan prosenttiin — sivu näyttää kunkin tekijän osuuden heti valintojen vierellä. Näin voi katsoa esimerkiksi pelkkää maaston jyrkkyyttä, tai jättää rakennukset huomiotta jos ei välitä siitä että lähistöllä on mökkejä. Vähintään yksi tekijä on oltava valittuna.
 
 Muutokset tallentuvat heti ja ovat voimassa kun palaa kartalle.
 
@@ -79,6 +81,36 @@ Asetussivulla on lisäksi kaksi liukusäädintä, jotka eivät vaikuta pisteytyk
 
 Valikossa on toistaiseksi myös **"Toteutus (vertailua varten)"** -valinta (*Nykyinen* / *Uusi*). Se ei muuta pisteytystä eikä lopputulosta, vain tavan jolla kartta piirretään: uudessa tavassa väritys ja rajaukset lasketaan vasta selaimessa yhdestä esilasketusta kuvasta, kun nykyisessä jokainen säätimen asento on oma valmiiksi laskettu kuvansa. Uusi tapa on hieman karkeampi (3,5 metrin ruutu), mutta vie murto-osan levytilasta — sillä on merkitystä, jos kartoitettava alue joskus laajenee koko Suomenlahdelle ja länsirannikolle. Valinta on kehityksen aikainen vertailu eikä jää lopulliseen sovellukseen.
 
+## Entä tuuli ja aallokko?
+
+Sama ranta on eri ranta eri tuulella. Kartta osaa siksi ottaa sään huomioon kahdella tavalla.
+
+**Melottavuusnäkymä värittää meren** sen mukaan, kuinka vaativaa siellä on meloa. Arvio perustuu kahteen asiaan, jotka pidetään erillään koska ne vaikuttavat eri tavoin: **aallokko** määrää veneen liikkeen ja syntyy tasaisesta tuulesta, **puuskat** taas määräävät käsiteltävyyden eli sen pysyykö kurssissa. Vaikeus on aina huonomman mukaan — kumpi tahansa yksin riittää tekemään matkasta vaativan.
+
+**Tuulensuojan voi ottaa mukaan rantojen pisteytykseen.** Silloin suojaisa poukama nousee ja tuulen puolella oleva avoin ranta laskee. Kärkipaikat näyttää tällöin vain ne kohdat, jotka kelpaisivat myös tyynellä — kova tuuli siis vähentää niitä.
+
+### Mistä sää tulee?
+
+Ennuste haetaan **Ilmatieteen laitokselta** eikä sitä tarvitse arvata. Tuulta ei kuitenkaan haeta yhdestä pisteestä: sovelluksen on määrä kattaa aikanaan koko rannikko, ja niin laajalla alueella yksi luku olisi pahasti väärä. Koekyselyssä saman hetken tuuli oli Merenkurkussa 11,6 m/s ja Perämerellä 2,2 m/s — yli viisinkertainen ero. Tuuli haetaan siksi **useasta pisteestä** ja välissä olevat kohdat lasketaan niiden perusteella.
+
+Tuulen voi myös **säätää käsin**. Se on hyödyllinen "entä jos" -työkalu ja samalla varakeino: jos ennustepalvelu ei vastaa, kartta toimii silti.
+
+Aikajänne on noin **50 tuntia**. Pidemmälle ei mennä, koska sovellus on tarkoitettu lähipäivien retken suunnitteluun eivätkä kaukaisemmat ennusteet ole riittävän varmoja.
+
+### Tietopallot
+
+**Kartan klikkaus lisää siihen kohtaan pallon**, joka kertoo juuri sen paikan olosuhteet: tuulen nopeuden, puuskat, suunnan ja aallonkorkeuden. Palloja voi olla monta, jolloin kahta reittivaihtoehtoa voi verrata rinnakkain. Pallon klikkaus poistaa sen.
+
+Pallossa on kolme visuaalista vihjettä, jotka näkee ennen kuin numeroita ehtii lukea:
+
+- **Reunaviiva aaltoilee** sitä voimakkaammin mitä korkeampi aallokko on — tyynellä pallo on ympyrä
+- **Kehällä kiertää pieni pallo** kuin kellon osoitin ja näyttää mistä tuuli tulee; sen koko ja väri kertovat puuskan voimakkuuden
+- **Varoitus** ilmestyy, jos olosuhteet heikkenevät oleellisesti seuraavan kolmen tunnin aikana
+
+Varoitus on niistä tärkein. Vaarallinen tilanne ei ole se, että keli on kova — sen näkee kartalta — vaan se, että lähtee helppoon keliin ja jää kiinni muutokseen.
+
+Pallo hakee lisäksi **Norjan ilmatieteen laitoksen ennusteen** omalta kohdaltaan ja näyttää sen **vain jos lähteet ovat eri mieltä**. Kun ne ovat samaa mieltä, toinen luku ei kerro mitään. Erimielisyys sen sijaan kertoo juuri sen, mitä on hyödyllistä tietää: että lukuun ei kannata luottaa liikaa.
+
 ## Käytetyt avoimet aineistot
 
 Kolme Maanmittauslaitoksen (MML) avointa aineistoa:
@@ -86,8 +118,10 @@ Kolme Maanmittauslaitoksen (MML) avointa aineistoa:
 1. **Korkeusmalli (2 m)** — MML:n avoin korkeusmalliaineisto, kertoo maaston muodot ja jyrkkyyden.
 2. **Maastotietokanta, rakennukset** (`rakennukset.gpkg`) — MML:n rekisteri rakennuksista ja rakennelmista, käytetty etäisyyksien laskemiseen.
 3. **Peruskartta** (rasterikuvat) — MML:n tavallinen karttapohja, josta luettiin värien perusteella kalliot, rannat ja suot.
+4. **Sää- ja aallokkoennuste** — Ilmatieteen laitoksen avoin data: tuuli, puuskat ja aallonkorkeus.
+5. **Vertailuennuste** — MET Norway, toinen mielipide tietopalloissa; näytetään vain jos se poikkeaa.
 
-Kaikki kolme ovat osa MML:n avoimen tietoaineiston kokonaisuutta, eli ilmaisia ja vapaasti käytettävissä.
+Kolme ensimmäistä ovat osa MML:n avoimen tietoaineiston kokonaisuutta. Myös sääaineistot ovat avointa dataa eivätkä vaadi tunnuksia — juuri siksi sivu toimii ilman omaa palvelinta.
 
 ### Mitä rakennusaineistosta otettiin mukaan?
 

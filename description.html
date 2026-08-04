@@ -110,11 +110,12 @@
   </p>
 
   <h2>Mitä kartalla voi säätää?</h2>
-  <p>Kartan oikean alakulman valikosta valitaan kumpi kahdesta näkymästä on esillä:</p>
+  <p>Kartan oikean alakulman valikosta valitaan mikä neljästä näkymästä on esillä:</p>
   <ul class="score-list">
     <li><span class="dot" style="background:linear-gradient(90deg,var(--green),var(--yellow),var(--red))"></span> <b>Rantautumispisteytys</b> — koko rannikko väritettynä</li>
     <li><span class="dot" style="background:#ff00ff"></span> <b>Parhaat rantautumispaikat</b> — vain kerma päältä</li>
     <li><span class="dot" style="background:#7b2ff7"></span> <b>Kärkipaikat</b> — tiukempi seula</li>
+    <li><span class="dot" style="background:linear-gradient(90deg,var(--green),var(--red))"></span> <b>Melottavuus</b> — värittää meren eikä rantaa</li>
   </ul>
   <p>Samasta valikosta pääsee <b>asetussivulle</b>, jossa on kaikki muu säädettävä.</p>
 
@@ -141,7 +142,7 @@
 
   <h3 class="sub">Mitkä tekijät otetaan huomioon?</h3>
   <p>
-    Asetussivulla voi valita rastittamalla, <b>mitkä neljästä tekijästä vaikuttavat
+    Asetussivulla voi valita rastittamalla, <b>mitkä tekijät vaikuttavat
     pisteytykseen</b>:
   </p>
   <ul class="score-list">
@@ -149,9 +150,12 @@
     <li><span class="dot" style="background:var(--green)"></span> <b>Suo</b></li>
     <li><span class="dot" style="background:var(--green)"></span> <b>Kallio</b></li>
     <li><span class="dot" style="background:var(--green)"></span> <b>Rakennukset</b></li>
+    <li><span class="dot" style="background:#8fa3b5"></span> <b>Tuulensuoja</b> — oletuksena pois päältä</li>
   </ul>
   <p>
-    Oletuksena kaikki ovat mukana. Jos jonkin poistaa, se häviää laskennasta kokonaan ja
+    Neljä ensimmäistä ovat oletuksena mukana; tuulensuoja ei, koska se muuttaa kartan sen
+    mukaan mikä tuuli sattuu olemaan — hyödyllinen tietylle retkelle, huono yleiskuvaan.
+    Jos jonkin poistaa, se häviää laskennasta kokonaan ja
     loppujen keskinäinen painoarvo suhteutetaan uudelleen sataan prosenttiin — sivu näyttää
     kunkin tekijän osuuden heti valintojen vierellä. Näin voi katsoa esimerkiksi pelkkää
     maaston jyrkkyyttä, tai jättää rakennukset huomiotta jos ei välitä siitä että lähistöllä
@@ -218,6 +222,62 @@
     lopulliseen sovellukseen.
   </p>
 
+  <h2>Entä tuuli ja aallokko?</h2>
+  <p>
+    Sama ranta on eri ranta eri tuulella. Kartta ottaa sään huomioon kahdella tavalla.
+  </p>
+  <p>
+    <b>Melottavuusnäkymä värittää meren</b> sen mukaan, kuinka vaativaa siellä on meloa.
+    Arvio perustuu kahteen asiaan, jotka pidetään erillään koska ne vaikuttavat eri tavoin:
+    <b>aallokko</b> määrää veneen liikkeen ja syntyy tasaisesta tuulesta, <b>puuskat</b>
+    määräävät käsiteltävyyden eli sen pysyykö kurssissa. Vaikeus on aina huonomman mukaan —
+    kumpi tahansa yksin riittää tekemään matkasta vaativan.
+  </p>
+  <p>
+    <b>Tuulensuojan voi ottaa mukaan rantojen pisteytykseen.</b> Silloin suojaisa poukama
+    nousee ja tuulen puolella oleva avoin ranta laskee. Kärkipaikat näyttää tällöin vain ne
+    kohdat, jotka kelpaisivat myös tyynellä — kova tuuli siis vähentää niitä.
+  </p>
+
+  <h3 class="sub">Mistä sää tulee?</h3>
+  <p>
+    Ennuste haetaan <b>Ilmatieteen laitokselta</b>. Tuulta ei kuitenkaan haeta yhdestä
+    pisteestä: sovelluksen on määrä kattaa aikanaan koko rannikko, ja niin laajalla alueella
+    yksi luku olisi pahasti väärä. Koekyselyssä saman hetken tuuli oli Merenkurkussa
+    11,6 m/s ja Perämerellä 2,2 m/s — <b>yli viisinkertainen ero</b>. Tuuli haetaan siksi
+    useasta pisteestä ja välissä olevat kohdat lasketaan niiden perusteella.
+  </p>
+  <p>
+    Tuulen voi myös <b>säätää käsin</b>. Se on hyödyllinen ”entä jos” -työkalu ja samalla
+    varakeino: jos ennustepalvelu ei vastaa, kartta toimii silti. Aikajänne on noin
+    <b>50 tuntia</b> — pidemmälle ei mennä, koska sovellus on tarkoitettu lähipäivien retken
+    suunnitteluun eivätkä kaukaisemmat ennusteet ole riittävän varmoja.
+  </p>
+
+  <h3 class="sub">Tietopallot</h3>
+  <p>
+    <b>Kartan klikkaus lisää siihen kohtaan pallon</b>, joka kertoo juuri sen paikan
+    olosuhteet: tuulen nopeuden, puuskat, suunnan ja aallonkorkeuden. Palloja voi olla
+    monta, jolloin kahta reittivaihtoehtoa voi verrata rinnakkain. Pallon klikkaus poistaa
+    sen.
+  </p>
+  <p>Pallossa on kolme visuaalista vihjettä, jotka näkee ennen kuin numeroita ehtii lukea:</p>
+  <ul class="score-list">
+    <li><span class="dot" style="background:var(--green)"></span> <b>Reunaviiva aaltoilee</b> sitä voimakkaammin mitä korkeampi aallokko on — tyynellä pallo on ympyrä</li>
+    <li><span class="dot" style="background:var(--yellow)"></span> <b>Kehällä kiertää pieni pallo</b> kuin kellon osoitin ja näyttää mistä tuuli tulee; sen koko ja väri kertovat puuskan voimakkuuden</li>
+    <li><span class="dot" style="background:var(--red)"></span> <b>Varoitus</b> ilmestyy, jos olosuhteet heikkenevät oleellisesti seuraavan kolmen tunnin aikana</li>
+  </ul>
+  <p>
+    Varoitus on niistä tärkein. Vaarallinen tilanne ei ole se, että keli on kova — sen näkee
+    kartalta — vaan se, että lähtee helppoon keliin ja jää kiinni muutokseen.
+  </p>
+  <p>
+    Pallo hakee lisäksi <b>Norjan ilmatieteen laitoksen ennusteen</b> omalta kohdaltaan ja
+    näyttää sen <b>vain jos lähteet ovat eri mieltä</b>. Kun ne ovat samaa mieltä, toinen
+    luku ei kerro mitään. Erimielisyys sen sijaan kertoo juuri sen, mitä on hyödyllistä
+    tietää: että lukuun ei kannata luottaa liikaa.
+  </p>
+
   <h2>Käytetyt avoimet aineistot</h2>
   <ul class="sources">
     <li>
@@ -232,8 +292,20 @@
       <b>Peruskartta</b>
       <span>MML:n karttapohja, josta väreistä tunnistettiin kalliot, rannat ja suot.</span>
     </li>
+    <li>
+      <b>Sää- ja aallokkoennuste</b>
+      <span>Ilmatieteen laitoksen avoin data — tuuli, puuskat ja aallonkorkeus.</span>
+    </li>
+    <li>
+      <b>Vertailuennuste</b>
+      <span>MET Norway — toinen mielipide tietopalloissa, näytetään vain jos se poikkeaa.</span>
+    </li>
   </ul>
-  <p>Kaikki kolme ovat osa MML:n avointa tietoaineistoa — ilmaisia ja vapaasti käytettävissä.</p>
+  <p>
+    Kolme ensimmäistä ovat osa Maanmittauslaitoksen avointa tietoaineistoa. Myös
+    sääaineistot ovat avointa dataa eivätkä vaadi tunnuksia — juuri siksi sivu toimii
+    ilman omaa palvelinta.
+  </p>
 
   <h3 class="sub">Mitä rakennusaineistosta otettiin mukaan?</h3>
   <p>
