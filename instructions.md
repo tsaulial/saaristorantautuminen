@@ -263,6 +263,125 @@ Etene kehityksessä seuraavassa järjestyksessä:
 
 ---
 
+## 5b. Laserkeilausaineisto: selvitys, ei vielä käytössä (2026-08-04)
+
+Kasvillisuuden korkeus on mallin heikoin lenkki: se **arvataan saaren koon perusteella** (`MIN_VEG_ISLAND_HA = 1.0`, `VEG_HEIGHT_M = 12.0`). Sääntö syntyi käyttäjän havainnosta, ettei peruskartan valkoinen ole saaristossa luotettava metsän merkki. Selvitin, voisiko MML:n laserkeilausaineisto korvata arvauksen mittauksella.
+
+### Mitä arvaus maksaa — mitattuna
+
+Lisä osuu **65,8 %:iin maa-alasta** (54,2 km² nykyalueella). Näiden ruutujen mediaanikorkeus on lisän kanssa 16,7 m ja ilman sitä 4,7 m — arvaus siis **hallitsee esteen korkeutta valtaosalla maasta**. Virhe tuulensuojaan (4 m vs 12 m puusto): 50 m pyyhkäisymatkalla **26 %**, 100 m 26 %, 200 m 19 %, 400 m 7 %. Virhe on suurin 50–200 m matkoilla eli tasan niissä suojaisissa poukamissa, joihin rantaudutaan.
+
+### Aineisto
+
+| | 0,5p | 5p |
+|---|---|---|
+| Lisenssi | **CC BY 4.0, ilmainen** | maksullinen, 0,033 €/km², min 33,50 € |
+| Tiheys | 0,5 p/m², pisteväli ~1,4 m | ≥5 p/m² |
+| Koordinaatisto | **EPSG:3067** — sama kuin tällä projektilla | EPSG:3067 |
+
+**0,5p riittää**, ja se on valmiiksi luokiteltu: 2 = maanpinta, 3 = matala kasvillisuus (0–0,5 m), 4 = keskikorkea (0,5–2 m), 5 = korkea (2–50 m). Latvuskorkeus olisi luokkien 3–5 maksimi miinus maanpinta.
+
+### Riittääkö tiheys? Kaksi käyttötapausta eroavat ratkaisevasti
+
+| Käyttö | Ruutu | Pisteitä | Keskivirhe |
+|---|---:|---:|---:|
+| Esteen korkeus (`FETCH_GRID_M`) | 10 m | 50 | 0,071 |
+| Rantaviivan pisteytys (`NEW_PIXEL_FACTOR`) | 3,5 m | 6 | **0,202** |
+
+Ero johtuu **laskettavasta suureesta**. Latvuskorkeus on maksimi — muutama piste riittää. Aluskasvillisuuden tiheys on osuus, ja osuuden keskivirhe kutistuu vain neliöjuurena: kuudesta pisteestä laskettu suhde heittelee ±0,20 eli on käyttökelvoton. **Tuulimalli toimii siis suoraan, rantautumiskelpoisuus ei.**
+
+Riippumaton vahvistus: [karttapullautin](https://github.com/karttapullautin/karttapullautin) laskee vihreän 3 m ruudussa mutta **aluskasvillisuuden 18 m ruudussa** (`greendetectsize=3`, `step=6`) — kymmenen kertaa tiheämmällä aineistolla. Se on tehnyt saman havainnon.
+
+**Ristiriita ja sen ratkaisu:** aluskasvillisuus tarvitsisi 14–18 m ruudun, mutta rantavyöhyke on vain 5–15 m leveä; poikkisuuntaan 18 m ruutu vuotaisi veteen ja sisämaahan. Ratkaisu on jo koodissa: `compute_prime_components` aggregoi **rantaviivan suuntaan** (`_grouped_percentile`, `_alongshore_min`, `PRIME_ALONGSHORE_RADIUS_M`). Kärkipaikkoja varten rakennettu poikkileikkauslogiikka sopisi tähän sellaisenaan.
+
+### Mitä karttapullautin tekee
+
+Rust-sovellus, joka tekee suunnistuskarttoja luokitellusta LiDAR-aineistosta. Ydinmittaus (`src/vegetation.rs`) on latvuskorkeus `hh = piste.z − maanpinta`, jossa maanpinta interpoloidaan bilineaarisesti. Siitä johdetaan avoin maa (≥90 % pisteistä alle 0,9 m), metsän tiheys (painotettu pistelasku korkeusvyöhykkeittäin) ja **aluskasvillisuus** `ug/(ug+ugg)` alle 1,2 m pisteistä — käytännössä valmis kuljettavuusindeksi. Emme tarvitsisi sen paluukaikuheuristiikkaa, koska MML:n aineisto on jo luokiteltu; karttapullautin tekee raskaan työn tukeakseen luokittelematonta dataa.
+
+### Vuodenaika — korjaus alkuperäiseen oletukseeni
+
+Oletin ensin, että lehdettömyys aliarvioi tuulensuojan. Se oli epätarkkaa. Malli on
+
+```
+U_eff = U · (1 − S_max · exp(−(F/2) / (8·h)))     S_max = WIND_SHELTER_MAX = 0,6 kiinteä
+```
+
+**Korkeus `h` määrää vain etäisyysskaalan, ei suojan voimakkuutta.** Lehdetön puu on yhtä korkea kuin lehtipuinen, joten LiDAR mittaa korkeuden oikein vuodenajasta riippumatta. Kausivaihtelu koskee latvuston **huokoisuutta**, jota malli ei esitä lainkaan.
+
+Tästä seuraa, että sovellus on kesäkäyttöön ja kiinteä 0,6 vastaa jokseenkin tiheää kesälatvustoa — **kausivaihtelu ei siis estä tuulimallin parantamista**. Vaikutus jos huokoisuus otettaisiin mukaan (15 m lehtipuusto, lehdetön 0,3 vs kesä 0,6): tuulennopeudessa 32 % / 25 % / 15 % matkoilla 50 / 100 / 200 m, mutta **aallonkorkeutena vain noin sentti**, koska lyhyellä matkalla aalto on joka tapauksessa pieni.
+
+Kausivaihtelu olisi olennainen vasta, jos **aluskasvillisuus** otetaan rantautumiskelpoisuuden tekijäksi: huhtikuussa keilattu lehdetön pensaikko näyttää kuljettavalta, heinäkuussa se on läpitunkematon. Siihen on suora lähde: Luken MVMI-aineiston teema *"Puuston latvuspeittävyys, lehtipuut"*, 16 m rasteri, EPSG:3067, CC BY.
+
+**Keilausta ei tehdä aina lehdettömänä.** Kevätkeilaus on maalis–huhtikuussa, mutta siirtyy kesään jos sää ei salli — aineisto on sekoitus, ja epäjohdonmukaisuus on karttalehtien välillä. LAS-otsakkeessa on keilauspäivä (`File Creation Day of Year`), joten tila on luettavissa lehdittäin eikä sitä tarvitse arvata.
+
+### Merimetsot — selvitetty ja hylätty
+
+Merimetsojen guano tappaa puuston, joten yhdyskuntasaari on iso mutta puuton — juuri se tapaus, jossa "yli 1 ha → 12 m metsää" epäonnistuu pahiten. Selvitin lähteet: **GBIF** toimii ilman avainta (86 823 havaintoa Suomessa) mutta on **vääränlaista dataa** — suurin tuottaja on rengastusrekisteri ja koordinaattiepävarmuus oli ensimmäisessä tuloksessa 1 000 m. Lentävä merimetso ei kerro, minkä saaren puut kuolevat. **laji.fi** vaatii tokenin (HTTP 403). **SYKE:n merimetsoseuranta** on oikeaa dataa (~52 yhdyskuntaa) mutta julkaistaan PDF-raportteina; rajapintaa tai ladattavaa paikkatietoaineistoa en löytänyt.
+
+**Ei kannata toteuttaa, koska LiDAR tekee kysymyksen tarpeettomaksi**: merimetsojen tappama saari näkyy suoraan matalana latvustona, eikä mallia kiinnosta *miksi* puut ovat poissa. Sama koskee myrskytuhoja ja hakkuita, jotka eivät ole harvinaisempia. Merimetsotieto olisi hyödyllistä vain LiDARin **ajantasaisuuden** merkkinä — hienosäätöä, joka kannattaa tehdä vasta jos ongelma osoittautuu todelliseksi.
+
+### Toteutettu 2026-08-04: mittaus korvasi arvauksen
+
+**API-avain hankittiin ja koko putki rakennettiin** (`backend/lidar.py`). Kaikki 11 tiiltä ladattiin **166 sekunnissa**, LAZ-tiedostot poistettiin heti ja välimuistiin jäi **17 Mt** — noin 2 Gt raakadataa tiivistyi sadasosaansa.
+
+**Rajapinnan kolme yksityiskohtaa, jotka eivät selviä dokumentaatiosta:**
+
+1. POST-runkoon tarvitaan `"id"`-kenttä prosessin nimellä. Ilman sitä vastaus on **HTTP 400 ilman virheilmoitusta**, eikä lehtinimen vaihtaminen auta — harhauttavaa, koska vika näyttää olevan parametreissa.
+2. `results`-lista sisältää **yhden ylimääräisen alkion ilman `path`-kenttää** (4 lehteä → 5 alkiota). Suora indeksointi kaatuu siihen.
+3. Vastauksen metatieto on **tarkempi kuin LAS-otsake**: `dateOfScanning` ja `project` kertovat keilauspäivän ja usein vuodenajan. Tämä ratkaisi lehdellinen/lehdetön-kysymyksen ilman päättelyä pistepilvestä.
+
+**Lehtinimet** ovat 1:10000-tiili + numero 1–4 (`L3123E` → `L3123E1`…`L3123E4`). Neljännesten numerointia **ei oleteta**: jokainen lehti sijoitetaan omien otsikkorajojensa mukaan, joten väärä oletus ei voi mennä läpi huomaamatta.
+
+**Aineisto on kauttaaltaan kesäkeilausta**: projekti `20250103_Leica_Kumlinge_kesa`, päivät 20.–22.6.2025. Kausikysymys ratkesi siis parhaalla mahdollisella tavalla — tämä on tasan se tila, jota kesäkäyttöön tarkoitettu sovellus tarvitsee.
+
+#### Validointi: LiDARin maanpinta vs. korkeusmalli
+
+Ratkaisevin tarkistus. Molempien pitäisi olla N2000-järjestelmässä, ja ne täsmäävät: **erotuksen mediaani +0,13 m ja 99 % ruuduista alle metrin sisällä**. Korkeusjärjestelmät ovat siis samat eikä muunnosta tarvita.
+
+#### Mitä mittaus muutti
+
+Ratkaiseva havainto on, että **arvaus oli kaksihuippuinen ja väärässä molempiin suuntiin**:
+
+| Efektiivinen kasvillisuuslisä | Arvaus | Mittaus |
+|---|---:|---:|
+| Mediaani | 12,0 m | **7,5 m** |
+| Keskiarvo | 6,5 m | **7,5 m** |
+| Ruutuja joissa tasan 12,0 m | **54 %** | – |
+| Ruutuja joissa 0 m | **46 %** | 3 % |
+
+Arvaus antoi joko tasan 12 m tai tasan nolla, mitään siltä väliltä. Mittaus on jatkuva. Käytännössä:
+
+- **Yli 1 ha saarilla lisä oli liian suuri** (12 m → mitattu 7,6 m)
+- **Pienillä saarilla, kalliolla ja suolla lisä puuttui kokonaan** (0 m → todellinen puusto)
+
+Nettovaikutus on **+1,0 m keskimäärin**, mutta se on kahden vastakkaisen korjauksen summa: 24 % ruuduista laski yli 3 m ja 38 % nousi yli 3 m.
+
+#### Väärä hälytys, joka kannattaa muistaa
+
+Raportoin ensin **suunnitteluvirheen**: että turvaverkko `max(DEM, LiDAR)` estäisi mittausta korjaamasta arvausta alaspäin. **Väite oli väärä.** Maksimi on DEM:n **maastoa** vastaan, ei arvausta vastaan — arvaus lisätään vasta myöhemmin ja vain mittaamattomiin ruutuihin. Mittaus siis korvaa arvauksen kokonaan, myös alaspäin.
+
+Päättelin virheen +1,0 m nettomuutoksesta olettaen, että sen pitäisi olla negatiivinen. Oletus unohti, että arvaus oli nolla 46 %:ssa maasta. **Opetus: kun aggregaatti yllättää, tarkista jakauma ennen kuin syytä koodia.** Kaksi seuraavaakin hypoteesiani (kelpoisuuskriteerin harha, kriteerien ero) osoittautuivat vääriksi mittaamalla.
+
+#### Kelpoisuuskriteerejä on kaksi eri tarkoitukseen
+
+`has_surface` (≥3 kaikua) riittää **esteen korkeuteen**, koska pinnan huippu ei tarvitse maanpintaa. `valid` (≥3 maapistettä) tarvitaan **latvuskorkeuteen** maanpinnasta. Erottelu tehtiin siksi, että tiheä latvus estää maakaiut juuri siellä missä puusto on korkeinta — yhden kriteerin käyttö olisi hylännyt parhaat metsäruudut. Käytännössä ero osoittautui pieneksi (185 ruutua 236 883:sta), mutta periaate on oikea.
+
+#### Tallennettu tuote
+
+Rannikkoalueelle raakadataa olisi kymmeniä gigatavuja, joten **kaikki suureet irrotetaan yhdellä lukukerralla**: pinnan huippu, maanpinta, latvuspeittävyys, aluskasvillisuus, pistemäärä ja keilauspäivä. Uudelleenlataus maksaisi koko aineiston, joten myös toistaiseksi käyttämättömät suureet talletetaan nyt.
+
+Mitattu tiheys maalla on **0,38 p/m²** eikä luvattu 0,5 — vesi ei tuota kaikuja lainkaan, joten koko lehden keskiarvo (0,19) on harhaanjohtava. 10 m ruudussa on silti ~38 pistettä, mikä riittää maksimiin hyvin.
+
+### Aiempi tila: eristetty, ei toteutettu
+
+Latausrajapinta (`avoin-paikkatieto.maanmittauslaitos.fi/tiedostopalvelu/ogcproc/v1/`) **vaatii API-avaimen — todennettu, palauttaa ilman sitä HTTP 401**. Avain on maksuton (OmaTili-rekisteröinti), mutta ilman aineistoa toteutusta ei voi todentaa, eikä todentamatonta LiDAR-lukua kannata kirjoittaa.
+
+Kasvillisuusarvio on siksi **eristetty omaksi funktiokseen** (`pipeline.vegetation_height_m`), jotta LiDAR-toteutus korvaa vain sen rungon eikä muuhun putkeen tarvitse koskea. Refaktorointi on todennettu tuottavan **bitilleen saman** korkeusmosaiikin (3000×1800 ruutua). Funktion kommentissa on mitattu virhe, aineiston tiedot ja syy siihen miksi toteutusta ei ole tehty.
+
+**Kokeilu ei vaadi avainta:** yhden karttalehden voi ladata käsin Karttapaikan tiedostopalvelusta ja katsoa oikealla datalla, paljonko latvuskorkeus muuttaa mallia. Avain kannattaa hakea vasta aluetta laajennettaessa.
+
+---
+
 ## 6. Natiivisovellus (iOS/Android) — tuleva suunta, EI toteuteta vielä
 
 **Tilanne (kirjattu muistiin 2026-07-28)**: web-pohjaista sovellusta kehitetään edelleen ensisijaisesti, eikä natiivin kehitystä aloiteta lähiaikoina. Tämä kohta dokumentoi tehdyn arvioinnin, jotta web-kehityksen aikana tehtävät arkkitehtuuripäätökset voivat ottaa tulevan natiivitarpeen huomioon eivätkä vahingossa sulje sitä pois. **Ei aktiivinen tehtävälista — ei toteuteta ilman erillistä pyyntöä.**

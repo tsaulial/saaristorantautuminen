@@ -46,7 +46,7 @@ from rasterio.warp import Resampling as WarpResampling
 from rasterio.warp import reproject
 from scipy.ndimage import distance_transform_edt, label as ndimage_label, minimum_filter
 
-from backend import raster_filters, score_engine, tiles
+from backend import lidar, raster_filters, score_engine, tiles
 
 ROCK_SCORE_YES = 1.0
 ROCK_SCORE_NO = 0.2
@@ -1639,8 +1639,67 @@ def compute_shelter_thresholds(buildings_path, force=False):
 # Paljas kallio ja avosuo eivat saa kasvillisuuslisaa vaikka olisivat
 # suurella saarella - molemmat maskit ovat jo raakavalimuistissa, joten
 # uutta varikynnysta ei tarvitse virittaa.
+#
+# ─── TAMA ARVAUS ON NYT VARAJARJESTELMA, EI PAALAHDE ───
+#
+# Kasvillisuuslisa on VAKIO, joka annetaan saaren koon perusteella. Se on
+# kaytossa enaa siella minne laserkeilausta ei ole ladattu (ks. backend/lidar.py
+# ja get_or_compute_height_mosaic alla) - mitattu latvusto voittaa aina.
+#
+# Miksi arvaus ei riittanyt: se on KAKSIHUIPPUINEN eika jatkuva. Mitattuna
+# 54 % maaruuduista sai tasan 12,0 m ja 46 % tasan 0 m, kun mittaus antaa
+# jatkuvan jakauman mediaanilla 7,5 m. Keskiarvon ero (+1,0 m) on siis kahden
+# vastakkaisen korjauksen summa: 24 % ruuduista laski yli 3 m ja 38 % nousi
+# yli 3 m. Pieni keskiarvomuutos ei tarkoita pienta muutosta.
+#
+# Virheen suuruus tuulensuojaan (sheltered_wind, 4 m vs 12 m puusto):
+#   pyyhkaisymatka  50 m -> 26 % ero tuulennopeudessa
+#                  100 m -> 26 %
+#                  200 m -> 19 %
+#                  400 m ->  7 %
+# Virhe on suurin 50-200 m matkoilla eli tasan niissa suojaisissa poukamissa
+# joihin rantaudutaan.
+#
+# Korvaaja on MML:n laserkeilausaineisto (0,5 p/m2, CC BY 4.0, EPSG:3067 eli
+# sama koordinaatisto kuin talla projektilla). Aineisto on valmiiksi
+# luokiteltu: 2 = maanpinta, 3 = matala kasvillisuus (0-0,5 m), 4 = keskikorkea
+# (0,5-2 m), 5 = korkea (2-50 m). Tiheys riittaa hyvin: 10 m ruudussa on
+# ~50 pistetta ja maksimi tarvitsee vain muutaman. Todennettu maanpintaa
+# vastaan: LiDARin maanpinta vs DEM mediaani +0,13 m, 99 % alle 1 m erolla.
+#
+# Arvaus on eristetty omaksi funktiokseen (vegetation_height_m), jotta
+# sekakaytto olisi luettavissa yhdesta kohtaa: uudelle alueelle riittaa ladata
+# keilaus, eika muuhun putkeen tarvitse koskea.
+#
+# HUOM vuodenajasta: LiDAR mittaa KORKEUDEN oikein vuodenajasta riippumatta,
+# koska lehdeton puu on yhta korkea kuin lehtipuinen. Kausivaihtelu koskee
+# latvuston HUOKOISUUTTA, jota tama malli ei esita lainkaan - suojan
+# voimakkuus on kiintea WIND_SHELTER_MAX = 0,6. Sovellus on kesakayttoon ja
+# 0,6 vastaa jokseenkin tiheaa kesalatvustoa, joten kausivaihtelu ei ole
+# esteena tuulimallin parantamiselle. Se olisi olennainen vasta jos
+# aluskasvillisuus otettaisiin rantautumiskelpoisuuden tekijaksi.
 MIN_VEG_ISLAND_HA = 1.0
 VEG_HEIGHT_M = 12.0
+
+
+def vegetation_height_m(sea, veg_ok, land):
+    """Kasvillisuuden lisa esteen korkeuteen (m) ruuduittain - ARVAUS saaren
+    koon perusteella.
+
+    Kaytetaan enaa VARALLA: get_or_compute_height_mosaic lisaa taman vain
+    niihin ruutuihin joissa laserkeilausta ei ole. Palauttaa saman muotoisen
+    taulukon kuin maski; nollaa siella missa kasvillisuutta ei oleteta.
+
+    Ks. yllaoleva kommentti siita, miten kaksihuippuinen tama arvaus on
+    mitattuun latvustoon verrattuna."""
+    labels, n = ndimage_label(land, structure=np.ones((3, 3), dtype=bool))
+    if not n:
+        return np.zeros(sea.shape, dtype=np.float32)
+    sizes = np.bincount(labels.ravel())
+    min_cells = MIN_VEG_ISLAND_HA * 10000.0 / (FETCH_GRID_M ** 2)
+    big = np.zeros(len(sizes), dtype=bool)
+    big[1:] = sizes[1:] >= min_cells
+    return VEG_HEIGHT_M * (big[labels] & veg_ok & land)
 
 
 def get_or_compute_height_mosaic(buildings_path, force=False):
@@ -1680,15 +1739,37 @@ def get_or_compute_height_mosaic(buildings_path, force=False):
         height[target] = np.maximum(height[target], dem_small[:hh2, :ww2])
         veg_ok[target] |= ~bare_small[:hh2, :ww2]
 
-    # Kasvillisuuslisa vain riittavan suurilla saarilla
+    # --- MITATTU LATVUSTO ARVAUKSEN TILALLE ---
+    #
+    # Missa laserkeilaus on kaytettavissa, esteen huippu otetaan SUORAAN
+    # mittauksesta: se on jo N2000-korkeus eli sama vertailutaso kuin DEM:lla,
+    # joten latvuskorkeutta ei tarvitse laskea erikseen eika maanpinnan
+    # vertailutasoa valita. Maksimi DEM:n kanssa on turvaverkko: jos keilaus
+    # on jostain syysta matalampi kuin maastomalli, maasto voittaa.
+    #
+    # Arvaus jaa voimaan vain siella minne mittausta ei ole. Mitattuna arvaus
+    # yliarvioi keskimaarin +4,2 m ja yli 6 m 41 %:ssa ruuduista, joten
+    # sekakaytto on tarkoituksella jarjestetty niin etta MITTAUS VOITTAA aina
+    # kun se on olemassa.
     land = ~sea
-    labels, n = ndimage_label(land, structure=np.ones((3, 3), dtype=bool))
-    if n:
-        sizes = np.bincount(labels.ravel())
-        min_cells = MIN_VEG_ISLAND_HA * 10000.0 / (FETCH_GRID_M ** 2)
-        big = np.zeros(len(sizes), dtype=bool)
-        big[1:] = sizes[1:] >= min_cells
-        height = height + VEG_HEIGHT_M * (big[labels] & veg_ok & land)
+    mitattu = np.zeros(sea.shape, dtype=bool)
+    for tile in tiles.get_registry().values():
+        if not lidar.have_lidar(tile.tile_id):
+            continue
+        top, ok = lidar.surface_top(tile.tile_id)
+        col = int(round((tile.bounds[0] - ox) / FETCH_GRID_M))
+        row = int(round((oy - tile.bounds[3]) / FETCH_GRID_M))
+        hh2, ww2 = min(top.shape[0], h - row), min(top.shape[1], w - col)
+        if hh2 <= 0 or ww2 <= 0:
+            continue
+        dst = (slice(row, row + hh2), slice(col, col + ww2))
+        src = (slice(0, hh2), slice(0, ww2))
+        kelpo = ok[src] & land[dst]
+        height[dst] = np.where(kelpo, np.maximum(height[dst], top[src]), height[dst])
+        mitattu[dst] |= kelpo
+
+    # Arvaus vain mittaamattomiin ruutuihin.
+    height = height + np.where(mitattu, 0.0, vegetation_height_m(sea, veg_ok, land))
 
     height = height.astype(np.float32)
     np.save(cache_path, height)
