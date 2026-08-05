@@ -52,9 +52,13 @@ SWAMP_HSV_UPPER = np.array([31, 255, 255], dtype=np.uint8)
 # joet piirretaan tasaisena syaanintayttona, mutta kapeat purot/ojat VAIN
 # rantaviiva-varisena viivana ilman omaa tayttoa (liian kapeita nakyakseen
 # tallä mittakaavalla). Rantaviiva-vari (#0080ff) ei siis yksinaan riita
-# erottamaan merenrantaa puron rannasta - tayttoa kaytetaan tahan
-# pipeline.py:n compute_sea_mask-funktiossa (yhtenaisten tayttoalueiden koon
-# perusteella: meri on aina valtava, puro/lampi pieni).
+# erottamaan merenrantaa puron rannasta.
+#
+# HUOM: pisteytys EI enaa kayta naita rantaviivaan eika mereen - ne tulevat
+# vektoriaineistosta (backend/vesisto.py), koska sama sininen kaytetaan myos
+# vesistojen NIMIIN. Vesitayttoa kaytetaan enaa karttatuotteen todentamiseen
+# (backend/mml_lataus.py --todenna-kartta), jossa se on hyva mittari juuri
+# siksi etta se kattaa suuren osan kuvasta.
 WATER_FILL_HSV_LOWER = np.array([85, 80, 200], dtype=np.uint8)
 WATER_FILL_HSV_UPPER = np.array([95, 180, 255], dtype=np.uint8)
 

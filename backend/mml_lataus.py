@@ -91,6 +91,46 @@ def lataa_kartta(lehdet, key=None):
     return ulos
 
 
+def lataa_hydrografia(bbox, key=None, dest=None):
+    """Maastotietokannan hydrografia: meri, jarvi ym. omina tasoinaan.
+
+    Talta tulee sek MERI ETTA RANTAVIIVA (meri-polygonin reuna). Peruskartan
+    varit eivat erota niita vesistojen nimista - ks. backend/vesisto.py."""
+    key = key or mml.api_key()
+    x0, y0, x1, y1 = bbox
+    ala = (x1 - x0) * (y1 - y0) / 1e6
+    if ala > MTK_MAX_AREA_KM2:
+        raise ValueError(f"Alue {ala:.0f} km2 ylittaa rajapinnan rajan - pilko haku")
+    print(f"hydrografia: {ala:.0f} km2")
+    tulokset = mml.run_job(MTK_PROCESS, {
+        "boundingBoxInput": [x0, y0, x1, y1],
+        "themeInput": "hydrografia",
+        "fileFormatInput": "GPKG",
+    }, key=key)
+    dest = Path(dest or ROOT / "vesistot-mml" / "_uusi")
+    return [mml.download_to(item, dest, key) for item in tulokset]
+
+
+def yhdista_hydrografia(uudet_gpkg, kohde=None):
+    """Liittaa meri-tason olemassa olevaan hydrografia.gpkg:hen."""
+    import geopandas as gpd
+    import pandas as pd
+
+    kohde = Path(kohde or ROOT / "vesistot-mml" / "hydrografia.gpkg")
+    kohde.parent.mkdir(parents=True, exist_ok=True)
+    palat = []
+    if kohde.exists():
+        palat.append(gpd.read_file(kohde, layer="meri"))
+    for polku in uudet_gpkg:
+        palat.append(gpd.read_file(polku, layer="meri"))
+    palat = [g for g in palat if len(g)]
+    if not palat:
+        return
+    yhd = gpd.GeoDataFrame(pd.concat(palat, ignore_index=True), crs=palat[0].crs)
+    yhd.to_file(kohde, layer="meri", driver="GPKG")
+    print(f"  meri: {len(yhd)} polygonia, {yhd.area.sum() / 1e6:.0f} km2")
+
+
 def lataa_rakennukset(bbox, key=None, dest=None):
     """Maastotietokannan rakennusteema GPKG:na yhdelle laatikolle."""
     key = key or mml.api_key()
@@ -287,6 +327,8 @@ def main():
     key = mml.api_key()
     lataa_kartta(kartta, key=key)
     lataa_korkeusmalli(dem, key=key)
+    uudet_h = lataa_hydrografia(bbox, key=key)
+    yhdista_hydrografia([p for p in uudet_h if p.suffix.lower() == ".gpkg"])
     if not args.ei_rakennuksia:
         uudet = lataa_rakennukset(bbox, key=key)
         yhdista_rakennukset([p for p in uudet if p.suffix.lower() == ".gpkg"])

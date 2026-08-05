@@ -41,12 +41,13 @@ from pathlib import Path
 import cv2
 import numpy as np
 from rasterio.crs import CRS
-from rasterio.transform import Affine, array_bounds
+from rasterio.transform import Affine, array_bounds, from_origin
 from rasterio.warp import Resampling as WarpResampling
 from rasterio.warp import reproject
-from scipy.ndimage import distance_transform_edt, label as ndimage_label, minimum_filter
+from scipy.ndimage import (binary_dilation, distance_transform_edt,
+                           label as ndimage_label, minimum_filter)
 
-from backend import lidar, raster_filters, score_engine, tiles
+from backend import lidar, raster_filters, score_engine, tiles, vesisto
 
 ROCK_SCORE_YES = 1.0
 ROCK_SCORE_NO = 0.2
@@ -61,25 +62,22 @@ SWAMP_PENALTY_FACTOR = 0.5
 SHORELINE_BUFFER_MIN_M = 5.0
 SHORELINE_BUFFER_MAX_M = 15.0
 
-# Peruskartalla puro/oja piirretaan rantaviiva-varisena viivana MUTTA ILMAN
-# vesialueen tayttoa (liian kapea nakyakseen tallä mittakaavalla) - siksi
-# rantaviiva-vari yksinaan ei erota merenrantaa sisamaan puron rannasta
-# (havaittu ongelma: sovellus ehdotti rantautumista purojen varsilta).
-# Erottelu tehdaan vesialueen tayton (WATER_FILL_HSV_*) yhtenaisten alueiden
-# koon perusteella: meri on aina valtava yhtenainen alue (havaittu
-# aineistossa >2000 ha per 6x6km tiili), puro/lampi/pieni jarvi pieni (alle
-# ~10 ha). SEA_MIN_AREA_M2 on asetettu selvalla marginaalilla naiden valiin.
+# --- MERI JA RANTAVIIVA TULEVAT VEKTORIAINEISTOSTA ---
 #
-# Ennen ryhmittelya tayttomaskille tehdaan morphological closing
-# (SEA_CLOSING_RADIUS_M): tiet, laivavaylaviivat yms. kartan symbolit voivat
-# katkaista tayton varin kapeista salmista/lahdista, jolloin aidosti
-# merellinen alue pilkkoutuisi virheellisesti moneksi pieneksi
-# komponentiksi (havaittu esimerkki: tie katkaisi 18 ha:n suojaisan lahden
-# yhteyden avomereen). 10m sulkee nama katkokset mutta ei yhdista aidosti
-# erillisia sisamaan lampia/jarvia mereen.
-SEA_CLOSING_RADIUS_M = 10.0
-SEA_MIN_AREA_M2 = 500_000.0  # 50 ha
-SEA_ADJACENCY_M = 5.0  # kuinka lahella meripintaa rantaviivapikselin pitaa olla sailyakseen
+# Ne luettiin aiemmin peruskartan VAREISTA, ja se vaati kolme heuristiikkaa:
+# 50 ha kokosuodatus (meri ja jarvi ovat samanvarisia), morfologinen
+# sulkeminen (tiet ja vaylaviivat katkaisivat tayton) ja erillissaanto
+# tiilirajoille. Kaikki kolme on nyt poistettu - ks. backend/vesisto.py.
+#
+# Ratkaiseva syy oli etta peruskartta on IHMISELLE PIIRRETTY KUVA: vesistojen
+# nimet on painettu tasan samalla sinisella kuin rantaviiva, joten sanat
+# "Purolahti" ja "Backviken" tulkittiin rantaviivaksi keskella lahtea. Viisi
+# eri erottelijaa kokeiltiin, eika yksikaan erottanut niita luotettavasti.
+#
+# Maastotietokannassa meri on oma tasonsa. Todennettu vanhaa vasten:
+# Ahvenanmaalla (L3123F) uusi rantaviiva on samassa paikassa kuin vanha
+# (mediaanietaisyys 0,0 m), Helsingissa (L4133D) mediaani 2,8 m mutta 90 %
+# piste 281 m - ero on tasan ne lahdet jotka rasteripolku hukkasi.
 
 # Puskurivyohyke on todellisuudessa vain muutaman metrin levyinen eika erotu
 # ulompana zoomitasolla. Paksunnetaan sita PELKASTAAN nakymista varten
@@ -226,26 +224,6 @@ def compute_shoreline_buffer(shoreline_mask, dem, pixel_size):
     return land & (dist_to_shore >= SHORELINE_BUFFER_MIN_M) & (dist_to_shore <= SHORELINE_BUFFER_MAX_M)
 
 
-def compute_sea_mask(water_fill_mask, pixel_size):
-    """Erottaa meren (yhtenainen, suuri vesialue) sisamaan puroista/lammista/
-    pienista jarvista (pienia, erillisia vesialueita) - ks. SEA_* -vakioiden
-    kommentit. Palauttaa maskin niista vesitaytto-pikseleista jotka kuuluvat
-    riittavan suureen yhtenaiseen alueeseen."""
-    close_radius_px = meters_to_px(SEA_CLOSING_RADIUS_M, pixel_size)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * close_radius_px + 1, 2 * close_radius_px + 1))
-    closed = cv2.morphologyEx(water_fill_mask.astype(np.uint8), cv2.MORPH_CLOSE, kernel).astype(bool)
-
-    labels, n = ndimage_label(closed, structure=np.ones((3, 3), dtype=bool))
-    if n == 0:
-        return np.zeros_like(water_fill_mask)
-
-    sizes = np.bincount(labels.ravel())
-    min_area_px = SEA_MIN_AREA_M2 / (pixel_size ** 2)
-    sea_labels = np.flatnonzero(sizes >= min_area_px)
-    sea_labels = sea_labels[sea_labels != 0]
-    return np.isin(labels, sea_labels)
-
-
 # "Paras rannat %" -valinta (ks. TOP_PERCENT_PRESETS) osoittautui olevan
 # rikki pienilla prosenteilla: total_score SATUROITUU tarkalleen arvoon 1.0
 # heti kun jyrkkyys<=5 astetta JA etaisyys rakennuksiin>150m JA kallio -
@@ -335,16 +313,13 @@ def compute_tile(tile, buildings_path):
 
     map_bgr, _map_transform = raster_filters.load_map_window(str(tile.map_path), tile.bounds)
     rock_mask = raster_filters.detect_rock_mask(map_bgr)
-    shoreline_mask_raw = raster_filters.detect_shoreline_mask(map_bgr)
     swamp_mask = raster_filters.detect_swamp_mask(map_bgr)
-    water_fill_mask = raster_filters.detect_water_fill_mask(map_bgr)
 
-    # Rantaviiva-vari piirretaan seka merenrannalle etta sisamaan puroille -
-    # rajataan huomioon vain se osa joka on lahella oikeaa, riittavan suurta
-    # vesialuetta (= merta), ks. SEA_*-vakioiden kommentit.
-    sea_mask = compute_sea_mask(water_fill_mask, pixel_size)
-    sea_mask_near = dilate_mask(sea_mask, meters_to_px(SEA_ADJACENCY_M, pixel_size))
-    shoreline_mask = shoreline_mask_raw & sea_mask_near
+    # MERI JA RANTAVIIVA VEKTORIAINEISTOSTA, ei kartan vareista.
+    # Peruskartan sininen ei erota rantaviivaa vesistojen NIMISTA eika merta
+    # jarvista - ks. backend/vesisto.py. Kallio ja suo luetaan edelleen
+    # rasterista, koska niille ei ole tassa vastaavaa ongelmaa.
+    shoreline_mask = vesisto.rantaviiva_maski(tile.bounds, map_transform, map_shape)
 
     slope_score = resample_to_grid(v1["slope_score"], v1["transform"], map_transform, map_shape)
     dist_score = resample_to_grid(v1["dist_score"], v1["transform"], map_transform, map_shape)
@@ -1319,12 +1294,12 @@ def compute_prime_thresholds(buildings_path, force=False):
 #
 # MERIMASKI EIKA ~land_mask: jalkimmainen on DEM-pohjainen, jolloin korkeus-
 # mallin nodata-alueet tulkittaisiin vedeksi ja synnyttaisivat valekaytavia,
-# ja sisamaan lammet menisivat mukaan. compute_sea_mask suodattaa jo yli
-# 50 ha:n yhtenaisiin alueisiin.
+# ja sisamaan lammet menisivat mukaan. Merimaski tulee Maastotietokannan
+# meri-tasosta, jossa jarvet ovat erikseen (ks. backend/vesisto.py).
 #
-# Merimosaiikki lasketaan SUORAAN karttarasterista (ei raakavalimuistin
+# Merimosaiikki lasketaan SUORAAN vektoriaineistosta (ei raakavalimuistin
 # kautta): se ei tarvitse DEM:ia eika rakennuksia, joten raakavalimuistin
-# versiota ei tarvitse nostaa eika 11 tiilta laskea uudelleen.
+# versiota ei tarvitse nostaa tama takia.
 FETCH_SECTORS = 12
 FETCH_GRID_M = 10.0
 MAX_FETCH_M = 15000.0
@@ -1345,22 +1320,80 @@ def sector_bearing(sector):
     return sector * (360.0 / FETCH_SECTORS)
 
 
+# --- GLOBAALI SOLUTUNNISTE ---
+#
+# Rantaruudut talletettiin aiemmin muodossa rivi * mosaiikin_leveys + sarake.
+# Se sitoi valimuistin mosaiikin muotoon: kun tiilia lisattiin, leveys muuttui
+# ja JOKAINEN tunniste tarkoitti eri ruutua. Koko globaali laskenta oli siis
+# uusittava, mika tekee kasvavasta aineistosta neliollisen: 244 tiilen
+# kaytava 30 tiilen erissa maksaisi kahdeksan taytta pyyhkaisymatkalaskentaa.
+#
+# Tunniste lasketaan nyt KIINTEASTA globaalista ruudukosta, joka ei riipu
+# siita mita tiilia sattuu olemaan mukana. Sama ruutu saa saman tunnisteen
+# riippumatta aineiston laajuudesta, joten valimuisti sailyy.
+#
+# Origo on Suomen ulkopuolella pohjoisessa ja lannessa, jotta kaikki
+# EPSG:3067-koordinaatit tuottavat ei-negatiiviset indeksit. Suurin tunniste
+# on n. 1,2e10 eli mahtuu int64:aan reilusti.
+GLOBAL_ORIGIN_X = 0.0
+GLOBAL_ORIGIN_Y = 7_800_000.0
+GLOBAL_COLS = 100_000          # 1000 km / FETCH_GRID_M
+
+
+def global_cell_ids(x, y):
+    """Koordinaatit -> globaalit solutunnisteet (int64)."""
+    gcol = np.rint((np.asarray(x, dtype=np.float64) - GLOBAL_ORIGIN_X) / FETCH_GRID_M).astype(np.int64)
+    grow = np.rint((GLOBAL_ORIGIN_Y - np.asarray(y, dtype=np.float64)) / FETCH_GRID_M).astype(np.int64)
+    return grow * GLOBAL_COLS + gcol
+
+
+def global_cell_coords(gid):
+    """Globaalit solutunnisteet -> koordinaatit (ruudun keskipiste-indeksi)."""
+    grow, gcol = np.divmod(np.asarray(gid, dtype=np.int64), GLOBAL_COLS)
+    return (GLOBAL_ORIGIN_X + gcol * FETCH_GRID_M,
+            GLOBAL_ORIGIN_Y - grow * FETCH_GRID_M)
+
+
+# Mosaiikkia levennetaan tiilijoukon ymparilta talla verran.
+#
+# SYY ON MITATTU VIKA: _march_ray rajaa esteenetsinnan np.clipilla taulukon
+# reunaan, joten reunalla katse leikkautuu takaisin aineiston sisaan ja poimii
+# maata sielta missa sita ei ole. Kun demo laajeni Ahvenanmaalta Helsinkiin,
+# vanhan alueen estekorkeuksista muuttui 0,53 % ja JOKAINEN muuttunut arvo oli
+# pienempi - eli pieni mosaiikki oli yliarvioinut esteet reunoillaan.
+#
+# MAX_FETCH_M riittaa tasmalleen: sitä kauempaa sade ei nae mitaan.
+MOSAIC_PAD_M = MAX_FETCH_M
+
+
 def _sea_mosaic_geometry():
-    """Karkean mosaiikin (origo, muoto) kaikkien tiilien ylle."""
+    """Karkean mosaiikin (origo, muoto) kaikkien tiilien ylle.
+
+    Origo napsautetaan globaalin ruudukon solurajalle, jotta mosaiikin ruudut
+    vastaavat aina samoja globaaleja tunnisteita."""
     registry = tiles.get_registry()
     bounds = [t.bounds for t in registry.values()]
-    minx = min(b[0] for b in bounds)
-    miny = min(b[1] for b in bounds)
-    maxx = max(b[2] for b in bounds)
-    maxy = max(b[3] for b in bounds)
+    minx = min(b[0] for b in bounds) - MOSAIC_PAD_M
+    miny = min(b[1] for b in bounds) - MOSAIC_PAD_M
+    maxx = max(b[2] for b in bounds) + MOSAIC_PAD_M
+    maxy = max(b[3] for b in bounds) + MOSAIC_PAD_M
+    # Napsautus globaaliin ruudukkoon: origo osuu tasan solun reunalle.
+    minx = GLOBAL_ORIGIN_X + np.floor((minx - GLOBAL_ORIGIN_X) / FETCH_GRID_M) * FETCH_GRID_M
+    maxy = GLOBAL_ORIGIN_Y - np.floor((GLOBAL_ORIGIN_Y - maxy) / FETCH_GRID_M) * FETCH_GRID_M
     w = int(round((maxx - minx) / FETCH_GRID_M))
     h = int(round((maxy - miny) / FETCH_GRID_M))
-    return (minx, maxy), (h, w)
+    return (float(minx), float(maxy)), (h, w)
 
 
 def get_or_compute_sea_mosaic(force=False):
     """Merimaski karkealla FETCH_GRID_M-ruudukolla kaikkien tiilien ylle.
-    True = avovetta (tai aineiston aukko, ks. moduulin kommentti)."""
+    True = avovetta (tai aineiston aukko, ks. moduulin kommentti).
+
+    Meri rasteroidaan VEKTORIAINEISTOSTA (ks. backend/vesisto.py). Aiemmin se
+    luettiin peruskartan varista, mika vaati kolme kikkaa joita ei enaa ole:
+    50 ha kokosuodatus (meri vs jarvi), morfologinen silta siltapenkereille,
+    ja erillissaanto tiilirajalla katkeaville lahdille. Maastotietokannassa
+    meri on oma tasonsa, joten mitaan naista ei tarvita."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_path = CACHE_DIR / "_sea_mosaic.npz"
     if not force and cache_path.exists():
@@ -1373,16 +1406,13 @@ def get_or_compute_sea_mosaic(force=False):
     sea = np.ones((h, w), dtype=bool)
 
     for tile in tiles.get_registry().values():
-        map_bgr, map_transform = raster_filters.load_map_window(str(tile.map_path), tile.bounds)
-        pixel_size = abs(map_transform.a)
-        water = raster_filters.detect_water_fill_mask(map_bgr)
-        tile_sea = compute_sea_mask(water, pixel_size)
-
-        factor = int(round(FETCH_GRID_M / pixel_size))
-        # Aluekeskiarvo + enemmisto: ruutu on merta jos yli puolet siita on.
-        # downsample_mask ("yhtaan meripikselia") tekisi kapeista kannaksista
-        # lapaisevia ja yliarvioisi pyyhkaisymatkan.
-        small = downsample_image(tile_sea.astype(np.float32), factor) >= 0.5
+        n = int(round((tile.bounds[2] - tile.bounds[0]) / FETCH_GRID_M))
+        m = int(round((tile.bounds[3] - tile.bounds[1]) / FETCH_GRID_M))
+        # Rasteroidaan suoraan mosaiikin tarkkuudella: valissa ei ole
+        # alinaytteistysta eika enemmistosaantoa, joten kapeat salmet
+        # sailyvat sellaisina kuin ne aineistossa ovat.
+        tr = from_origin(tile.bounds[0], tile.bounds[3], FETCH_GRID_M, FETCH_GRID_M)
+        small = vesisto.meri_maski(tile.bounds, tr, (m, n))
 
         col = int(round((tile.bounds[0] - ox) / FETCH_GRID_M))
         row = int(round((oy - tile.bounds[3]) / FETCH_GRID_M))
@@ -1936,16 +1966,91 @@ def compute_fetch_and_obstacle(points_rc, sea, height, max_fetch_m=MAX_FETCH_M):
     return np.clip(fetch_out, MIN_FETCH_M, max_fetch_m), obs_out
 
 
+# Valimuistin muoto. Nosta kun tallennettu sisalto ei ole enaa vertailukelpoista
+# aiemman kanssa - silloin koko laskenta uusitaan automaattisesti.
+#   2 = globaalit solutunnisteet + MOSAIC_PAD_M
+GLOBAL_CACHE_VERSION = 2
+
+
+def _dirty_mask(gid, muuttuneet_tiilet):
+    """Mitka solut on laskettava uudelleen kun tiilijoukko muuttuu.
+
+    Vain ne jotka ovat alle MAX_FETCH_M etaisyydella muuttuneesta tiilesta:
+    kauempaa sade ei nae uutta maata eika mosaiikin laajeneminen vaikuta,
+    koska mosaiikki ulottuu MOSAIC_PAD_M verran tiilien ohi (ks. siella)."""
+    if not muuttuneet_tiilet:
+        return np.zeros(len(gid), dtype=bool)
+    x, y = global_cell_coords(gid)
+    likainen = np.zeros(len(gid), dtype=bool)
+    for b in muuttuneet_tiilet:
+        dx = np.maximum.reduce([b[0] - x, np.zeros_like(x), x - b[2]])
+        dy = np.maximum.reduce([b[1] - y, np.zeros_like(y), y - b[3]])
+        likainen |= (dx * dx + dy * dy) <= MAX_FETCH_M ** 2
+    return likainen
+
+
+def _global_inkrementaalisesti(cache_path, gid, sea, height, origin, otsikko):
+    """Yhteinen runko pyyhkaisymatkojen ja vesiruudukon laskennalle.
+
+    Laskee vain ne solut joita ei ole valimuistissa tai jotka ovat muuttuneen
+    tiilen lahella. Ilman tata koko globaali laskenta uusittaisiin joka kerta
+    kun tiilia lisataan, jolloin kasvava aineisto maksaa neliollisesti."""
+    registry = tiles.get_registry()
+    nyt_tiilet = {tid: t.bounds for tid, t in registry.items()}
+
+    vanha_gid = vanha_fetch = vanha_obs = None
+    muuttuneet = list(nyt_tiilet.values())          # oletus: kaikki
+    if cache_path.exists():
+        d = np.load(cache_path, allow_pickle=True)
+        if int(d.get("versio", 0)) == GLOBAL_CACHE_VERSION:
+            vanha_gid = d["cells"]
+            vanha_fetch, vanha_obs = d["fetch"], d["obstacle"]
+            oli = set(str(s) for s in d["tiilet"])
+            nyt = set(nyt_tiilet)
+            # Sekä lisatyt etta poistetut muuttavat naapurustonsa sateita.
+            muuttuneet = [nyt_tiilet[t] for t in (nyt - oli)]
+            if oli - nyt:
+                muuttuneet = list(nyt_tiilet.values())   # poisto: varmin on laskea kaikki
+
+    fetch = np.zeros((len(gid), FETCH_SECTORS), dtype=np.float32)
+    obstacle = np.zeros((len(gid), FETCH_SECTORS), dtype=np.float32)
+
+    laskettava = np.ones(len(gid), dtype=bool)
+    if vanha_gid is not None:
+        pos = np.searchsorted(vanha_gid, gid)
+        pos = np.clip(pos, 0, len(vanha_gid) - 1)
+        loytyi = vanha_gid[pos] == gid
+        fetch[loytyi] = vanha_fetch[pos[loytyi]]
+        obstacle[loytyi] = vanha_obs[pos[loytyi]]
+        laskettava = ~loytyi | _dirty_mask(gid, muuttuneet)
+
+    n = int(laskettava.sum())
+    print(f"  {otsikko}: {len(gid)} ruutua, laskettava {n} "
+          f"({100.0 * n / max(len(gid), 1):.0f} %)")
+    if n:
+        rows, cols = _gid_to_mosaic_rc(gid[laskettava], origin, sea.shape)
+        f, o = compute_fetch_and_obstacle((rows, cols), sea, height)
+        fetch[laskettava] = f
+        obstacle[laskettava] = o
+
+    np.savez_compressed(cache_path, cells=gid, fetch=fetch, obstacle=obstacle,
+                        tiilet=np.array(sorted(nyt_tiilet), dtype=object),
+                        versio=GLOBAL_CACHE_VERSION)
+    return gid, fetch, obstacle
+
+
 def get_or_compute_fetch_global(buildings_path, force=False):
     """Laskee pyyhkaisymatkat ja esteiden korkeudet KAIKKIEN tiilien
-    rantaruuduille kerralla. Globaali siksi, etta sade kulkee tiilirajojen
-    yli - ja koska sadehaarukka on 13-kertainen, sama suunta kannattaa
-    laskea vain kerran koko aineistolle."""
+    rantaruuduille. Globaali siksi, etta sade kulkee tiilirajojen yli - ja
+    koska sadehaarukka on 13-kertainen, sama suunta kannattaa laskea vain
+    kerran koko aineistolle.
+
+    Tulos on inkrementaalinen: tiilien lisaaminen laskee uudelleen vain
+    lisayksen laheiset ruudut."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_path = CACHE_DIR / "_fetch_global.npz"
-    if not force and cache_path.exists():
-        data = np.load(cache_path)
-        return data["cells"], data["fetch"], data["obstacle"]
+    if force and cache_path.exists():
+        cache_path.unlink()
 
     sea, (ox, oy) = get_or_compute_sea_mosaic(force=force)
     height = get_or_compute_height_mosaic(buildings_path, force=force)
@@ -1954,17 +2059,15 @@ def get_or_compute_fetch_global(buildings_path, force=False):
     for tid in tiles.get_registry():
         cells, _shape = _tile_mosaic_cells(tid, buildings_path, sea.shape, (ox, oy), force=force)
         all_cells.append(cells)
-    cells = np.unique(np.concatenate(all_cells))
-    rows, cols = np.divmod(cells, sea.shape[1])
-
-    fetch, obstacle = compute_fetch_and_obstacle((rows, cols), sea, height)
-    np.savez_compressed(cache_path, cells=cells, fetch=fetch, obstacle=obstacle)
-    return cells, fetch, obstacle
+    gid = np.unique(np.concatenate(all_cells))
+    return _global_inkrementaalisesti(cache_path, gid, sea, height, (ox, oy), "rantaruudut")
 
 
 def _tile_mosaic_cells(tile_id, buildings_path, mosaic_shape, origin, force=False):
-    """Tiilen naytettavien ruutujen vastaavat mosaiikkiruudut (litistettyna)."""
-    ox, oy = origin
+    """Tiilen naytettavien ruutujen GLOBAALIT solutunnisteet.
+
+    Palauttaa (gid, (rr, cc, muoto)). Tunniste ei riipu mosaiikin muodosta,
+    joten valimuisti kestaa tiilien lisaamisen - ks. global_cell_ids."""
     factors = get_or_compute_factor_arrays(tile_id, buildings_path, force=force)
     buffer_small = factors["buffer"]
     raw = factors["raw"]
@@ -1975,9 +2078,19 @@ def _tile_mosaic_cells(tile_id, buildings_path, mosaic_shape, origin, force=Fals
     rr, cc = np.nonzero(buffer_small)
     x = transform.c + (cc + 0.5) * (native_w / small_w) * abs(transform.a)
     y = transform.f - (rr + 0.5) * (native_h / small_h) * abs(transform.e)
-    mos_col = np.clip(np.rint((x - ox) / FETCH_GRID_M).astype(np.int64), 0, mosaic_shape[1] - 1)
-    mos_row = np.clip(np.rint((oy - y) / FETCH_GRID_M).astype(np.int64), 0, mosaic_shape[0] - 1)
-    return mos_row * mosaic_shape[1] + mos_col, (rr, cc, buffer_small.shape)
+    return global_cell_ids(x, y), (rr, cc, buffer_small.shape)
+
+
+def _gid_to_mosaic_rc(gid, origin, mosaic_shape):
+    """Globaalit tunnisteet -> nykyisen mosaiikin (rivi, sarake).
+
+    Mosaiikki kattaa tiilijoukon plus MOSAIC_PAD_M, joten tiilien ruudut ovat
+    aina sisalla; clip on silti varmuuden vuoksi eika hiljainen oletus."""
+    ox, oy = origin
+    x, y = global_cell_coords(gid)
+    col = np.clip(np.rint((x - ox) / FETCH_GRID_M).astype(np.int64), 0, mosaic_shape[1] - 1)
+    row = np.clip(np.rint((oy - y) / FETCH_GRID_M).astype(np.int64), 0, mosaic_shape[0] - 1)
+    return row, col
 
 
 def get_or_compute_fetch_levels(tile_id, buildings_path, force=False):
@@ -1998,6 +2111,13 @@ def get_or_compute_fetch_levels(tile_id, buildings_path, force=False):
     flat, (rr, cc, shape) = _tile_mosaic_cells(tile_id, buildings_path, sea.shape, (ox, oy), force=force)
 
     pos = np.searchsorted(cells, flat)
+    # Jokaisen tiilen ruudun ON loydyttava globaalista joukosta - se on koottu
+    # tasan naista. Jos ei loydy, indeksointi antaisi vaaran naapurin arvot
+    # HILJAA, joten se tarkistetaan.
+    if len(cells) == 0 or not np.array_equal(cells[np.clip(pos, 0, len(cells) - 1)], flat):
+        raise RuntimeError(
+            f"{tile_id}: {int((cells[np.clip(pos, 0, len(cells) - 1)] != flat).sum())} "
+            "ruutua ei loydy globaalista joukosta - valimuisti on epasynkassa")
     fetch_levels = np.zeros((*shape, FETCH_SECTORS), dtype=np.uint8)
     obs_levels = np.zeros((*shape, FETCH_SECTORS), dtype=np.uint8)
     fetch_levels[rr, cc] = quantise_fetch(fetch_all[pos])
@@ -2087,30 +2207,39 @@ def _tile_water_grid(tile, mosaic_shape, origin):
     return rr, cc, n
 
 
+def _tile_water_gids(tile, origin):
+    """Tiilen vesiruudukon GLOBAALIT solutunnisteet (kaikki ruudut, myos maa).
+
+    Lasketaan koordinaateista eika mosaiikin indekseista, jotta tunniste on
+    riippumaton mosaiikin muodosta - sama peruste kuin _tile_mosaic_cells."""
+    n = int(round((tile.bounds[2] - tile.bounds[0]) / WATER_GRID_M))
+    # Sama (i, j) -> (rivi, sarake) -jarjestys kuin _tile_water_gridissa:
+    # i kasvaa etelaan (y pienenee), j kasvaa itaan (x kasvaa).
+    x = tile.bounds[0] + np.arange(n) * WATER_GRID_M
+    y = tile.bounds[3] - np.arange(n) * WATER_GRID_M
+    xx, yy = np.meshgrid(x, y, indexing="xy")
+    return global_cell_ids(xx, yy)
+
+
 def get_or_compute_water_global(buildings_path, force=False):
     """Pyyhkaisymatkat ja esteiden korkeudet KAIKKIEN tiilien vesiruuduille
     kerralla - sama peruste kuin rantaruuduilla: sade kulkee tiilirajojen yli
     ja sadehaarukka on 13-kertainen."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_path = CACHE_DIR / "_water_global.npz"
-    if not force and cache_path.exists():
-        data = np.load(cache_path)
-        return data["cells"], data["fetch"], data["obstacle"]
+    if force and cache_path.exists():
+        cache_path.unlink()
 
     sea, (ox, oy) = get_or_compute_sea_mosaic(force=force)
     height = get_or_compute_height_mosaic(buildings_path, force=force)
 
-    flats = []
+    gids = []
     for tile in tiles.get_registry().values():
         rr, cc, _n = _tile_water_grid(tile, sea.shape, (ox, oy))
         water = sea[rr, cc]
-        flats.append((rr[water] * sea.shape[1] + cc[water]).ravel())
-    cells = np.unique(np.concatenate(flats))
-    rows, cols = np.divmod(cells, sea.shape[1])
-
-    fetch, obstacle = compute_fetch_and_obstacle((rows, cols), sea, height)
-    np.savez_compressed(cache_path, cells=cells, fetch=fetch, obstacle=obstacle)
-    return cells, fetch, obstacle
+        gids.append(_tile_water_gids(tile, (ox, oy))[water].ravel())
+    gid = np.unique(np.concatenate(gids))
+    return _global_inkrementaalisesti(cache_path, gid, sea, height, (ox, oy), "vesiruudut")
 
 
 def get_or_compute_water_levels(tile_id, buildings_path, force=False):
@@ -2135,8 +2264,10 @@ def get_or_compute_water_levels(tile_id, buildings_path, force=False):
 
     fetch_levels = np.zeros((n, n, FETCH_SECTORS), dtype=np.uint8)
     obs_levels = np.zeros((n, n, FETCH_SECTORS), dtype=np.uint8)
-    flat = rr[water] * sea.shape[1] + cc[water]
+    flat = _tile_water_gids(tile, (ox, oy))[water]
     pos = np.searchsorted(cells, flat)
+    if len(cells) == 0 or not np.array_equal(cells[np.clip(pos, 0, len(cells) - 1)], flat):
+        raise RuntimeError(f"{tile_id}: vesiruutuja ei loydy globaalista joukosta")
     fetch_levels[water] = quantise_fetch(fetch_all[pos])
     obs_levels[water] = quantise_obstacle(obs_all[pos])
 
