@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
-from backend import pipeline, tiles
+from backend import pipeline, tiles, vektoritasot
 
 BUILDINGS_PATH = Path(__file__).resolve().parent.parent / "rakennukset-mll" / "rakennukset.gpkg"
 
@@ -186,6 +186,25 @@ def wind_grid():
         for tile_id, tile in registry.items()
     ]
     return build_static.wind_grid_points(entries)
+
+
+@app.get("/api/vaylat")
+def get_vaylat():
+    """Vesivaylat ja vaylaalueet (Vaylavirasto, CC BY 4.0)."""
+    return vektoritasot.get_or_compute_vaylat()
+
+
+@app.get("/api/suojelualueet")
+def get_suojelualueet():
+    """Suojelualueiden RAJAUKSET (SYKE, CC BY 4.0). Ei sisalla tietoa siita
+    saako alueella rantautua - ks. backend/vektoritasot.py."""
+    return vektoritasot.get_or_compute_suojelualueet()
+
+
+@app.get("/api/palvelut")
+def get_palvelut():
+    """Retkeilyn ja veneilyn palvelut (OpenStreetMap, ODbL)."""
+    return vektoritasot.get_or_compute_palvelut()
 
 
 @app.get("/api/factor-thresholds")

@@ -43,6 +43,10 @@
     display: inline-block; width: 14px; height: 14px; margin-right: 6px;
     vertical-align: middle; border-radius: 2px;
   }
+  .legend .swatch-line {
+    display: inline-block; width: 16px; height: 3px; margin: 0 3px;
+    vertical-align: middle; border-radius: 2px;
+  }
   .legend-header {
     display: flex; align-items: center; justify-content: space-between;
     gap: 16px; cursor: pointer; user-select: none;
@@ -89,8 +93,18 @@
   .paddle-bubble { width: 124px; height: 124px; position: relative; cursor: pointer; }
   .paddle-bubble.iso { width: 158px; height: 158px; }
   .paddle-bubble.jattilainen { width: 196px; height: 196px; }
+  .paddle-bubble.valtava { width: 232px; height: 232px; }
+  .paddle-bubble.jattivaltava { width: 264px; height: 264px; }
   .paddle-bubble.iso .pb-content { padding: 0 20px; }
   .paddle-bubble.jattilainen .pb-content { padding: 0 26px; }
+  .paddle-bubble.valtava .pb-content { padding: 0 32px; }
+  .paddle-bubble.jattivaltava .pb-content { padding: 0 38px; }
+  /* Suojelualue: NEUTRAALI vihrea, ei punainen. Rivi kertoo missa ollaan,
+     ei kiellosta - aineistossa ei ole tietoa siita saako rantautua. */
+  .paddle-bubble .pb-suojelu {
+    margin-top: 2px; padding-top: 2px; border-top: 1px solid #d8dade;
+    color: #1b5e20; font-size: 10.5px; line-height: 1.25;
+  }
   /* MET-rivi on NEUTRAALI eika punainen: se kertoo epavarmuudesta, ei
      vaarasta. Punainen on varattu varoitukselle, jotta se erottuu. */
   .paddle-bubble .pb-met {
@@ -336,6 +350,35 @@ const newGroup = L.layerGroup();
 
 let currentImpl = 'old'; // 'old' | 'new'
 let currentDisplay = 'score'; // 'score' | 'top'
+
+// --- VEKTORITASOT: OMA PANE, EKSPLISIITTINEN JARJESTYS ---
+//
+// Leafletin oletuspaneista kuvakerrokset (L.imageOverlay) ja vektorit menisivat
+// MOLEMMAT overlayPaneen (z 400), jolloin niiden keskinainen jarjestys jaisi
+// leaflet.css:n varaan. Sama tiedosto sisaltaa saannon
+//   .leaflet-map-pane svg { z-index: 200 }
+// joka on tassa projektissa jo kerran aiheuttanut piiloon jaaneen elementin -
+// vika etsittiin silloin vaarasta paikasta kolme kertaa. Siksi vektoreille
+// annetaan OMA pane omalla z-indeksillaan: rasteri (400) < vektorit (450) <
+// tietopallot (markerPane 600). Jarjestys ei jaa piirtojarjestyksen varaan.
+map.createPane('vektorit');
+map.getPane('vektorit').style.zIndex = 450;
+
+const vaylaGroup = L.layerGroup();
+const suojeluGroup = L.layerGroup();
+const palveluGroup = L.layerGroup();
+
+// Tasot ovat PAALLE/POIS eivatka nakymia. currentDisplay on toisensa
+// poissulkeva rasterinakyma, mutta rahtivayla on yhta tarkea
+// melottavuusnakymassa kuin rantautumispisteytyksessa - siksi erillinen tila.
+const OVERLAYS = {
+  vaylat: { group: vaylaGroup, label: 'Väylät' },
+  suojelu: { group: suojeluGroup, label: 'Suojelualueet' },
+  palvelut: { group: palveluGroup, label: 'Palvelut' },
+};
+let activeOverlays = new Set();
+let vectorData = {};        // avain -> haettu JSON
+let vectorLoading = {};     // avain -> Promise (estaa kaksoishaun)
 
 // Rantaviivan korostuksen paksuusesiasetukset (ks. backend/pipeline.py:
 // THICKNESS_PRESETS/DEFAULT_THICKNESS_PX - pidettava samassa) - kiintea
@@ -971,6 +1014,18 @@ legend.onAdd = function () {
         '<label><input type="radio" name="display-mode" value="paddle"> Melottavuus (vesi)</label>' +
         '<small id="prime-note" class="impl-note"></small>' +
       '</div>' +
+      // Vektoritasot ovat PAALLE/POIS eivatka nakymia: rahtivayla on yhta
+      // tarkea melottavuusnakymassa kuin rantautumispisteytyksessa.
+      '<div class="radio-row">' +
+        '<span class="radio-row-label">Lisätasot</span>' +
+        '<label><input type="checkbox" name="overlay" value="vaylat"> Väylät ' +
+        '<span class="swatch-line" style="background:#c62828"></span> kauppamerenkulku</label>' +
+        '<label><input type="checkbox" name="overlay" value="suojelu"> Suojelualueet</label>' +
+        '<label><input type="checkbox" name="overlay" value="palvelut"> Palvelut</label>' +
+        '<small class="impl-note">Suojelualue kertoo missä olet, ei sitä saako ' +
+        'rantautua — tarkista alueen järjestyssääntö.</small>' +
+        '<small id="lahteet" class="impl-note"></small>' +
+      '</div>' +
       '</div>' +
 
       '<div class="tab-panel hidden" data-panel="lisaa">' +
@@ -1079,6 +1134,14 @@ legend.onAdd = function () {
     el.addEventListener('change', () => {
       currentImpl = el.value;
       switchActiveGroup();
+    });
+  });
+  div.querySelectorAll('input[name="overlay"]').forEach((el) => {
+    el.addEventListener('change', async () => {
+      await setOverlay(el.value, el.checked);
+      // Suojelualueosuma nakyy pallossa vasta kun taso on ladattu, joten
+      // pallot paivitetaan taalla eika vain aineiston saapuessa.
+      if (el.value === 'suojelu') updateInfoBubbles();
     });
   });
 
@@ -1267,7 +1330,13 @@ function wavyCirclePath(hs, koko = 124) {
   return d + 'Z';
 }
 
-function bubbleHtml(cond, varoitus, tuuli, met) {
+// Koko nimi loytyy alueen tooltipista kartalla; pallossa on tilaa vain
+// tunnistamiseen.
+function lyhenna(teksti, maks) {
+  return teksti.length > maks ? teksti.slice(0, maks - 1).trimEnd() + '…' : teksti;
+}
+
+function bubbleHtml(cond, varoitus, tuuli, met, suojelu) {
   const deg = tuuli.direction;
   const name = COMPASS_8[Math.round(((deg % 360) + 360) % 360 / 45) % 8];
   // Vaikeusasteen vari on taysin kylläinen (HSV s=v=1), eika sellaisenaan
@@ -1306,8 +1375,8 @@ function bubbleHtml(cond, varoitus, tuuli, met) {
   const wave = cond
     ? `<div class="pb-wave">aalto ${Math.round(cond.hs * 100)} cm</div>`
     : '<div class="pb-sub">maalla</div>';
-  const koko = bubbleKoko(varoitus, met);
-  const luokka = koko === 196 ? ' jattilainen' : (koko === 158 ? ' iso' : '');
+  const koko = bubbleKoko(varoitus, met, suojelu);
+  const luokka = { 158: ' iso', 196: ' jattilainen', 232: ' valtava', 264: ' jattivaltava' }[koko] || '';
   const piste = ringPointAt(deg, cond ? cond.hs : 0, koko);
   return `<div class="paddle-bubble${luokka}">`
     + `<svg class="pb-ring" viewBox="0 0 ${koko} ${koko}">`
@@ -1339,6 +1408,18 @@ function bubbleHtml(cond, varoitus, tuuli, met) {
           + `${COMPASS_8[Math.round(((met.direction % 360) + 360) % 360 / 45) % 8]}`
           + `<br>puuska ${met.gust.toFixed(0)}</div>`
         : '')
+    // SUOJELUALUE: kerrotaan MISSA ollaan, ei sita saako rantautua.
+    // Aineistossa ei ole eika voi olla maihinnousukieltoa (ks.
+    // backend/vektoritasot.py), ja vaara "sallittu" olisi pahempi kuin
+    // ei tietoa lainkaan. Siksi teksti paattyy aina kehotukseen tarkistaa.
+    // Rivit katkaistaan lyhyiksi samasta syysta kuin MET-lohkossa: ympyra
+    // kapenee alaspain ja alimmalla rivilla on kaytettavissa vain n. 130 px.
+    // "tarkista jarjestyssaanto" yhdella rivilla valui kehan yli molemmilta
+    // puolilta, ja suojelualueiden viralliset nimet ovat pitkia.
+    + (suojelu
+        ? `<div class="pb-suojelu">&#127795; ${lyhenna(suojelu.nimi, 26)}`
+          + '<br>tarkista<br>järjestyssääntö</div>'
+        : '')
     + '</div></div>';
 }
 
@@ -1361,15 +1442,21 @@ async function ensureWaterFor(latlng) {
 // Lisalohkoja voi olla kaksi (varoitus ja MET-erimielisyys), joten koko
 // mukautuu: kumpikin tarvitsee kaksi rivia, ja ympyran alaosassa kaytettava
 // leveys kapenee nopeasti alaspain mentaessa.
-function bubbleKoko(varoitus, met) {
-  const lohkot = (varoitus ? 1 : 0) + (met ? 1 : 0);
-  return [124, 158, 196][lohkot];
+// Koko maaraytyy LISARIVIEN maaran mukaan, ei lohkojen. Aiemmin jokainen
+// lohko painoi saman verran, mikä piti paikkansa niin kauan kuin lohkoja oli
+// kaksi ja molemmat kaksirivisia. Suojelualuelohko on nelirivinen (nimi voi
+// kietoutua kahdelle riville, minka lisaksi kehotus on kahdella), ja se valui
+// ympyran alareunan yli.
+function bubbleKoko(varoitus, met, suojelu) {
+  const rivit = (varoitus ? 2 : 0) + (met ? 3 : 0) + (suojelu ? 4 : 0);
+  const koot = [124, 158, 196, 232, 264];
+  return koot[Math.min(Math.ceil(rivit / 2), koot.length - 1)];
 }
 
-function bubbleIcon(cond, varoitus, tuuli, met) {
-  const koko = bubbleKoko(varoitus, met);
+function bubbleIcon(cond, varoitus, tuuli, met, suojelu) {
+  const koko = bubbleKoko(varoitus, met, suojelu);
   return L.divIcon({
-    className: '', html: bubbleHtml(cond, varoitus, tuuli, met),
+    className: '', html: bubbleHtml(cond, varoitus, tuuli, met, suojelu),
     iconSize: [koko, koko], iconAnchor: [koko / 2, koko / 2],
   });
 }
@@ -1379,7 +1466,7 @@ function bubbleIcon(cond, varoitus, tuuli, met) {
 function updateInfoBubbles() {
   infoBubbles.forEach((b) => b.marker.setIcon(bubbleIcon(
     waterConditionsAt(b.latlng), deteriorationWarning(b.latlng), windAt(b.latlng),
-    metDisagreement(b.latlng))));
+    metDisagreement(b.latlng), suojeluOsuma(b.latlng))));
 }
 
 function removeInfoBubble(bubble) {
@@ -1394,7 +1481,9 @@ function clearInfoBubbles() {
 }
 
 async function addInfoBubble(latlng) {
-  const marker = L.marker(latlng, { icon: bubbleIcon(null, null, windAt(latlng), null), interactive: true }).addTo(map);
+  const marker = L.marker(latlng, {
+    icon: bubbleIcon(null, null, windAt(latlng), null, suojeluOsuma(latlng)), interactive: true,
+  }).addTo(map);
   const bubble = { latlng, marker };
   marker.on('click', (e) => { L.DomEvent.stop(e); removeInfoBubble(bubble); });
   infoBubbles.push(bubble);
@@ -1402,7 +1491,7 @@ async function addInfoBubble(latlng) {
   await ensureWaterFor(latlng);
   if (infoBubbles.includes(bubble)) {
     marker.setIcon(bubbleIcon(waterConditionsAt(latlng), deteriorationWarning(latlng),
-                              windAt(latlng), metDisagreement(latlng)));
+                              windAt(latlng), metDisagreement(latlng), suojeluOsuma(latlng)));
   }
   // MET haetaan vasta tassa: pallo ilmestyy heti eika jaa odottamaan toista
   // rajapintaa, ja vertailurivi taydentyy kun vastaus saapuu. Haku vain kun
@@ -1413,7 +1502,8 @@ async function addInfoBubble(latlng) {
       await loadMetForPoint(latlng, ll.lat, ll.lon);
       if (infoBubbles.includes(bubble)) {
         marker.setIcon(bubbleIcon(waterConditionsAt(latlng), deteriorationWarning(latlng),
-                                  windAt(latlng), metDisagreement(latlng)));
+                                  windAt(latlng), metDisagreement(latlng),
+                                  suojeluOsuma(latlng)));
       }
     }
   }
@@ -1439,6 +1529,7 @@ function saveViewState() {
       lat: c.lat, lng: c.lng, zoom: map.getZoom(),
       display: currentDisplay, impl: currentImpl, tab: activeLegendTab,
       wind: currentWind, hour: forecastHour,
+      overlays: [...activeOverlays],
       bubbles: infoBubbles.map((b) => [b.latlng.lat, b.latlng.lng]),
     }));
   } catch (err) { /* yksityinen selaustila tms. - tila ei vain sailly */ }
@@ -2334,6 +2425,202 @@ function syncMobileShell() {
   paivaLabel.hidden = !naytaPaiva;
 }
 
+// --- VEKTORITASOT: VAYLAT, SUOJELUALUEET JA PALVELUT ---
+//
+// Aineisto on haettu build-vaiheessa staattisiin tiedostoihin (ks.
+// backend/vektoritasot.py). Selain ei kutsu ulkoisia rajapintoja - kartta
+// toimii siis myos ilman verkkoa, mika on koko staattisen arkkitehtuurin syy.
+//
+// KOORDINAATIT OVAT VALMIIKSI EPSG:3067-METREJA. GeoJSON tallettaa parin
+// muodossa [ita, pohjoinen] ja L.CRS.Simple lukee [pohjoinen, ita], joten
+// ainoa muunnos on parin jarjestyksen vaihto. Ei projektiokirjastoa.
+function toLatLngs(coords) {
+  if (typeof coords[0] === 'number') return [coords[1], coords[0]];
+  return coords.map(toLatLngs);
+}
+
+// Kauppamerenkulun paavaylat (VL1) ja 2-luokan vaylat (VL2) erottuvat muista
+// selvasti. Ne ovat tassa joukossa ainoa TURVALLISUUSASIA: niilla liikkuu
+// satojen metrien rahtialuksia, jotka eivat vaista eivatka pysty pysahtymaan.
+// Loput vaylaluokat ovat veneilya ja hyotyliikennetta eli navigointiapua.
+const VAYLA_STYLE = {
+  rahti: { color: '#c62828', weight: 4, opacity: 0.85 },
+  vene: { color: '#1565c0', weight: 1.5, opacity: 0.55, dashArray: '5,4' },
+};
+
+const PALVELU_TYYLI = {
+  kauppa: ['#2e7d32', 'Kauppa'],
+  sauna: ['#8d6e63', 'Sauna'],
+  majoitus: ['#6a1b9a', 'Majoitus'],
+  leirinta: ['#00838f', 'Leirintä'],
+  katos: ['#ef6c00', 'Katos'],
+  nuotio: ['#d84315', 'Nuotio-/grillipaikka'],
+  vesi: ['#0277bd', 'Juomavesi'],
+  kaymala: ['#546e7a', 'Käymälä'],
+  luiska: ['#455a64', 'Veneluiska'],
+  satama: ['#1565c0', 'Venesatama'],
+  polttoaine: ['#37474f', 'Polttoaine'],
+};
+
+const SUOJELU_TYYPPI = {
+  lintualue: 'Natura-lintualue',
+  luontoalue: 'Natura-luontoalue',
+  valtio: 'Valtion suojelualue',
+  yksityinen: 'Yksityinen suojelualue',
+};
+
+function piirraVaylat(data) {
+  vaylaGroup.clearLayers();
+  const tasot = data.tasot || {};
+  // Vaylaalueet ensin, jotta viivat jaavat niiden paalle.
+  (tasot.vaylaalueet || []).forEach((f) => {
+    const syvyys = f.p.haraussyvyys;
+    L.polygon(toLatLngs(f.g.coordinates), {
+      pane: 'vektorit', color: '#1565c0', weight: 0.8, opacity: 0.35,
+      fillColor: '#1565c0', fillOpacity: 0.07, interactive: false,
+    }).addTo(vaylaGroup);
+    if (syvyys) { /* syvyys naytetaan vaylan tooltipissa, ei erikseen alueella */ }
+  });
+  (tasot.vaylat || []).forEach((f) => {
+    const luokka = f.p.vaylaluokkakoodi;
+    const rahti = luokka === 1 || luokka === 2;
+    const line = L.polyline(toLatLngs(f.g.coordinates), {
+      pane: 'vektorit', ...(rahti ? VAYLA_STYLE.rahti : VAYLA_STYLE.vene),
+    }).addTo(vaylaGroup);
+    const osat = [f.p.nimifi, f.p.vaylaluokkafi].filter(Boolean);
+    if (rahti) osat.push('Kauppamerenkulkua — väistä');
+    line.bindTooltip(osat.join('<br>'), { sticky: true });
+  });
+  (tasot.rajoitusalueet || []).concat(tasot.nopeusrajoitukset || []).forEach((f) => {
+    L.polygon(toLatLngs(f.g.coordinates), {
+      pane: 'vektorit', color: '#ef6c00', weight: 1.2, opacity: 0.7,
+      fillColor: '#ef6c00', fillOpacity: 0.08,
+    }).addTo(vaylaGroup)
+      .bindTooltip(f.p.nimi || f.p.kuvaus || 'Rajoitusalue', { sticky: true });
+  });
+}
+
+function piirraSuojelu(data) {
+  suojeluGroup.clearLayers();
+  Object.entries(data.tasot || {}).forEach(([avain, piirteet]) => {
+    piirteet.forEach((f) => {
+      L.polygon(toLatLngs(f.g.coordinates), {
+        pane: 'vektorit', color: '#2e7d32', weight: 1.5, opacity: 0.8,
+        fillColor: '#2e7d32', fillOpacity: 0.12,
+      }).addTo(suojeluGroup)
+        // Sanamuoto ei lupaa mitaan: aineisto kertoo VAIN rajauksen, ei
+        // sita saako rantautua (ks. backend/vektoritasot.py).
+        .bindTooltip(`${f.p.nimi || SUOJELU_TYYPPI[avain]}<br>`
+          + `<small>${f.p.tyyppinimi || SUOJELU_TYYPPI[avain]} — tarkista järjestyssääntö</small>`,
+          { sticky: true });
+    });
+  });
+}
+
+function piirraPalvelut(data) {
+  palveluGroup.clearLayers();
+  (data.kohteet || []).forEach((k) => {
+    const [vari, nimi] = PALVELU_TYYLI[k.r] || ['#555', k.r];
+    L.circleMarker([k.y, k.x], {
+      pane: 'vektorit', radius: 5, color: '#fff', weight: 1.5,
+      fillColor: vari, fillOpacity: 0.95,
+    }).addTo(palveluGroup)
+      .bindTooltip(k.n ? `${k.n}<br><small>${nimi}</small>` : nimi, { sticky: true });
+  });
+}
+
+const VECTOR_SOURCES = {
+  vaylat: ['/api/vaylat', piirraVaylat],
+  suojelu: ['/api/suojelualueet', piirraSuojelu],
+  palvelut: ['/api/palvelut', piirraPalvelut],
+};
+
+// Ladataan VASTA kun taso otetaan kayttoon: kartan ensilataus ei saa hidastua
+// aineistosta jota kayttaja ei ehka katso lainkaan.
+async function ensureVectorLayer(avain) {
+  if (vectorData[avain]) return vectorData[avain];
+  if (!vectorLoading[avain]) {
+    const [url, piirra] = VECTOR_SOURCES[avain];
+    vectorLoading[avain] = fetch(url).then((r) => r.json()).then((d) => {
+      vectorData[avain] = d;
+      piirra(d);
+      vectorAttribution(d);
+      return d;
+    });
+  }
+  return vectorLoading[avain];
+}
+
+const vectorAttributionsAdded = new Set();
+function vectorAttribution(data) {
+  const teksti = `${data.lahde} (${data.lisenssi})`;
+  if (vectorAttributionsAdded.has(teksti)) return;
+  vectorAttributionsAdded.add(teksti);
+  map.attributionControl.addAttribution(teksti);
+  // Leafletin attribuutiokontrolli on piilotettu kapeilla naytoilla, joten
+  // lahteet toistetaan legendassa. CC BY ja ODbL EDELLYTTAVAT nimeamista -
+  // se ei ole kohteliaisuus.
+  const el = document.getElementById('lahteet');
+  if (el) el.textContent = 'Lähteet: ' + [...vectorAttributionsAdded].join(', ');
+}
+
+async function setOverlay(avain, paalla) {
+  if (paalla) activeOverlays.add(avain); else activeOverlays.delete(avain);
+  saveViewState();
+  const { group } = OVERLAYS[avain];
+  if (!paalla) { map.removeLayer(group); return; }
+  group.addTo(map);
+  try {
+    await ensureVectorLayer(avain);
+  } catch (err) {
+    // Taso jaa tyhjaksi mutta kartta toimii - sama periaate kuin
+    // saaennusteella: kerros ei kaadu ulkoisen tiedoston mukana.
+    map.removeLayer(group);
+    activeOverlays.delete(avain);
+    const box = document.querySelector(`input[name="overlay"][value="${avain}"]`);
+    if (box) box.checked = false;
+  }
+}
+
+// --- SUOJELUALUEOSUMA TIETOPALLOON ---
+//
+// Piste-polygonissa -testi tehdaan selaimessa, koska pallot sijoitetaan
+// ajonaikaisesti. Polygoneja on vahan (mitattuna 202 kpl 50x50 km alueella),
+// joten esilaskentaa tai hakupuuta ei tarvita.
+function pisteMonikulmiossa(y, x, rengas) {
+  let osuu = false;
+  for (let i = 0, j = rengas.length - 1; i < rengas.length; j = i++) {
+    const xi = rengas[i][0], yi = rengas[i][1];
+    const xj = rengas[j][0], yj = rengas[j][1];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) osuu = !osuu;
+  }
+  return osuu;
+}
+
+// Reiat huomioidaan: ensimmainen rengas on ulkoreuna, loput reikia.
+function osuuGeometriaan(y, x, geom) {
+  const polys = geom.type === 'Polygon' ? [geom.coordinates] : geom.coordinates;
+  return polys.some((poly) => pisteMonikulmiossa(y, x, poly[0])
+    && !poly.slice(1).some((reika) => pisteMonikulmiossa(y, x, reika)));
+}
+
+// Palauttaa alueen jonka sisalla piste on, tai null. Vaatii etta
+// suojelualuetaso on ladattu - muuten palloon ei tule mitaan, mika on oikein:
+// tietoa ei ole, eika sita saa keksia.
+function suojeluOsuma(latlng) {
+  const d = vectorData.suojelu;
+  if (!d) return null;
+  for (const [avain, piirteet] of Object.entries(d.tasot || {})) {
+    for (const f of piirteet) {
+      if (osuuGeometriaan(latlng.lat, latlng.lng, f.g)) {
+        return { nimi: f.p.nimi || SUOJELU_TYYPPI[avain],
+                 tyyppi: f.p.tyyppinimi || SUOJELU_TYYPPI[avain] };
+      }
+    }
+  }
+  return null;
+}
+
 async function init() {
   const statusEl = document.getElementById('status');
   applySettings();
@@ -2381,6 +2668,18 @@ async function init() {
   }
 
   if (saved && saved.tab) setLegendTab(saved.tab);
+  // Lisatasot palautetaan ENNEN palloja, jotta suojelualueosuma on tiedossa
+  // kun pallot piirretaan. Haku ei saa estaa kartan avautumista.
+  if (saved && Array.isArray(saved.overlays)) {
+    const palautettavat = saved.overlays.filter((a) => a in OVERLAYS);
+    palautettavat.forEach((a) => {
+      const box = document.querySelector(`input[name="overlay"][value="${a}"]`);
+      if (box) box.checked = true;
+    });
+    try {
+      await Promise.all(palautettavat.map((a) => setOverlay(a, true)));
+    } catch (err) { /* tasot puuttuvat, kartta toimii silti */ }
+  }
   if (saved && Array.isArray(saved.bubbles)) {
     saved.bubbles.filter((b) => Array.isArray(b) && isFinite(b[0]) && isFinite(b[1]))
       .forEach(([lat, lng]) => addInfoBubble(L.latLng(lat, lng)));

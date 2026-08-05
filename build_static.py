@@ -26,7 +26,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from backend import pipeline, tiles
+from backend import pipeline, tiles, vektoritasot
 
 ROOT = Path(__file__).resolve().parent
 BUILDINGS_PATH = ROOT / "rakennukset-mll" / "rakennukset.gpkg"
@@ -132,6 +132,9 @@ URL_REPLACEMENTS = {
     "`/api/water/${tileId}/${part}.png`": "`cache/${tileId}_water${part}.png`",
     "fetch('/api/prime-thresholds')": "fetch('prime_thresholds.json')",
     "fetch('/api/shelter-thresholds')": "fetch('shelter_thresholds.json')",
+    "vaylat: ['/api/vaylat', piirraVaylat],": "vaylat: ['vaylat.json', piirraVaylat],",
+    "suojelu: ['/api/suojelualueet', piirraSuojelu],": "suojelu: ['suojelualueet.json', piirraSuojelu],",
+    "palvelut: ['/api/palvelut', piirraPalvelut],": "palvelut: ['palvelut.json', piirraPalvelut],",
     "const tileList = await res.json();": "const tileList = (await res.json()).tiles;",
 }
 
@@ -275,6 +278,16 @@ def build():
     hila = wind_grid_points(tile_entries)
     (DOCS_DIR / "wind_grid.json").write_text(json.dumps(hila, indent=2))
     print(f"Tuulihila: {len(hila)} pistetta ({WIND_GRID_M / 1000:.0f} km ruudukko)")
+
+    # Vektoritasot: vaylat, suojelualueet ja palvelut. Haetaan build-vaiheessa
+    # eika selaimessa - sovelluksessa ei ole palvelinta ja offline-kaytto on
+    # vaatimus (ks. backend/vektoritasot.py).
+    print("Vektoritasot:")
+    for nimi, hakija in (("vaylat", vektoritasot.get_or_compute_vaylat),
+                         ("suojelualueet", vektoritasot.get_or_compute_suojelualueet),
+                         ("palvelut", vektoritasot.get_or_compute_palvelut)):
+        data = hakija()
+        (DOCS_DIR / f"{nimi}.json").write_text(json.dumps(data, separators=(",", ":")))
 
     # "Parhaat X %" -kynnykset kaikille 15 tekijayhdistelmalle omaan
     # tiedostoonsa (ks. pipeline.compute_factor_thresholds) - selain hakee

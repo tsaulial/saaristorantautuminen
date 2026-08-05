@@ -382,6 +382,59 @@ Kasvillisuusarvio on siksi **eristetty omaksi funktiokseen** (`pipeline.vegetati
 
 ---
 
+## 5c. Vektorikarttatasot: väylät, suojelualueet ja palvelut (2026-08-05)
+
+Sovellus vastasi vain kysymykseen *onko tämä ranta hyvä rantautua*. Melojalle ja pienveneilijälle puuttui kolme asiaa: mitä pitää **väistää**, minne ei ehkä saa **mennä**, ja mitä on **tarjolla**. Kaikki kolme löytyivät avoimena datana ja ovat nyt toteutettuina (`backend/vektoritasot.py`).
+
+### Rajapintalöydökset (todennettu kutsuilla, ei dokumentaatiosta)
+
+| Lähde | Osoite | Lisenssi |
+|---|---|---|
+| Väylävirasto | `avoinapi.vaylapilvi.fi/vaylatiedot/ows` | CC BY 4.0 |
+| SYKE | `paikkatiedot.ymparisto.fi/geoserver/**inspire_ps**/wfs` | CC BY 4.0 |
+| OpenStreetMap | `overpass-api.de/api/interpreter` | ODbL |
+
+- **SYKE:n yleinen `/geoserver/ows` vastaa "Service WFS is disabled".** Toimiva polku on työtilakohtainen. Tämä maksoi yhden turhan kierroksen ja on siksi kirjattu myös koodiin.
+- **Väylä ja SYKE palauttavat GeoJSONin suoraan EPSG:3067:ssä** (`outputFormat=application/json`) eli projektin omassa koordinaatistossa. Projisointia ei tarvita kummassakaan päässä — selain saa parit muodossa `[itä, pohjoinen]` ja `L.CRS.Simple` lukee `[pohjoinen, itä]`, joten ainoa muunnos on parin järjestyksen vaihto.
+- Väyläluokat `vaylaluokkakoodi` 1–6. **VL1/VL2 ovat kauppamerenkulkua** eli satojen metrien rahtialuksia; loput veneilyä. Ero on turvallisuusasia, ei luokitteludetalji, ja se säilytetään selaimeen asti.
+- WFS:n `numberMatched` luetaan ja verrataan saatuun määrään. Ilman tätä palvelimen hiljainen katkaisu näyttäisi täysin normaalilta tasolta.
+
+### Löydös 1: maihinnousukieltoa ei ole olemassa paikkatietona
+
+Tämä on toteutuksen tärkein rajoite. SYKE:n aineisto antaa alueen **rajauksen, nimen, tyypin ja säädöksen** — mutta **ei kenttää joka kertoisi saako rantautua**. Varsinaiset maihinnousukiellot ovat Metsähallituksen järjestyssäännöissä, jotka julkaistaan PDF-julkaisuina ja Luontoon.fi:ssä. Metsähallituksen avoin biotooppiaineisto **rajaa merialueet nimenomaisesti ulos** — eli tasan tämän sovelluksen toimialueen.
+
+Seuraus käyttöliittymään: taso ja tietopallo kertovat **missä** ollaan ja kehottavat tarkistamaan järjestyssäännön. **Ne eivät koskaan sano että rantautuminen on sallittua tai kiellettyä.** Väärä "sallittu" olisi pahempi kuin ei tietoa lainkaan.
+
+### Löydös 2: koealue on juuri se paikka jossa aineistot ovat ohuimmat
+
+Ahvenanmaa hoitaa omat aineistonsa itse. Mitattuna samankokoisilla alueilla:
+
+| | Ahvenanmaa (koealue) | Turun saaristo |
+|---|---:|---:|
+| Natura-lintualueet | 0 | 5 |
+| Luontodirektiivialueet | 0 | 18 |
+| Valtion suojelualueet | 0 | 16 |
+| Yksityiset suojelualueet | 3 | 202 |
+| OSM-palvelukohteet | 17 | 390 |
+
+**Todentaminen on siksi tehtävä mannersaaristossa** — koealueella tyhjä taso on oikea tulos eikä todista toteutusta toimivaksi. Väylät sen sijaan kattavat Ahvenanmaan (omistaja on maakuntahallitus, jakelu saman rajapinnan kautta).
+
+### Ratkaisut jotka eivät ole ilmeisiä
+
+- **Tasot ovat päälle/pois, eivät näkymiä.** `currentDisplay` on toisensa poissulkeva rasterinäkymä, mutta rahtiväylä on yhtä tärkeä melottavuusnäkymässä kuin rantautumispisteytyksessä. Siksi erillinen `activeOverlays`-joukko, joka tallentuu samaan näkymätilaan.
+- **Oma Leaflet-pane eksplisiittisellä z-indeksillä**: rasteri 400 < vektorit 450 < tietopallot 600. Ilman tätä kuvakerrokset ja vektorit olisivat samassa panessa ja järjestys jäisi `leaflet.css`:n varaan — sama tiedosto aiheutti aiemmin piiloon jääneen elementin (ks. Vaihe 5:n tietopallo-ongelma).
+- **Kaksi yksinkertaistustoleranssia.** Suojelualueet ovat kilometrien mittaisia ja rantaviivaa seuraavia → 20 m. Väyläalueet ovat kapeita käytäviä, ja juuri reuna on se mitä väistetään → 5 m. Mitattu: Saaristomeren kansallispuiston koordinaattiluvut **653 020 → 21 576 (3,3 %)**, pinta-ala muuttui **−0,225 %**.
+- **Pallon koko lasketaan lisäriveistä, ei lohkoista.** Aiempi "jokainen lohko painaa saman verran" piti paikkansa kahdella kaksirivisellä lohkolla, mutta suojelualuelohko on nelirivinen ja valui ympyrän alareunan yli.
+
+### Rajaukset
+
+- **Pisteytys ei muutu.** Python↔JS-sopimus koskematon, ei uutta tekijää eikä kynnysten uudelleenlaskentaa.
+- **Ei lajihavaintoja.** laji.fi karkeistaa arkaluontoisten lajien sijainnit nimenomaan siksi, ettei pesiä löydettäisi kartalta. Karkeistettu piste olisi sekä hyödytön että helposti väärin luettu.
+- **Ei merimerkkejä**: `turvalaitteet_uusi` antoi 173 kohdetta pelkällä koealueella. Milloin merimerkki auttaa melojaa ja milloin se on ruuhkaa, on oma suunnittelukysymyksensä.
+- **Koko**: kolme JSONia yhteensä 63 kt eli häviävän pieni osa `docs/`-hakemiston 93 Mt:sta.
+
+---
+
 ## 6. Natiivisovellus (iOS/Android) — tuleva suunta, EI toteuteta vielä
 
 **Tilanne (kirjattu muistiin 2026-07-28)**: web-pohjaista sovellusta kehitetään edelleen ensisijaisesti, eikä natiivin kehitystä aloiteta lähiaikoina. Tämä kohta dokumentoi tehdyn arvioinnin, jotta web-kehityksen aikana tehtävät arkkitehtuuripäätökset voivat ottaa tulevan natiivitarpeen huomioon eivätkä vahingossa sulje sitä pois. **Ei aktiivinen tehtävälista — ei toteuteta ilman erillistä pyyntöä.**
