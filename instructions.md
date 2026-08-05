@@ -382,6 +382,56 @@ Kasvillisuusarvio on siksi **eristetty omaksi funktiokseen** (`pipeline.vegetati
 
 ---
 
+## 5d. Itälaajennus ja MML-latausputki (2026-08-05)
+
+Demo kattoi 18×30 km Ahvenanmaalta (11 tiiltä), ja aineisto oli ladattu käsin Karttapaikasta. Nyt mukana on myös **Helsingin edusta** — yhteensä **38 tiiltä**, `docs/` 353 Mt.
+
+### Lataus rajapinnasta
+
+`backend/mml_lataus.py` hakee kolme aineistoa MML:n tiedostopalvelusta (sama OGC API Processes -rajapinta kuin laserkeilauksella): `korkeusmalli_2m_karttalehti` (TIFF), `maastokartta_rasteri_karttalehti` + `dataSetInput=maastokartta_rasteri_10k_painovari` (PNG) ja `maastotietokanta_bbox` + `themeInput=rakennukset` (GPKG). Rajat: **100 lehteä/haku**, maastotietokannalla 17 334 km².
+
+`backend/mml.py` sisältää avaimen käsittelyn ja työn ajamisen — **yksi toteutus, koska avain on salaisuus**. `lidar.py` käyttää nyt samaa.
+
+### Karttalehtijako johdettu aineistosta
+
+`backend/karttalehti.py` laskee TM35FIN-lehtinimen koordinaateista ja päinvastoin. Sääntö on **johdettu olemassa olevista tiedostoista, ei dokumentaatiosta**, ja se toistaa kaikki 20 tunnettua lehteä metrin tarkkuudella molempiin suuntiin (`python3 -m backend.karttalehti`).
+
+Tämä ei ole ylityötä: Helsingin edusta osuu **kahden ykköstason lehden rajalle** (`K42…`/`L41…`), koska raja kulkee y = 6 666 000 eli kaupungin läpi. Arvaamalla se olisi mennyt väärin.
+
+### Karttatuote todennettiin ennen joukkolatausta
+
+Vesimaski tunnistaa meren **väristä**. Väärä tuotevariantti ei kaataisi mitään vaan tekisi kaikista pistemääristä vääriä. Siksi `--todenna-kartta` lataa yhden lehden, joka meillä jo on, ja vertaa `detect_water_fill_mask`-maskit pikselitasolla. Tulos: **0 eroavaa pikseliä 144 miljoonasta.**
+
+### Rannaton tiili kaatoi ajon — ja paljasti hiljaisen vian
+
+`build_static.py` kaatui kolmen tunnin jälkeen tiileen `L4131F` (Helsingin sisämaata, 100 % maata):
+
+```
+ValueError: index -6000 is out of bounds for array with size 36000000
+```
+
+**`distance_transform_edt` ei kaadu jos taustapikseleitä ei ole yhtään** — se mittaa etäisyyden haamupisteeseen rivillä −1 ja palauttaa `indices[0] = -1`. Etäisyydet näyttävät täysin uskottavilta (1, 2, 3 … metriä yläreunasta). Toistettu erikseen pienoiskoossa.
+
+Sama haamu tuotti hiljaisen vian, joka ei kaatanut mitään: neljä rannatonta tiiltä sai **160 puskuripikseliä** yläreunaansa, ja ne olivat mukana kynnysarvojen laskennassa. Molemmat korjattu eksplisiittisellä haaralla `pipeline.py`:ssä.
+
+Kolmas `distance_transform_edt`-kutsu (`score_engine.py`, rakennusetäisyys) on **turvassa vahingossa**: taulukkoa paddataan `DIST_IDEAL_M` = 150 m, joten haamu jää rajauksen ulkopuolelle. Mitattu `L3124G`:llä (Ahvenanmaan tiili ilman rakennuksia): kaikki 367 261 puskuripikseliä saivat tasan 1,0.
+
+### Laajennus paljasti reunavirheen vanhassa aineistossa
+
+Todennuksen tärkein invariantti oli, ettei Ahvenanmaa saa muuttua (yli 200 km päässä, `MAX_FETCH_M` 15 km). Pyyhkäisymatkat olivatkin **bitilleen identtiset**. Estekorkeuksista sen sijaan **0,53 % arvoista muuttui, ja jokainen muuttunut arvo oli pienempi** (8 603 pienempää, 0 suurempaa, keskiarvo −0,32 m).
+
+Syy on `_march_ray`-funktion esteenetsinnässä: se rajaa katseen `np.clip`illä taulukon reunaan. Vanha 18×30 km mosaiikki oli niin pieni, että reunalla katse leikkautui takaisin maalle ja **yliarvioi esteen korkeuden**. Kaikki muuttuneet solut ovat alle 15 km vanhan reunan etäisyydellä (mediaani 1 495 m, muuttumattomilla 4 910 m).
+
+**Ahvenanmaan tuulensuoja on siis ollut liian optimistinen alueen reunoilla.** Virhe on näkymätön niin kauan kuin katsoo vain yhtä aluetta — ja se koskee edelleen koko aineiston ulkoreunaa, ei vain entistä. Jos tämä halutaan poistaa, mosaiikkia on levennettävä `MAX_FETCH_M`:n verran tiilijoukon ympärille.
+
+### Välimuistin mitätöinti
+
+Tiilien lisääminen muuttaa merimosaiikin origon ja muodon, jolloin kaikki mosaiikkiin sidotut välimuistit vanhenevat **hiljaa**. `--mitatoi` poistaa ne. Per-tiili `*_raw.npz` ja `*_lidar.npz` säilyvät (eivät riipu mosaiikista) — se säästää nykyisten tiilien kalleimman työn.
+
+Listalta jäi ensin pois `{tiili}_water.npz` ja `{tiili}_fetch.npz`, koska kuviot osuivat vain PNG-nimiin. Juuri sellaista hiljaista vanhentumista tämä listaus torjuu.
+
+---
+
 ## 5c. Vektorikarttatasot: väylät, suojelualueet ja palvelut (2026-08-05)
 
 Sovellus vastasi vain kysymykseen *onko tämä ranta hyvä rantautua*. Melojalle ja pienveneilijälle puuttui kolme asiaa: mitä pitää **väistää**, minne ei ehkä saa **mennä**, ja mitä on **tarjolla**. Kaikki kolme löytyivät avoimena datana ja ovat nyt toteutettuina (`backend/vektoritasot.py`).

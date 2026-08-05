@@ -3,3 +3,20 @@ __pycache__/
 *.pyc
 .DS_Store
 docs/
+
+# --- MML:N LAHTOAINEISTO ---
+#
+# Nama olivat aiemmin versionhallinnassa, koska ne oli ladattu KASIN
+# Karttapaikasta eivatka olleet toistettavissa. Perustelu poistui kun
+# backend/mml_lataus.py rakennettiin: aineisto haetaan nyt yhdella komennolla
+#
+#     python3 -m backend.mml_lataus --bbox MINX MINY MAXX MAXY
+#
+# Mittakaava ratkaisi asian. Ahvenanmaan koealue oli 130 Mt, mutta Helsingin
+# lisays toi 523 Mt lisaa (DEM 310, kartat 126, rakennukset +87). Seurattuna
+# .git olisi kasvanut 148 Mt -> ~600 Mt eli takaisin siihen mista git
+# filter-repo sen aikanaan pudotti, ja rakennukset.gpkg (93 Mt) olisi
+# lahestynyt GitHubin 100 Mt tiedostorajaa.
+korkeusmalli-mml/
+karttakuva-mll/
+rakennukset-mll/

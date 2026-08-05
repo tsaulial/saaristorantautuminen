@@ -212,6 +212,15 @@ def compute_shoreline_buffer(shoreline_mask, dem, pixel_size):
     JA 5-15m etaisyydella lahimmasta rantaviivapikselista. Maa/vesi
     eroteltu DEM:n 0m-tason perusteella (instructions.md kohta D)."""
     land = dem > 0.0
+    # TYHJA RANTAVIIVA ON KASITELTAVA ERIKSEEN. distance_transform_edt mittaa
+    # etaisyyden lahimpaan NOLLAAN; jos nollia ei ole yhtaan, scipy ei kaadu
+    # vaan mittaa etaisyyden HAAMUPISTEESEEN rivilla -1. Tulokseksi tulee
+    # taysin uskottavan nakoisia etaisyyksia (1, 2, 3, ... metria ylareunasta),
+    # joista osa osuu 5-15 m ikkunaan - eli tiili jossa ei ole rantaviivaa
+    # sai 160 puskuripikselia ylareunaansa. Mitattu nelja tallaista tiilta
+    # (sisamaan ruudut Helsingin alueella).
+    if not shoreline_mask.any():
+        return np.zeros(shoreline_mask.shape, dtype=bool)
     non_shore = ~shoreline_mask
     dist_to_shore = distance_transform_edt(non_shore, sampling=(pixel_size, pixel_size))
     return land & (dist_to_shore >= SHORELINE_BUFFER_MIN_M) & (dist_to_shore <= SHORELINE_BUFFER_MAX_M)
@@ -1114,6 +1123,24 @@ def compute_prime_components(tile_id, buildings_path, force=False, native=False)
     shoreline = raw["shoreline_mask"]
     shape = shoreline.shape
     pixel_size = abs(raw["map_transform"].a)
+
+    # RANTAVIIVATON TIILI: ei rantaa, ei karkipaikkoja. Ilman tata haaraa
+    # return_indices palauttaa indeksin -1 (ks. compute_shoreline_buffer),
+    # jolloin litistetty poikkileikkaustunniste on -leveys ja unravel_index
+    # kaatuu "index -6000 is out of bounds". Nain kavi Helsingin sisamaan
+    # ruudulle L4131F kolmen tunnin ajon lopussa.
+    if not shoreline.any():
+        # Muoto johdetaan samoilla apufunktioilla kuin normaalihaarassa,
+        # jottei tyhjan tiilen taulukko voi olla eri kokoinen kuin muiden.
+        nolla_native = np.zeros(shape, dtype=np.float32)
+        pieni = _resize_new_grid(nolla_native, shape, NEW_PIXEL_FACTOR)
+        tyhja = nolla_native if native else np.zeros_like(pieni)
+        return {
+            "slope": tyhja, "dist": tyhja.copy(), "rock": tyhja.copy(),
+            "not_swamp": tyhja.copy(),
+            "buffer": np.zeros(tyhja.shape, dtype=bool),
+            "raw": raw,
+        }
 
     dist, indices = distance_transform_edt(
         ~shoreline, sampling=(pixel_size, pixel_size), return_indices=True

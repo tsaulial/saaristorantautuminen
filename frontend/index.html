@@ -1529,6 +1529,9 @@ function saveViewState() {
       lat: c.lat, lng: c.lng, zoom: map.getZoom(),
       display: currentDisplay, impl: currentImpl, tab: activeLegendTab,
       wind: currentWind, hour: forecastHour,
+      // Tiilijoukon sormenjalki: jos aineisto laajenee, tallennettu sijainti
+      // voi jaada vanhan alueen paalle eika kayttaja huomaa uutta lainkaan.
+      tiles: tileFingerprint(tileListCache),
       overlays: [...activeOverlays],
       bubbles: infoBubbles.map((b) => [b.latlng.lat, b.latlng.lng]),
     }));
@@ -2621,6 +2624,54 @@ function suojeluOsuma(latlng) {
   return null;
 }
 
+// Tiilijoukon sormenjalki nakymatilan vanhenemisen tunnistamiseen. Pelkka
+// lukumaara ei riittaisi: tiili voitaisiin vaihtaa toiseen ilman etta maara
+// muuttuu. Tunnisteista laskettu tiiviste on halpa ja tasmallinen.
+function tileFingerprint(tileList) {
+  const s = tileList.map((t) => t.tile_id).sort().join(',');
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
+  return h;
+}
+
+// Suurin yhtenainen tiiliryhma. Tiilet ovat samankokoisia ja ruudukossa,
+// joten "yhtenainen" = koskettaa reunasta tai kulmasta. Sama jako tehdaan
+// build-vaiheessa vektoritasojen hakua varten (backend/vektoritasot.py:
+// alueen_bboxit) - jos toista muuttaa, muuta myos toinen.
+function largestCluster(tileList) {
+  if (tileList.length < 2) return tileList;
+  const b0 = tileList[0].bounds_epsg3067;
+  const koko = b0.maxx - b0.minx;
+  const ruudut = new Map();
+  tileList.forEach((t) => {
+    const b = t.bounds_epsg3067;
+    ruudut.set(`${Math.round(b.minx / koko)},${Math.round(b.miny / koko)}`, t);
+  });
+  const kaymatta = new Set(ruudut.keys());
+  let paras = [];
+  while (kaymatta.size) {
+    const alku = kaymatta.values().next().value;
+    kaymatta.delete(alku);
+    const pino = [alku];
+    const ryhma = [ruudut.get(alku)];
+    while (pino.length) {
+      const [gx, gy] = pino.pop().split(',').map(Number);
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          const avain = `${gx + dx},${gy + dy}`;
+          if (kaymatta.has(avain)) {
+            kaymatta.delete(avain);
+            pino.push(avain);
+            ryhma.push(ruudut.get(avain));
+          }
+        }
+      }
+    }
+    if (ryhma.length > paras.length) paras = ryhma;
+  }
+  return paras;
+}
+
 async function init() {
   const statusEl = document.getElementById('status');
   applySettings();
@@ -2655,15 +2706,38 @@ async function init() {
     map.setView([saved.lat, saved.lng], saved.zoom);
   }
 
+  // TALLENNETTU NAKYMA VANHENEE KUN AINEISTO LAAJENEE.
+  //
+  // Kun Helsingin edusta lisattiin, tallennettu tila osoitti Ahvenanmaalle ja
+  // uusi alue oli 200 km ruudun ulkopuolella. Nakymassa oli tiilia, joten
+  // mikaan ei nayttanyt rikkinaiselta - kayttajan silmissa laajennusta ei
+  // vain ollut olemassa. "Onko nakymassa yhtaan tiilta" ei siis riita
+  // ehdoksi, vaan on kysyttava onko TIILIJOUKKO muuttunut.
+  //
+  // Sormenjalki tallennetaan nakymatilaan (ks. saveViewState). Jos se eroaa,
+  // nakyma sovitetaan uudelleen; muuten kayttajan oma sijainti ja zoom
+  // sailyvat kuten ennenkin.
+  const tallennettuKelpaa = saved && saved.tiles === tileFingerprint(tileList);
+  const sovita = !tallennettuKelpaa;
+  if (saved && !tallennettuKelpaa) {
+    console.log('Tiilijoukko on muuttunut edellisen kayntikerran jalkeen - '
+              + 'nakyma sovitetaan uudelleen.');
+  }
+
   const allBounds = tileList.map(tileLatLngBounds);
-  if (!saved && allBounds.length) {
+  if (sovita && allBounds.length) {
     // Avataan hieman lahempaa kuin taysi "koko aineisto nakyvissa" -taso:
     // yksi zoom-askel enemman (L.CRS.Simple: 2x resoluutio per askel) eli
     // nakyvissa on karkeasti puolet koko aineiston fit-to-bounds-leveydesta.
-    const overallBounds = L.latLngBounds(allBounds);
+    //
+    // SUURIMPAAN KLUSTERIIN, ei kaikkien tiilien yli: aineisto voi koostua
+    // erillisista alueista (Ahvenanmaa ja Helsingin edusta ovat yli 200 km
+    // erillaan), jolloin kaikkien yli sovitettu nakyma olisi enimmakseen
+    // tyhjaa merta eika kumpikaan alue nakyisi kunnolla.
+    const overallBounds = L.latLngBounds(largestCluster(tileList).map(tileLatLngBounds));
     const fitZoom = map.getBoundsZoom(overallBounds);
     map.setView(overallBounds.getCenter(), fitZoom + 1);
-  } else if (!saved && !allBounds.length) {
+  } else if (sovita && !allBounds.length) {
     map.setView([0, 0], -6);
   }
 

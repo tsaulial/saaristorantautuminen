@@ -138,9 +138,9 @@ PALVELU_TAGS = [
 
 
 def alueen_bbox(marginaali=BBOX_MARGIN_M):
-    """Tiilirekisterin kattama alue EPSG:3067-metreina.
+    """Tiilirekisterin kattama alue YHTENA laatikkona.
 
-    Rajoja EI kovakoodata: kun tiilia lisataan, haku laajenee itsestaan."""
+    Sailytetty apufunktioksi; hakuihin kaytetaan alueen_bboxit(), ks. alla."""
     registry = tiles.get_registry()
     if not registry:
         raise RuntimeError("Tiilirekisteri on tyhja")
@@ -150,6 +150,53 @@ def alueen_bbox(marginaali=BBOX_MARGIN_M):
         ys += [t.bounds[1], t.bounds[3]]
     return (min(xs) - marginaali, min(ys) - marginaali,
             max(xs) + marginaali, max(ys) + marginaali)
+
+
+def alueen_bboxit(marginaali=BBOX_MARGIN_M):
+    """Laatikko per YHTENAINEN tiiliklusteri.
+
+    Miksi ei yhta laatikkoa: demossa on kaksi erillista aluetta (Ahvenanmaa ja
+    Helsingin edusta), joiden vali on yli 200 km. Yksi laatikko kattaisi myos
+    valin ja hakisi koko Saaristomeren vaylat ja suojelualueet - satoja
+    kohteita joita ei nay millaan kartalla. Yhtenaisella alueella klustereita
+    on yksi, jolloin kaytos on tasan sama kuin ennen.
+
+    Klusterointi: tiilet ovat 6x6 km ruudukossa, ja kaksi tiilta kuuluvat
+    samaan klusteriin jos ne koskettavat toisiaan reunasta tai kulmasta."""
+    registry = tiles.get_registry()
+    if not registry:
+        raise RuntimeError("Tiilirekisteri on tyhja")
+
+    # Ruudukkoindeksit tiilen koon mukaan - ei oleteta 6 km, vaan luetaan
+    # se ensimmaisesta tiilesta.
+    eka = next(iter(registry.values()))
+    koko = eka.bounds[2] - eka.bounds[0]
+    ruudut = {}
+    for t in registry.values():
+        ruudut[(int(round(t.bounds[0] / koko)), int(round(t.bounds[1] / koko)))] = t.bounds
+
+    kaymatta = set(ruudut)
+    klusterit = []
+    while kaymatta:
+        pino = [kaymatta.pop()]
+        ryhma = [pino[0]]
+        while pino:
+            gx, gy = pino.pop()
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    naapuri = (gx + dx, gy + dy)
+                    if naapuri in kaymatta:
+                        kaymatta.remove(naapuri)
+                        pino.append(naapuri)
+                        ryhma.append(naapuri)
+        rajat = [ruudut[r] for r in ryhma]
+        klusterit.append((
+            min(b[0] for b in rajat) - marginaali,
+            min(b[1] for b in rajat) - marginaali,
+            max(b[2] for b in rajat) + marginaali,
+            max(b[3] for b in rajat) + marginaali,
+        ))
+    return sorted(klusterit)
 
 
 def _hae(url, timeout=180, data=None):
@@ -242,6 +289,26 @@ def _ominaisuudet(features, kentat, toleranssi=None):
     return out
 
 
+def _hae_klustereittain(base_url, type_name):
+    """Sama WFS-taso jokaiselta tiiliklusterilta, kohteet deduplikoiden.
+
+    Deduplikointi WFS:n omalla id:lla: klusterien laatikot voivat menna
+    paallekkain (marginaali), ja sama vayla voi ulottua kahdelle klusterille.
+    Palauttaa (piirteet, luvattu_yhteensa)."""
+    nahdyt = {}
+    luvattu_yht = 0
+    for bbox in alueen_bboxit():
+        piirteet, luvattu = _wfs_geojson(base_url, type_name, bbox)
+        if luvattu is not None and len(piirteet) < luvattu:
+            raise RuntimeError(
+                f"{type_name}: saatiin {len(piirteet)} mutta luvattu {luvattu} - "
+                "vastaus katkaistiin, nosta count-parametria")
+        luvattu_yht += luvattu or len(piirteet)
+        for i, f in enumerate(piirteet):
+            nahdyt.setdefault(f.get("id") or f"{bbox}:{i}", f)
+    return list(nahdyt.values()), luvattu_yht
+
+
 # --- JULKINEN RAJAPINTA ---------------------------------------------------
 
 
@@ -258,7 +325,6 @@ def _valimuisti(nimi, rakenna, force=False):
 def get_or_compute_vaylat(force=False):
     """Vesivaylat, vaylaalueet ja rajoitusalueet (Vaylavirasto, CC BY 4.0)."""
     def rakenna():
-        bbox = alueen_bbox()
         ulos = {"lahde": "Väylävirasto", "lisenssi": "CC BY 4.0", "tasot": {}}
         kentat = {
             "vaylat": VAYLA_FIELDS,
@@ -267,16 +333,12 @@ def get_or_compute_vaylat(force=False):
             "rajoitusalueet": RAJOITUS_FIELDS,
         }
         for avain, taso in VAYLA_LAYERS.items():
-            piirteet, luvattu = _wfs_geojson(VAYLA_WFS, taso, bbox)
+            piirteet, luvattu = _hae_klustereittain(VAYLA_WFS, taso)
             # Vaylalinjat sailyvat sellaisenaan; alueet yksinkertaistetaan
             # kapeille kaytaville sopivalla toleranssilla.
             tol = None if avain == "vaylat" else SIMPLIFY_VAYLA_M
             ulos["tasot"][avain] = _ominaisuudet(piirteet, kentat[avain], toleranssi=tol)
-            print(f"    {avain:20} {len(piirteet):5} kpl (luvattu {luvattu})")
-            if luvattu is not None and len(piirteet) < luvattu:
-                raise RuntimeError(
-                    f"{taso}: saatiin {len(piirteet)} mutta luvattu {luvattu} - "
-                    "vastaus katkaistiin, nosta count-parametria")
+            print(f"    {avain:20} {len(piirteet):5} kpl (haettu {luvattu})")
         return ulos
     return _valimuisti("vaylat", rakenna, force)
 
@@ -287,17 +349,13 @@ def get_or_compute_suojelualueet(force=False):
     Ei sisalla eika voi sisaltaa tietoa siita saako alueella rantautua -
     ks. moduulin alun huomautus."""
     def rakenna():
-        bbox = alueen_bbox()
         ulos = {"lahde": "Suomen ympäristökeskus (SYKE)", "lisenssi": "CC BY 4.0",
                 "tasot": {}}
         for avain, taso in SUOJELU_LAYERS.items():
-            piirteet, luvattu = _wfs_geojson(SYKE_WFS, taso, bbox)
+            piirteet, luvattu = _hae_klustereittain(SYKE_WFS, taso)
             ulos["tasot"][avain] = _ominaisuudet(piirteet, SUOJELU_FIELDS,
                                                  toleranssi=SIMPLIFY_ALUE_M)
-            print(f"    {avain:20} {len(piirteet):5} kpl (luvattu {luvattu})")
-            if luvattu is not None and len(piirteet) < luvattu:
-                raise RuntimeError(
-                    f"{taso}: saatiin {len(piirteet)} mutta luvattu {luvattu}")
+            print(f"    {avain:20} {len(piirteet):5} kpl (haettu {luvattu})")
         return ulos
     return _valimuisti("suojelualueet", rakenna, force)
 
@@ -308,17 +366,8 @@ def get_or_compute_palvelut(force=False):
     ODbL EDELLYTTAA nimeamista - se ei ole kohteliaisuus vaan lisenssiehto."""
     def rakenna():
         from pyproj import Transformer
-        x0, y0, x1, y1 = alueen_bbox()
         to_wgs = Transformer.from_crs("EPSG:3067", "EPSG:4326", always_xy=True)
         to_3067 = Transformer.from_crs("EPSG:4326", "EPSG:3067", always_xy=True)
-        lon0, lat0 = to_wgs.transform(x0, y0)
-        lon1, lat1 = to_wgs.transform(x1, y1)
-        alue = f"({lat0:.4f},{lon0:.4f},{lat1:.4f},{lon1:.4f})"
-
-        rivit = "".join(f"  {suodatin}{alue};\n" for _, suodatin in PALVELU_TAGS)
-        kysely = f"[out:json][timeout:180];\n(\n{rivit});\nout tags center;"
-        raw = _hae(OVERPASS, data=urllib.parse.urlencode({"data": kysely}).encode())
-        elementit = json.loads(raw).get("elements", [])
 
         # OSM-tagi -> ryhmanimi. Rakennetaan suodattimista, jottei sama
         # kuvaus olisi kahdessa paikassa.
@@ -327,26 +376,38 @@ def get_or_compute_palvelut(force=False):
             avain = suodatin.split('["', 1)[1].split('"', 1)[0]
             ryhma_avaimet.setdefault(avain, []).append(ryhma)
 
-        kohteet = []
-        for e in elementit:
-            t = e.get("tags", {})
-            keskus = e if e.get("type") == "node" else e.get("center")
-            if not keskus or "lat" not in keskus:
-                continue
-            ryhma = None
-            for avain, ryhmat in ryhma_avaimet.items():
-                if avain in t:
-                    ryhma = ryhmat[0] if len(ryhmat) == 1 else _ryhma_arvosta(avain, t[avain])
-                    break
-            if ryhma is None:
-                continue
-            x, y = to_3067.transform(keskus["lon"], keskus["lat"])
-            kohteet.append({
-                "x": round(x), "y": round(y), "r": ryhma,
-                "n": t.get("name", ""),
-            })
+        # Deduplikointi OSM:n tyypilla ja id:lla: klusterien laatikot voivat
+        # menna paallekkain.
+        kohteet = {}
+        for x0, y0, x1, y1 in alueen_bboxit():
+            lon0, lat0 = to_wgs.transform(x0, y0)
+            lon1, lat1 = to_wgs.transform(x1, y1)
+            alue = f"({lat0:.4f},{lon0:.4f},{lat1:.4f},{lon1:.4f})"
+            rivit = "".join(f"  {suodatin}{alue};\n" for _, suodatin in PALVELU_TAGS)
+            kysely = f"[out:json][timeout:180];\n(\n{rivit});\nout tags center;"
+            raw = _hae(OVERPASS, data=urllib.parse.urlencode({"data": kysely}).encode())
+            elementit = json.loads(raw).get("elements", [])
+
+            for e in elementit:
+                t = e.get("tags", {})
+                keskus = e if e.get("type") == "node" else e.get("center")
+                if not keskus or "lat" not in keskus:
+                    continue
+                ryhma = None
+                for avain, ryhmat in ryhma_avaimet.items():
+                    if avain in t:
+                        ryhma = ryhmat[0] if len(ryhmat) == 1 else _ryhma_arvosta(avain, t[avain])
+                        break
+                if ryhma is None:
+                    continue
+                x, y = to_3067.transform(keskus["lon"], keskus["lat"])
+                kohteet[(e.get("type"), e.get("id"))] = {
+                    "x": round(x), "y": round(y), "r": ryhma,
+                    "n": t.get("name", ""),
+                }
         print(f"    palvelut             {len(kohteet):5} kpl")
-        return {"lahde": "OpenStreetMap", "lisenssi": "ODbL", "kohteet": kohteet}
+        return {"lahde": "OpenStreetMap", "lisenssi": "ODbL",
+                "kohteet": list(kohteet.values())}
     return _valimuisti("palvelut", rakenna, force)
 
 

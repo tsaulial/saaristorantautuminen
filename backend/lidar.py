@@ -29,11 +29,11 @@ from pathlib import Path
 
 import numpy as np
 
-from . import tiles
+from . import mml, tiles
 
-OGC_BASE = "https://avoin-paikkatieto.maanmittauslaitos.fi/tiedostopalvelu/ogcproc/v1"
+OGC_BASE = mml.OGC_BASE
 PROCESS_ID = "laserkeilausaineisto_05_karttalehti"
-API_KEY_PATH = Path.home() / ".mml-api-key"
+API_KEY_PATH = mml.API_KEY_PATH
 
 CACHE_DIR = Path(__file__).resolve().parent.parent / "output" / "cache"
 LAZ_TMP_DIR = Path(__file__).resolve().parent.parent / "output" / "lidar_tmp"
@@ -71,27 +71,11 @@ MIN_POINTS = 3
 MIN_GROUND_POINTS = 3
 
 
-def _api_key():
-    """API-avain tiedostosta. Ei koskaan tulosteta eika palauteta lokiin."""
-    if not API_KEY_PATH.exists():
-        raise RuntimeError(
-            f"API-avainta ei loydy: {API_KEY_PATH}. Luo se OmaTilissa ja "
-            f"tallenna:  printf '%s' 'AVAIN' > {API_KEY_PATH} && chmod 600 {API_KEY_PATH}"
-        )
-    return API_KEY_PATH.read_text().strip()
-
-
-def _request(url, key, data=None, timeout=120):
-    req = urllib.request.Request(url, data=data)
-    # Basic auth: avain kayttajatunnuksena, salasana tyhja (MML:n ohje).
-    # Ei URL-parametrina, koska URL:t paatyvat palvelinlokeihin.
-    import base64
-    token = base64.b64encode(f"{key}:".encode()).decode()
-    req.add_header("Authorization", f"Basic {token}")
-    if data is not None:
-        req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read()
+# Avaimen kasittely ja tyon ajaminen ovat backend/mml.py:ssa, jotta niita on
+# vain yksi toteutus (ks. sikalainen kommentti). Nimet sailytetaan tassa
+# alaviivalla, koska moduulin sisainen kaytto on ennallaan.
+_api_key = mml.api_key
+_request = mml.request
 
 
 def sheet_names(tile_id):
