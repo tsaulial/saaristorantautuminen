@@ -302,6 +302,8 @@ def main():
                     help="Koko Suomen rannikko itarajalta Torniojoelle kaytavana")
     ap.add_argument("--leveys", type=float, default=rannikko.KAYTAVA_LEVEYS_M,
                     help="Kaytavan leveys metreina (oletus 20000)")
+    ap.add_argument("--osa", metavar="I/N",
+                    help="Aja vain osa I kokonaisuudesta N, esim. 3/8")
     ap.add_argument("--todenna-kartta", metavar="LEHTI", nargs="?", const="",
                     help="Vertaa rajapinnan karttalehti olemassa olevaan")
     ap.add_argument("--mitatoi", action="store_true",
@@ -324,9 +326,16 @@ def main():
         # 230 782 km2 ja vaatisi 6 496 lehtea (147 Gt); kaytava vaatii 867
         # lehtea (19,7 Gt). Suorakaide ei myoskaan kelpaisi vektorihakuun,
         # koska se ylittaa rajapinnan 17 334 km2 katon 14-kertaisesti.
-        dem, kartta = rannikko.lehdet(args.leveys)
-        vektoribboxit = rannikko.vektoripalat(args.leveys)
-        print(f"RANNIKKO, kaytavan leveys {args.leveys/1000:.0f} km")
+        osa = None
+        if args.osa:
+            i, n = (int(v) for v in args.osa.split("/"))
+            if not 1 <= i <= n:
+                ap.error(f"--osa {args.osa}: I:n oltava valilla 1..N")
+            osa = (i, n)
+        dem, kartta = rannikko.lehdet(args.leveys, osa)
+        vektoribboxit = rannikko.vektoripalat(args.leveys, osa=osa)
+        print(f"RANNIKKO, kaytavan leveys {args.leveys/1000:.0f} km"
+              + (f", osa {args.osa}" if args.osa else ""))
     else:
         bbox = tuple(args.bbox)
         dem = karttalehti.sheets_for_bbox(bbox, "dem")

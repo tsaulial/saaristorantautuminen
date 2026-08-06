@@ -63,10 +63,30 @@ def kaytava(leveys_m=KAYTAVA_LEVEYS_M):
     return LineString(rannikkolinja()).buffer(leveys_m / 2.0)
 
 
-def lehdet(leveys_m=KAYTAVA_LEVEYS_M):
-    """(dem_lehdet, karttalehdet) koko rannikolle."""
+def _osalinja(osa=None):
+    """Koko linja tai sen osa (i, n) - 1-pohjainen i."""
+    from shapely.geometry import LineString
+    pisteet = rannikkolinja()
+    if not osa:
+        return pisteet
+    i, n = osa
+    ls = LineString(pisteet)
+    a, b = (i - 1) * ls.length / n, i * ls.length / n
+    # Naytepisteita tiheasti, jotta mutkat sailyvat.
+    m = 40
+    return [(q.x, q.y) for q in
+            (ls.interpolate(a + k * (b - a) / m) for k in range(m + 1))]
+
+
+def lehdet(leveys_m=KAYTAVA_LEVEYS_M, osa=None):
+    """(dem_lehdet, karttalehdet) rannikolle tai sen osalle.
+
+    osa=(i, n) ajaa vain i:nnen osan n:sta. Osittaminen tehdaan LINJALLE eika
+    suorakaiteina: mitattuna kahdeksan suorakaidevaihetta hakisi 2 155 lehtea
+    kun kaytava vaatii 867 - rannikko kaartaa, joten suorakaide hakee 2,5-
+    kertaisesti turhaa."""
     from . import karttalehti
-    p = rannikkolinja()
+    p = _osalinja(osa)
     return (karttalehti.sheets_for_corridor(p, leveys_m, "dem"),
             karttalehti.sheets_for_corridor(p, leveys_m, "kartta"))
 
@@ -84,12 +104,12 @@ def lehdet(leveys_m=KAYTAVA_LEVEYS_M):
 VEKTORI_JAKSO_M = 30000.0
 
 
-def vektoripalat(leveys_m=KAYTAVA_LEVEYS_M, jakso_m=VEKTORI_JAKSO_M):
+def vektoripalat(leveys_m=KAYTAVA_LEVEYS_M, jakso_m=VEKTORI_JAKSO_M, osa=None):
     """Kaytavan peittavat bbox-palat vektorihakuja varten (rakennukset,
     hydrografia). Palat seuraavat rannikkolinjaa - ks. VEKTORI_JAKSO_M."""
     from shapely.geometry import LineString, box
 
-    ls = LineString(rannikkolinja())
+    ls = LineString(_osalinja(osa))
     n = max(int(ls.length / jakso_m) + 1, 1)
     palat = []
     for i in range(n):

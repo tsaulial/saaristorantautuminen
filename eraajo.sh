@@ -11,6 +11,7 @@
 # KAYTTO
 #   ./eraajo.sh --bbox MINX MINY MAXX MAXY      # yksi suorakaide
 #   ./eraajo.sh --rannikko [--leveys 20000]     # koko Suomen rannikko
+#   ./eraajo.sh --rannikko --osa 3/8            # vain kolmas kahdeksasosa
 #   ./eraajo.sh                                 # vain rakenna nykyisesta
 #
 # ESIMERKKI (Helsingin edusta)
@@ -57,7 +58,9 @@ if [ "${1:-}" = "--bbox" ]; then
 elif [ "${1:-}" = "--rannikko" ]; then
     shift
     ALUE="--rannikko"
-    if [ "${1:-}" = "--leveys" ]; then ALUE="$ALUE --leveys $2"; shift 2; fi
+    while [ "${1:-}" = "--leveys" ] || [ "${1:-}" = "--osa" ]; do
+        ALUE="$ALUE $1 $2"; shift 2
+    done
 fi
 
 kello() { date '+%H:%M:%S'; }
