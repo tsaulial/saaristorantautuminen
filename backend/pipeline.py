@@ -480,9 +480,17 @@ def compute_global_threshold(buildings_path, percentile, force=False):
 # (vrt. instructions.md kohta 6: sama syy miksi vektoritiilia harkitaan
 # maantieteellista laajentumista varten).
 #
-# Resoluutio on karkeampi (NEW_PIXEL_FACTOR=3.5 eli 3,5x3,5m) - kayttajan
-# hyvaksyma kompromissi jotta jatkuva variliuku rantaviivaa pitkin ei vaadi
-# vektorigeometriaa.
+# Resoluutio on karkeampi kuin peruskartan 1 m (NEW_PIXEL_FACTOR), jotta
+# jatkuva variliuku rantaviivaa pitkin ei vaadi vektorigeometriaa.
+#
+# 3,5 m osoittautui LIIAN karkeaksi kun se jai ainoaksi toteutukseksi:
+# mitattuna rantakaistale leveni 44 % ja reunat porrastuivat nakyvasti
+# lahizoomilla, vaikka pistemaarat olivat kaytannossa samat (mediaaniero
+# 0,003 asteikolla 0-1, variluokka vaihtui 3,2 %:ssa pikseleista).
+#
+# 2,0 m puolittaa porrastuksen. Koko ei ole este: mitattuna factors+tiebreak
+# on 1,22 Mt/tiili (3,5 m: 0,57), ja koko docs/ on silti PIENEMPI kuin
+# vanhalla toteutuksella, koska sailyy vain kaksi kuvaa per tiili eika 50.
 #
 # KUVA 1, "{tile}_factors.png" (BGRA cv2-jarjestyksessa taulukossa, RGBA
 # tiedostossa):
@@ -509,7 +517,7 @@ def compute_global_threshold(buildings_path, percentile, force=False):
 # natiivipikselit vaikuttavat ruudun arvoon) ja (2) muuttamalla selaimen
 # dilataatio kayttamaan lahimman OIKEAN puskuripikselin varia (ks.
 # frontend/index.html: dilateWithNearestColor).
-NEW_PIXEL_FACTOR = 3.5
+NEW_PIXEL_FACTOR = 2.0
 
 # Kayttajan valittavat tekijat (ks. frontend/settings.html). Bittimaski
 # yksiloi valinnan: sama luku kaytetaan avaimena esilasketuissa
@@ -762,101 +770,6 @@ def compute_factor_thresholds(buildings_path, force=False):
 
     cache_path.write_text(json.dumps(thresholds, indent=2))
     return thresholds
-
-def get_or_compute_overlay(tile_id, buildings_path, level="detail", thickness_px=DEFAULT_THICKNESS_PX, force=False):
-    """Palauttaa (png_bytes, meta_dict) pisteytysoverlaylle halutulla
-    resoluutiotasolla (ks. LEVEL_FACTORS) ja rantaviivan paksuudella (ks.
-    THICKNESS_PRESETS). "detail" ei resamplaa mitaan - pistemaara on jo
-    laskettu peruskartan omalle ruudukolle (compute_tile). "mid"/"overview"
-    downsamplaavat raa'an pistemaaran/puskurimaskin ja paksuntavat sen
-    SAMALLA pikselisateella kuin detail, jotta viiva pysyy nakyvana. Kayttaa
-    levyvalimuistia (yksi PNG per level+thickness-yhdistelma)."""
-    suffix = LEVEL_SUFFIXES[level]
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    png_path = CACHE_DIR / f"{tile_id}{suffix}_t{thickness_px}.png"
-    meta_path = CACHE_DIR / f"{tile_id}.json"
-
-    if not force and png_path.exists() and meta_path.exists():
-        return png_path.read_bytes(), json.loads(meta_path.read_text())
-
-    registry = tiles.get_registry()
-    if tile_id not in registry:
-        raise KeyError(f"Tuntematon tile_id: {tile_id}")
-
-    raw = get_or_compute_raw(tile_id, buildings_path, force=force)
-    factor = LEVEL_FACTORS[level]
-    score = downsample_image(raw["score"].astype(np.float32), factor)
-    buffer_mask = downsample_mask(raw["buffer_mask"], factor)
-
-    visible_mask = dilate_mask(buffer_mask, thickness_px)
-    visual_score = emphasize_low_scores(score, LOW_SCORE_EMPHASIS_PX)
-    rgba = score_to_rgba(visual_score, visible_mask)
-
-    ok, encoded = cv2.imencode(".png", rgba)
-    if not ok:
-        raise RuntimeError("PNG-enkoodaus epaonnistui")
-    png_bytes = encoded.tobytes()
-
-    bounds_3067 = array_bounds(*raw["score"].shape, raw["map_transform"])
-    meta = {
-        "tile_id": tile_id,
-        "bounds_epsg3067": bounds_tuple_to_dict(bounds_3067),
-        "n_buildings": raw["n_buildings"],
-        "rock_pct": raw["rock_pct"],
-        "swamp_pct": raw["swamp_pct"],
-        "shoreline_px": raw["shoreline_px"],
-        "buffer_px": raw["buffer_px"],
-    }
-
-    png_path.write_bytes(png_bytes)
-    meta_path.write_text(json.dumps(meta, indent=2))
-
-    return png_bytes, meta
-
-
-def get_or_compute_top(
-    tile_id,
-    buildings_path,
-    level="detail",
-    thickness_px=DEFAULT_THICKNESS_PX,
-    top_percent=DEFAULT_TOP_PERCENT,
-    force=False,
-):
-    """Palauttaa PNG-tavuina erillisen kerroksen, joka nayttaa VAIN parhaat
-    top_percent % (ks. TOP_PERCENT_PRESETS) puskurivyohykkeen pisteista,
-    halutulla resoluutiotasolla ja rantaviivan paksuudella (ks.
-    get_or_compute_overlay)."""
-    suffix = LEVEL_SUFFIXES[level]
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    png_path = CACHE_DIR / f"{tile_id}_top{suffix}_t{thickness_px}_p{top_percent}.png"
-
-    if not force and png_path.exists():
-        return png_path.read_bytes()
-
-    registry = tiles.get_registry()
-    if tile_id not in registry:
-        raise KeyError(f"Tuntematon tile_id: {tile_id}")
-
-    raw = get_or_compute_raw(tile_id, buildings_path, force=force)
-    threshold = compute_global_threshold(buildings_path, top_percent_to_percentile(top_percent), force=force)
-    top_mask = raw["buffer_mask"] & (raw["rank_score"] >= threshold)
-
-    factor = LEVEL_FACTORS[level]
-    top_mask = downsample_mask(top_mask, factor)
-    top_mask_visible = dilate_mask(top_mask, thickness_px)
-
-    bgra = np.zeros((*top_mask_visible.shape, 4), dtype=np.uint8)
-    bgra[top_mask_visible, 0:3] = TOP_HIGHLIGHT_BGR
-    bgra[top_mask_visible, 3] = TOP_HIGHLIGHT_ALPHA
-
-    ok, encoded = cv2.imencode(".png", bgra)
-    if not ok:
-        raise RuntimeError("PNG-enkoodaus epaonnistui")
-    png_bytes = encoded.tobytes()
-
-    png_path.write_bytes(png_bytes)
-    return png_bytes
-
 
 def get_or_compute_basemap(tile_id, level="detail", force=False):
     """Palauttaa taustakartaksi tarkoitetun karttakuva-leikkauksen PNG-tavuina
@@ -1950,8 +1863,21 @@ def compute_fetch_and_obstacle(points_rc, sea, height, max_fetch_m=MAX_FETCH_M):
     for sector in range(FETCH_SECTORS):
         for off in RAY_OFFSETS:
             bearings.setdefault(round((sector_bearing(sector) + off) % 360.0, 3), None)
-    for b in bearings:
+    # EDISTYMISRAPORTOINTI. Tama on ajon pisin yhtajaksoinen vaihe (tunteja
+    # isolla aineistolla) eika tuota mitaan valilla, joten ilman tulostusta
+    # ajo nayttaa jumiutuneelta. Yksi rivi per ilmansuunta riittaa
+    # sykemittariksi ja antaa arvion jaljella olevasta ajasta.
+    import sys
+    import time as _time
+    t0 = _time.perf_counter()
+    yht = len(bearings)
+    for i, b in enumerate(bearings, 1):
         bearings[b] = _march_ray(rows, cols, sea, height, b, max_fetch_m)
+        kulunut = _time.perf_counter() - t0
+        jaljella = kulunut / i * (yht - i)
+        print(f"      suunta {i:2d}/{yht}  {kulunut / 60:5.1f} min kulunut, "
+              f"n. {jaljella / 60:5.1f} min jaljella", flush=True)
+        sys.stdout.flush()
 
     for sector in range(FETCH_SECTORS):
         acc_f = np.zeros(n, dtype=np.float64)

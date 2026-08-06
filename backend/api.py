@@ -45,22 +45,6 @@ def list_tiles():
     ]
 
 
-@app.get("/api/overlay/{tile_key}.png")
-def get_overlay_png(tile_key: str):
-    """Tiilen pistemaaraoverlay RGBA-PNG:na halutulla resoluutiotasolla ja
-    rantaviivan paksuudella (tile_key on esim. 'L3123F_t10', 'L3123F_mid_t1'
-    tai 'L3123F_overview_t20' - ks. pipeline.parse_tile_key), lasketaan/
-    valimuistetaan tarvittaessa."""
-    tile_id, level, thickness_px, _top_percent = pipeline.parse_tile_key(tile_key)
-    try:
-        png_bytes, _meta = pipeline.get_or_compute_overlay(
-            tile_id, str(BUILDINGS_PATH), level=level, thickness_px=thickness_px
-        )
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"Tuntematon tile_id: {tile_id}")
-    return Response(content=png_bytes, media_type="image/png")
-
-
 @app.get("/api/basemap/{tile_key}.png")
 def get_basemap_png(tile_key: str):
     """Taustakartaksi tarkoitettu MML-karttakuvaleikkaus samoille rajoille
@@ -74,33 +58,12 @@ def get_basemap_png(tile_key: str):
     return Response(content=png_bytes, media_type="image/png")
 
 
-@app.get("/api/overlay/{tile_id}/{variant}.png")
-def get_overlay_top_png(tile_id: str, variant: str):
-    """Erillinen kerros: nayttaa vain parhaat X% rantautumispisteista
-    halutulla resoluutiotasolla, rantaviivan paksuudella ja X%-arvolla
-    (ks. pipeline.TOP_PERCENT_PRESETS; variant on esim. 'top_t10_p7',
-    'top_mid_t1_p1' tai 'top_overview_t20_p10'). Ensimmainen pyynto tietylle
-    X%-arvolle voi olla hidas, koska se laskee kaikkien tiilien raa'an
-    pistemaaran globaalia kynnysarvoa varten jos sita ei viela ole
-    valimuistissa."""
-    base, level, thickness_px, top_percent = pipeline.parse_tile_key(variant)
-    if base != "top":
-        raise HTTPException(status_code=404, detail=f"Tuntematon polku: {variant}")
-    try:
-        png_bytes = pipeline.get_or_compute_top(
-            tile_id, str(BUILDINGS_PATH), level=level, thickness_px=thickness_px, top_percent=top_percent
-        )
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"Tuntematon tile_id: {tile_id}")
-    return Response(content=png_bytes, media_type="image/png")
-
-
 @app.get("/api/factors/{tile_id}.png")
 def get_factors_png(tile_id: str):
     """Pisteytyksen OSATEKIJAT erillisina kanavina (ks.
     pipeline.get_or_compute_factor_png): R=jyrkkyys, G=etaisyys
-    rakennuksiin, B=kallio/suo-bitit, A=puskurimaski, 3,5x3,5m
-    resoluutiolla. Selain kokoaa naista pistemaaran kayttajan valitsemista
+    rakennuksiin, B=kallio/suo-bitit, A=puskurimaski karkeammalla
+    resoluutiolla (ks. NEW_PIXEL_FACTOR). Selain kokoaa naista pistemaaran valitsemista
     tekijoista (frontend/index.html: renderFactorTile)."""
     try:
         png_bytes, _meta = pipeline.get_or_compute_factor_png(tile_id, str(BUILDINGS_PATH), part="factors")
@@ -235,7 +198,7 @@ def get_threshold(top_percent: int = pipeline.DEFAULT_TOP_PERCENT):
 def get_overlay_meta(tile_id: str):
     """Tiilen EPSG:3067-rajat ja tunnuslukuja (rakennusmaara, kallio-%, jne)."""
     try:
-        _png_bytes, meta = pipeline.get_or_compute_overlay(tile_id, str(BUILDINGS_PATH))
+        _png_bytes, meta = pipeline.get_or_compute_factor_png(tile_id, str(BUILDINGS_PATH), part="factors")
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Tuntematon tile_id: {tile_id}")
     return meta

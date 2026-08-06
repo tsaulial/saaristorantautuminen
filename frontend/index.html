@@ -344,11 +344,10 @@ const baseLayerGroup = L.layerGroup().addTo(map);
 // aikaisesti, ks. renderFactorTile). Vain YKSI naista kolmesta on kartalla
 // kerrallaan - "Toteutus"- ja "Nayta"-radiopainikkeet (ks. legend alla)
 // maarittavat kumpi.
-const oldScoreGroup = L.layerGroup();
-const oldTopGroup = L.layerGroup();
+// Yksi kerrosryhma: kartta piirretaan aina osatekijakuvista Canvasilla.
+// Esilasketut paksuus x prosentti -kuvat poistettiin - niita oli 50 per
+// tiili, ne olivat 53 % docs/-hakemiston koosta ja 2/3 laskenta-ajasta.
 const newGroup = L.layerGroup();
-
-let currentImpl = 'old'; // 'old' | 'new'
 let currentDisplay = 'score'; // 'score' | 'top'
 
 // --- VEKTORITASOT: OMA PANE, EKSPLISIITTINEN JARJESTYS ---
@@ -1029,12 +1028,6 @@ legend.onAdd = function () {
       '</div>' +
 
       '<div class="tab-panel hidden" data-panel="lisaa">' +
-      '<div class="radio-row" style="margin-top:0;padding-top:0;border-top:none">' +
-        '<span class="radio-row-label">Toteutus (vertailua varten)</span>' +
-        '<label id="impl-old-label"><input type="radio" name="impl-choice" value="old" checked> Nykyinen</label>' +
-        '<label><input type="radio" name="impl-choice" value="new"> Uusi (3,5×3,5 m)</label>' +
-        '<small id="impl-note" class="impl-note"></small>' +
-      '</div>' +
       '<div class="settings-row">' +
         '<a href="settings.html">⚙ Asetukset</a>' +
         '<div id="settings-summary" class="settings-summary"></div>' +
@@ -1127,12 +1120,6 @@ legend.onAdd = function () {
     el.addEventListener('change', () => {
       currentDisplay = el.value;
       updateLegendFromSettings();
-      switchActiveGroup();
-    });
-  });
-  div.querySelectorAll('input[name="impl-choice"]').forEach((el) => {
-    el.addEventListener('change', () => {
-      currentImpl = el.value;
       switchActiveGroup();
     });
   });
@@ -1527,7 +1514,7 @@ function saveViewState() {
     const c = map.getCenter();
     localStorage.setItem(VIEW_KEY, JSON.stringify({
       lat: c.lat, lng: c.lng, zoom: map.getZoom(),
-      display: currentDisplay, impl: currentImpl, tab: activeLegendTab,
+      display: currentDisplay, tab: activeLegendTab,
       wind: currentWind, hour: forecastHour,
       // Tiilijoukon sormenjalki: jos aineisto laajenee, tallennettu sijainti
       // voi jaada vanhan alueen paalle eika kayttaja huomaa uutta lainkaan.
@@ -1671,26 +1658,6 @@ function updateLegendFromSettings() {
       : '';
   }
 
-  const oldRadio = document.querySelector('input[name="impl-choice"][value="old"]');
-  const oldLabel = document.getElementById('impl-old-label');
-  const note = document.getElementById('impl-note');
-  if (!oldRadio || !oldLabel || !note) return;
-
-  // VANHASTA toteutuksesta ei ole esilaskettuja kuvia karkipaikoille sen
-  // paremmin kuin osittaisille tekijavalinnoillekaan.
-  const oldAvailable = allFactorsOn && currentDisplay !== 'prime' && currentDisplay !== 'paddle';
-  oldRadio.disabled = !oldAvailable;
-  oldLabel.classList.toggle('disabled', !oldAvailable);
-  note.textContent = oldAvailable
-    ? ''
-    : ((currentDisplay === 'prime' || currentDisplay === 'paddle')
-        ? 'Tästä kerroksesta ei ole esilaskettuja kuvia.'
-        : 'Nykyinen-toteutus on esilaskettu kaikilla tekijöillä eikä tue valintoja.');
-
-  if (!oldAvailable && currentImpl === 'old') {
-    currentImpl = 'new';
-    document.querySelector('input[name="impl-choice"][value="new"]').checked = true;
-  }
 }
 
 let tileListCache = [];
@@ -1747,36 +1714,11 @@ function refreshBase() {
   });
 }
 
-// --- VANHA toteutus: esilasketut kuvat per taso/paksuus/prosentti ---
-function refreshOld() {
-  const level = levelForZoom(map.getZoom());
-  const visible = visibleTiles();
-  if (currentDisplay === 'score') {
-    oldScoreGroup.clearLayers();
-    visible.forEach((tile) => {
-      L.imageOverlay(
-        `/api/overlay/${tile.tile_id}${level.suffix}_t${currentThickness}.png`,
-        tileLatLngBounds(tile),
-        { opacity: 1 }
-      ).addTo(oldScoreGroup);
-    });
-  } else {
-    oldTopGroup.clearLayers();
-    visible.forEach((tile) => {
-      L.imageOverlay(
-        `/api/overlay/${tile.tile_id}/top${level.suffix}_t${currentThickness}_p${currentTopPercent}.png`,
-        tileLatLngBounds(tile),
-        { opacity: 1 }
-      ).addTo(oldTopGroup);
-    });
-  }
-}
-
 // --- Osatekijapohjainen toteutus: kaksi kuvaa/tiili, joista PISTEMAARA
 // KOOTAAN valituista tekijoista ja varitys/kynnys/paksuus lasketaan
 // Canvasilla selaimessa (ks. backend/pipeline.py: kanavakuvaus
 // get_or_compute_factor_png-funktion ylla). ---
-const NEW_PIXEL_FACTOR = 3.5; // pidettava samassa kuin backend/pipeline.py: NEW_PIXEL_FACTOR
+const NEW_PIXEL_FACTOR = 2.0; // pidettava samassa kuin backend/pipeline.py: NEW_PIXEL_FACTOR
 const TOP_HIGHLIGHT_RGB = [255, 0, 255]; // sama kuin backendin TOP_HIGHLIGHT_BGR (magenta)
 // Karkipaikat omalla varillaan (violetti) - erottuu seka magentasta etta
 // pisteytyksen punainen-keltainen-vihrea-asteikosta ja merensinisesta.
@@ -2247,11 +2189,6 @@ async function refreshNew() {
   });
 }
 
-// --- Aktiivisen kerroksen hallinta (VANHA/UUSI x rantautumispisteytys/top) ---
-function activeGroup() {
-  if (currentImpl === 'new') return newGroup;
-  return currentDisplay === 'score' ? oldScoreGroup : oldTopGroup;
-}
 
 function refreshActive() {
   if (!tileListCache.length) return;
@@ -2260,18 +2197,11 @@ function refreshActive() {
   // mita kartalla varitetaan.
   updateInfoBubbles();
   refreshBase();
-  if (currentImpl === 'old') {
-    refreshOld();
-  } else {
-    refreshNew().catch((err) => console.error('Uuden toteutuksen renderointi epaonnistui:', err));
-  }
+  refreshNew().catch((err) => console.error('Renderointi epaonnistui:', err));
 }
 
 function switchActiveGroup() {
-  [oldScoreGroup, oldTopGroup, newGroup].forEach((g) => {
-    if (map.hasLayer(g)) map.removeLayer(g);
-  });
-  map.addLayer(activeGroup());
+  if (!map.hasLayer(newGroup)) map.addLayer(newGroup);
   refreshActive();
 }
 
@@ -2690,7 +2620,6 @@ async function init() {
   const saved = loadViewState();
   if (saved) {
     if (['score', 'top', 'prime', 'paddle'].includes(saved.display)) currentDisplay = saved.display;
-    if (['old', 'new'].includes(saved.impl)) currentImpl = saved.impl;
     if (saved.wind && isFinite(saved.wind.speed) && isFinite(saved.wind.direction)) {
       currentWind = {
         direction: saved.wind.direction, speed: saved.wind.speed,
@@ -2701,8 +2630,6 @@ async function init() {
     if (isFinite(saved.hour)) forecastHour = saved.hour;
     const radio = document.querySelector(`input[name="display-mode"][value="${currentDisplay}"]`);
     if (radio) radio.checked = true;
-    const implRadio = document.querySelector(`input[name="impl-choice"][value="${currentImpl}"]`);
-    if (implRadio) implRadio.checked = true;
     map.setView([saved.lat, saved.lng], saved.zoom);
   }
 

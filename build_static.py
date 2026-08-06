@@ -110,20 +110,17 @@ def write_webp_batch(jobs, pool):
 
 # frontend/index.html kayttaa naita tarkkoja /api/-polkuja - build-skripti
 # korvaa ne staattisilla, suhteellisilla poluilla (toimivat myos GitHub
-# Pagesin ali-URLissa, esim. https://user.github.io/repo/). "${level.suffix}",
-# "${currentThickness}" ja "${currentTopPercent}" ovat JS-ajonaikaisia
-# muuttujia (ks. pipeline.LEVEL_SUFFIXES, pipeline.THICKNESS_PRESETS ja
-# pipeline.TOP_PERCENT_PRESETS) - staattiset tiedostot on nimetty samalla
-# suffiksikaytannolla, joten pelkka polun alku tarvitsee korvata.
+# Pagesin ali-URLissa, esim. https://user.github.io/repo/). "${level.suffix}"
+# on JS-ajonaikainen muuttuja (ks. pipeline.LEVEL_SUFFIXES) - staattiset
+# tiedostot on nimetty samalla suffiksikaytannolla.
+#
+# Paksuus ja prosentti EIVAT enaa esiinny poluissa: ne ovat nyt selaimen
+# ajonaikaisia parametreja, ei esilaskettujen kuvien nimia.
 URL_REPLACEMENTS = {
     "fetch('/api/tiles')": "fetch('tiles.json')",
     "fetch('/api/wind-grid')": "fetch('wind_grid.json')",
     # Kolme visuaalista kerrosta -> .webp (ks. to_webp). Loput jaavat .png:ksi.
     "`/api/basemap/${tile.tile_id}${level.suffix}.png`": "`cache/${tile.tile_id}_base${level.suffix}.webp`",
-    "`/api/overlay/${tile.tile_id}${level.suffix}_t${currentThickness}.png`":
-        "`cache/${tile.tile_id}${level.suffix}_t${currentThickness}.webp`",
-    "`/api/overlay/${tile.tile_id}/top${level.suffix}_t${currentThickness}_p${currentTopPercent}.png`":
-        "`cache/${tile.tile_id}_top${level.suffix}_t${currentThickness}_p${currentTopPercent}.webp`",
     "`/api/factors/${tileId}.png`": "`cache/${tileId}_factors.png`",
     "`/api/tiebreak/${tileId}.png`": "`cache/${tileId}_tiebreak.png`",
     "`/api/prime/${tileId}.png`": "`cache/${tileId}_prime.png`",
@@ -196,38 +193,27 @@ def build():
     pool = ProcessPoolExecutor(max_workers=os.cpu_count())
 
     tile_entries = []
-    for tile_id in registry:
-        print(f"  {tile_id}...")
+    import time as _time
+    _t0 = _time.perf_counter()
+    _n = len(registry)
+    for _i, tile_id in enumerate(registry, 1):
+        # Edistyminen nakyviin: pitkassa ajossa on tiedettava etta tyo etenee
+        # eika ole jumissa. Arvio perustuu jo kasiteltyjen tiilien keskiarvoon.
+        _kulunut = _time.perf_counter() - _t0
+        _arvio = f", n. {(_kulunut / max(_i - 1, 1)) * (_n - _i + 1) / 60:.0f} min jaljella" if _i > 1 else ""
+        print(f"  [{_i}/{_n}] {tile_id}  ({_kulunut / 60:.1f} min kulunut{_arvio})", flush=True)
 
+        # Peruskartta jokaisella tarkkuustasolla. Esilasketut varikerrokset
+        # (paksuus x prosentti x taso = 50 kuvaa/tiili) POISTETTIIN: ne olivat
+        # 53 % docs/-hakemiston koosta ja 2/3 laskenta-ajasta, ja kartta
+        # piirretaan nyt aina osatekijakuvista selaimessa.
         meta = None
+        jobs = []
         for level in pipeline.LEVEL_FACTORS:
             suffix = pipeline.LEVEL_SUFFIXES[level]
-            # Kootaan taso kerrallaan ja muunnetaan era rinnakkain - yksittain
-            # muunnettuna enkoodaus veisi tunteja (ks. write_webp_batch).
-            jobs = []
-            base_bytes = pipeline.get_or_compute_basemap(tile_id, level=level)
-            jobs.append((f"{tile_id}_base{suffix}.webp", base_bytes))
-
-            for thickness_px in pipeline.THICKNESS_PRESETS:
-                overlay_bytes, level_meta = pipeline.get_or_compute_overlay(
-                    tile_id, str(BUILDINGS_PATH), level=level, thickness_px=thickness_px
-                )
-                meta = meta or level_meta
-                jobs.append((f"{tile_id}{suffix}_t{thickness_px}.webp", overlay_bytes))
-
-                for top_percent in pipeline.TOP_PERCENT_PRESETS:
-                    top_bytes = pipeline.get_or_compute_top(
-                        tile_id,
-                        str(BUILDINGS_PATH),
-                        level=level,
-                        thickness_px=thickness_px,
-                        top_percent=top_percent,
-                    )
-                    jobs.append(
-                        (f"{tile_id}_top{suffix}_t{thickness_px}_p{top_percent}.webp", top_bytes)
-                    )
-
-            write_webp_batch(jobs, pool)
+            jobs.append((f"{tile_id}_base{suffix}.webp",
+                         pipeline.get_or_compute_basemap(tile_id, level=level)))
+        write_webp_batch(jobs, pool)
 
         # Osatekijakuvapari (ks. pipeline-moduulin kanavakuvaus) - yksi pari
         # per tiili riippumatta tekijavalinnoista/paksuudesta/prosentista.
