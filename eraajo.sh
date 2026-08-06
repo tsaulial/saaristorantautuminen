@@ -36,6 +36,8 @@
 #   - laserkeilaus: tiili kerrallaan, kesto sekunteina
 #   - build:       tiili kerrallaan + arvio jaljella olevasta ajasta
 #   - pyyhkaisymatkat: ilmansuunta kerrallaan (48 kpl) + aika-arvio
+#   - kynnysarvot: tiili kerrallaan, neljassa vaiheessa vektoritasojen
+#                  jalkeen (ks. pipeline.tiilet_edistymisella)
 # Jos mikaan naista ei etene minuutteihin, ajo on aidosti jumissa.
 #
 # Kaikki python-kutsut kaytetaan -u -lipulla, jotta tuloste ei jaa
@@ -138,5 +140,24 @@ python3 -u build_static.py
 KESTO=$(( $(date +%s) - ALKU ))
 vaihe "VALMIS  ${KESTO} s = $((KESTO/3600)) h $(((KESTO%3600)/60)) min"
 du -sh docs/ 2>/dev/null || true
-echo "Tulos on docs/-hakemistossa. Siirto takaisin esim:"
-echo "  rsync -avz --delete docs/ KAYTTAJA@TAMA-KONE:polku/docs/"
+echo "Tulos on docs/-hakemistossa."
+echo
+# VEDA, ALA TYONNA. Tyontaminen vaatii sshd:n VASTAANOTTAVASSA paassa, ja
+# macOS:n Remote Login on oletuksena pois - "connection refused" porttiin 22.
+# Vetaminen kayttaa TAMAN koneen sshd:ta, joka on jo olemassa (siksi tama
+# skripti ylipaataan voidaan ajaa taalla).
+# Portti luetaan oikeasti kuuntelevasta sshd:sta: se ei valttamatta ole 22
+# (talla koneella se on 2222), ja vaara portti vihjeessa on sama umpikuja
+# kuin vaara suunta.
+SSH_PORTTI=$(ss -tlnH 2>/dev/null | awk '/sshd|:22 |:2222 /{split($4,a,":"); print a[length(a)]; exit}')
+echo "Siirto: VEDA vastaanottavasta koneesta, ala tyonna taalta:"
+echo "  rsync -avz -e 'ssh -p ${SSH_PORTTI:-22}' \\"
+echo "    $(whoami)@$(hostname):$(pwd)/docs/  KOHDEPOLKU/docs/"
+echo
+# --delete PUUTTUU TAHALLAAN. Kynnysarvot ovat GLOBAALEJA (lasketaan koko
+# tiilirekisterin yli), joten kahden eri ajon docs/-hakemistoja EI VOI
+# yhdistaa: kuvat olisivat eri aineistosta kuin kynnys jolla ne varitetaan.
+# Joko korvaa kohde kokonaan tai aja alueet yhtena ajona.
+echo "HUOM: ala yhdista kahden eri ajon docs/-hakemistoja. Kynnysarvot"
+echo "      lasketaan koko tiilirekisterin yli, joten sekoitus varittaa"
+echo "      kartan vaarin. Korvaa kohde kokonaan tai aja alueet yhdessa."

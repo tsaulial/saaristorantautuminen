@@ -37,6 +37,7 @@ Kaksi laskentavaihetta:
 
 import json
 import os
+import time
 from pathlib import Path
 
 import cv2
@@ -633,8 +634,11 @@ def _global_tiebreak_sorted(buildings_path, force=False):
     if not force and cache_path.exists():
         return np.load(cache_path)
 
+    # Tama kaynnistyy LAISKASTI ensimmaisen tiilen kohdalla ja kay silti
+    # kaikki tiilet lapi, joten ilman raportointia ajo nayttaa jumiutuvan
+    # heti riville "[1/N]".
     values = []
-    for tid in tiles.get_registry():
+    for tid in tiilet_edistymisella("Globaali tasapelinpurku"):
         comp = downsampled_components(tid, buildings_path, force=force)
         if comp["buffer"].any():
             values.append(comp["tiebreak"][comp["buffer"]])
@@ -779,6 +783,34 @@ def get_or_compute_factor_png(tile_id, buildings_path, part="factors", force=Fal
     return png_bytes, meta
 
 
+def tiilet_edistymisella(vaihe, jono=None):
+    """Kayy tiilirekisterin (tai annetun jonon) lapi ja RAPORTOI edistymisen.
+
+    Kynnysarvovaiheet kayvat kaikki tiilet lapi mutta eivat tulostaneet
+    mitaan, jolloin ajo nayttti jumiutuneen pitkaksi aikaa heti
+    vektoritasojen jalkeen - siina kohdassa kun kaikki muut vaiheet
+    raportoivat rivi kerrallaan. Hitain naista on compute_shoreline_stats,
+    joka laskee compute_prime_components(native=True):n uudelleen jokaiselle
+    tiilelle: mitattuna 5-6 s tiilta, eli 27 tiilella nelisen minuuttia
+    tayttaa hiljaisuutta. Kaytetaan naissa kaikissa, jottei mikaan
+    kokonaisten tiilien yli kayva silmukka ole enaa aanetön."""
+    kohteet = list(tiles.get_registry() if jono is None else jono)
+    n = len(kohteet)
+    print(f"  {vaihe}: {n} tiilta", flush=True)
+    t0 = time.perf_counter()
+    for i, kohde in enumerate(kohteet, 1):
+        yield kohde
+        kulunut = time.perf_counter() - t0
+        arvio = kulunut / i * (n - i)
+        # Jokaista tiilta ei tulosteta isolla aineistolla: 900 tiilta
+        # tayttaisi ruudun. Riittaa etta rivi tulee tarpeeksi tiheasti
+        # jotta jumin erottaa etenemisesta.
+        if n <= 40 or i % 10 == 0 or i == n:
+            nimi = kohde if isinstance(kohde, str) else getattr(kohde, "tile_id", i)
+            print(f"    [{i}/{n}] {nimi}  ({kulunut / 60:.1f} min kulunut, "
+                  f"n. {arvio / 60:.0f} min jaljella)", flush=True)
+
+
 def compute_factor_thresholds(buildings_path, force=False):
     """"Parhaat X %" -kynnysarvot JOKAISELLE tekijayhdistelmalle (15 kpl) ja
     jokaiselle prosenttiesiasetukselle: {"<bittimaski>": {"<prosentti>": kynnys}}.
@@ -794,7 +826,7 @@ def compute_factor_thresholds(buildings_path, force=False):
         return json.loads(cache_path.read_text())
 
     parts = []
-    for tid in tiles.get_registry():
+    for tid in tiilet_edistymisella("Tekijakynnykset"):
         arrays = get_or_compute_factor_arrays(tid, buildings_path, force=force)
         buf = arrays["buffer"]
         if buf.any():
@@ -911,7 +943,7 @@ def compute_shoreline_stats(buildings_path, force=False):
     ranks = {mask: [] for mask in range(1, NO_SHELTER_MASK + 1)}
     total_px = 0
 
-    for tid in tiles.get_registry():
+    for tid in tiilet_edistymisella("Rantaviivan jakauma"):
         raw = get_or_compute_raw(tid, buildings_path, force=force)
         buf = raw["buffer_mask"]
         if not buf.any():
@@ -1206,7 +1238,7 @@ def compute_prime_thresholds(buildings_path, force=False):
         return json.loads(cache_path.read_text())
 
     parts = []
-    for tid in tiles.get_registry():
+    for tid in tiilet_edistymisella("Karkipaikkakynnykset"):
         prime = get_or_compute_prime_arrays(tid, buildings_path, force=force)
         # Tasapelinpurku otetaan SAMASTA kuvasta kuin top-kerroksessa:
         # aggregoitu pistemaara saturoituu sekin, ja jarjestys tasapelien
@@ -1455,7 +1487,7 @@ def get_or_compute_sea_mosaic(force=False):
     # kulkuaan kattoon asti ja ranta tulkitaan alttiiksi.
     sea = np.ones((h, w), dtype=bool)
 
-    for tile in tiles.get_registry().values():
+    for tile in tiilet_edistymisella("Merimosaiikki", tiles.get_registry().values()):
         n = int(round((tile.bounds[2] - tile.bounds[0]) / FETCH_GRID_M))
         m = int(round((tile.bounds[3] - tile.bounds[1]) / FETCH_GRID_M))
         # Rasteroidaan suoraan mosaiikin tarkkuudella: valissa ei ole
@@ -1690,7 +1722,7 @@ def compute_shelter_thresholds(buildings_path, force=False):
         return json.loads(cache_path.read_text())
 
     normal, prime, tiebreak = [], [], []
-    for tid in tiles.get_registry():
+    for tid in tiilet_edistymisella("Suojaisuuskynnykset"):
         f = get_or_compute_factor_arrays(tid, buildings_path, force=force)
         p = get_or_compute_prime_arrays(tid, buildings_path, force=force)
         buf = f["buffer"]
