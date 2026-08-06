@@ -1951,46 +1951,95 @@ def _march_ray(rows, cols, sea, height, bearing_deg, max_fetch_m):
     bearing = np.radians(bearing_deg)
     dr, dc = -np.cos(bearing), np.sin(bearing)
 
+    # --- TYOJOUKKO TIIVISTETAAN KUN SATEET VALMISTUVAT ---
+    #
+    # Mitattuna 100 askeleen jalkeen enaa 22 % sateista on matkalla ja 800
+    # askeleen jalkeen 6,5 %, mutta silmukka indeksoi 1 500 askelta. Ilman
+    # tiivistysta noin 90 % taulukko-operaatioista tehdaan sateille jotka ovat
+    # jo osuneet maahan.
+    #
+    # Tama on myos syy siihen miksi rinnakkaistaminen ei auttanut: mitattuna
+    # kahdeksan prosessia kaytti 687 % CPU:sta mutta nopeutti vain 1,5x -
+    # ytimet olivat varattuja mutta tekivat turhaa tyota.
+    #
+    # "live" on indeksit ALKUPERAISIIN taulukoihin. Kaikki tyoarrayt ovat
+    # tyojoukon mittaisia, ja tulokset kirjoitetaan livein kautta.
+    live = np.arange(n)
+    r0 = np.ascontiguousarray(rows)
+    c0 = np.ascontiguousarray(cols)
     entered = np.zeros(n, dtype=bool)
     start_k = np.zeros(n, dtype=np.int64)
-    active = np.ones(n, dtype=bool)
     fetch = np.full(n, MIN_FETCH_M, dtype=np.float32)
     obstacle = np.zeros(n, dtype=np.float32)
+    seuraava_tiivistys = n // 2
 
     for k in range(1, steps + 1):
-        rr = rows + int(round(k * dr))
-        cc = cols + int(round(k * dc))
+        dk_r, dk_c = int(round(k * dr)), int(round(k * dc))
+        rr = r0 + dk_r
+        cc = c0 + dk_c
         valid = (rr >= 0) & (rr < h) & (cc >= 0) & (cc < w)
-        is_sea = ~valid.copy()
-        idx = valid & active
-        is_sea[idx] = sea[rr[idx], cc[idx]]
+        # Aineiston ulkopuoli tulkitaan mereksi (ks. moduulin kommentti).
+        is_sea = ~valid
+        if valid.any():
+            is_sea[valid] = sea[rr[valid], cc[valid]]
 
-        newly = active & ~entered & is_sea
-        entered |= newly
-        start_k[newly] = k
+        newly = ~entered & is_sea
+        if newly.any():
+            entered |= newly
+            start_k[newly] = k
 
+        pidä = None
         if k == MAX_INITIAL_LAND_STEPS:
-            active &= entered
-            if not active.any():
-                break
+            # Sade joka ei ole viela vedessa osoittaa sisamaahan. Se pudotetaan
+            # ja jaa oletusarvoonsa MIN_FETCH_M.
+            pidä = entered
 
-        hit = active & entered & ~is_sea
+        hit = entered & ~is_sea
         if hit.any():
-            fetch[hit] = (k - start_k[hit]) * FETCH_GRID_M
-            hv = np.zeros(n, dtype=np.float32)
+            osuneet = live[hit]
+            fetch[osuneet] = (k - start_k[hit]) * FETCH_GRID_M
+            # Esteen katse VAIN osumille - aiemmin tama laskettiin koko
+            # tyojoukolle ja indeksoitiin vasta lopuksi.
+            rh, ch = r0[hit], c0[hit]
+            hv = np.zeros(len(osuneet), dtype=np.float32)
             for j in range(look + 1):
-                r2 = np.clip(rows + int(round((k + j) * dr)), 0, h - 1)
-                c2 = np.clip(cols + int(round((k + j) * dc)), 0, w - 1)
-                hv = np.maximum(hv, height[r2, c2])
-            obstacle[hit] = hv[hit]
-            active &= ~hit
-        if not active.any():
-            break
+                r2 = np.clip(rh + int(round((k + j) * dr)), 0, h - 1)
+                c2 = np.clip(ch + int(round((k + j) * dc)), 0, w - 1)
+                np.maximum(hv, height[r2, c2], out=hv)
+            obstacle[osuneet] = hv
+            pidä = ~hit if pidä is None else (pidä & ~hit)
+
+        if pidä is not None:
+            live = live[pidä]
+            if len(live) == 0:
+                break
+            r0, c0 = r0[pidä], c0[pidä]
+            entered, start_k = entered[pidä], start_k[pidä]
+            seuraava_tiivistys = min(seuraava_tiivistys, len(live))
 
     # Maahan osumattomat sateet kulkevat aineiston ulkopuolelle tai
     # avomerelle: ne saavat KATON eivatka oletusarvoa, ja este on 0.
-    fetch[active] = max_fetch_m
+    fetch[live] = max_fetch_m
     return np.clip(fetch, MIN_FETCH_M, max_fetch_m), obstacle
+
+
+# Rinnakkaisajon konteksti. Asetetaan ENNEN prosessien luontia, jolloin fork
+# jakaa isot taulukot copy-on-writena eika niita tarvitse siirtaa.
+_MARCH_CTX = None
+
+
+def _march_ray_worker(bearing_deg):
+    rows, cols, sea, height, max_fetch_m = _MARCH_CTX
+    return _march_ray(rows, cols, sea, height, bearing_deg, max_fetch_m)
+
+
+def _sateiden_tyontekijat():
+    """Rinnakkaisten prosessien maara, 1 = sarjassa."""
+    import multiprocessing
+    if "fork" not in multiprocessing.get_all_start_methods():
+        return 1                      # spawn kopioisi mosaiikit joka prosessiin
+    return max(1, min(os.cpu_count() or 1, 16))
+
 
 
 def compute_fetch_and_obstacle(points_rc, sea, height, max_fetch_m=MAX_FETCH_M):
@@ -2012,20 +2061,49 @@ def compute_fetch_and_obstacle(points_rc, sea, height, max_fetch_m=MAX_FETCH_M):
     for sector in range(FETCH_SECTORS):
         for off in RAY_OFFSETS:
             bearings.setdefault(round((sector_bearing(sector) + off) % 360.0, 3), None)
-    # EDISTYMISRAPORTOINTI. Tama on ajon pisin yhtajaksoinen vaihe (tunteja
-    # isolla aineistolla) eika tuota mitaan valilla, joten ilman tulostusta
-    # ajo nayttaa jumiutuneelta. Yksi rivi per ilmansuunta riittaa
-    # sykemittariksi ja antaa arvion jaljella olevasta ajasta.
+    # --- RINNAKKAISAJO ILMANSUUNNITTAIN ---
+    #
+    # Suunnat ovat toisistaan riippumattomia. Rinnakkaisuus EI auttanut ennen
+    # tyojoukon tiivistysta (mitattuna 8 prosessia = 687 % CPU mutta vain
+    # 1,5x nopeutus, koska ytimet tekivat turhaa tyota); tiivistyksen jalkeen
+    # sama mittaus antaa 4,2x.
+    #
+    # fork jakaa merimaskin ja korkeusmallin copy-on-writena, joten gigatavun
+    # taulukoita ei kopioida. Muilla alustoilla (spawn) kopiointi maksaisi
+    # enemman kuin rinnakkaisuus tuo, joten silloin ajetaan sarjassa.
     import sys
     import time as _time
     t0 = _time.perf_counter()
     yht = len(bearings)
-    for i, b in enumerate(bearings, 1):
-        bearings[b] = _march_ray(rows, cols, sea, height, b, max_fetch_m)
+    suunnat = list(bearings)
+
+    def _raportoi(i):
         kulunut = _time.perf_counter() - t0
         jaljella = kulunut / i * (yht - i)
         print(f"      suunta {i:2d}/{yht}  {kulunut / 60:5.1f} min kulunut, "
               f"n. {jaljella / 60:5.1f} min jaljella", flush=True)
+
+    tyontekijat = _sateiden_tyontekijat()
+    if tyontekijat > 1:
+        import multiprocessing
+        from concurrent.futures import ProcessPoolExecutor
+        global _MARCH_CTX
+        _MARCH_CTX = (rows, cols, sea, height, max_fetch_m)
+        try:
+            with ProcessPoolExecutor(max_workers=tyontekijat,
+                                     mp_context=multiprocessing.get_context("fork")) as ex:
+                for i, (b, tulos) in enumerate(
+                        zip(suunnat, ex.map(_march_ray_worker, suunnat, chunksize=1)), 1):
+                    bearings[b] = tulos
+                    if i % max(yht // 8, 1) == 0 or i == yht:
+                        _raportoi(i)
+        finally:
+            _MARCH_CTX = None
+    else:
+        for i, b in enumerate(suunnat, 1):
+            bearings[b] = _march_ray(rows, cols, sea, height, b, max_fetch_m)
+            if i % max(yht // 8, 1) == 0 or i == yht:
+                _raportoi(i)
         sys.stdout.flush()
 
     for sector in range(FETCH_SECTORS):
