@@ -188,6 +188,11 @@ def build():
     registry = tiles.get_registry()
     print(f"{len(registry)} tiilta rekisterissa")
 
+    # Tiilistosta riippuvat valimuistit (kynnykset, globaali jarjestysluku,
+    # vektoritasot) on mitatoitava ENNEN laskentaa jos tiilisto on muuttunut -
+    # muuten uudet tiilet varitettaisiin vanhan aineiston jakaumaa vasten.
+    pipeline.varmista_rekisteri()
+
     # Rinnakkaisajo vain WebP-enkoodaukselle. GIS-laskenta pysyy sarjallisena,
     # koska se lukee ja kirjoittaa yhteista output/cache/-valimuistia.
     pool = ProcessPoolExecutor(max_workers=os.cpu_count())

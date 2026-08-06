@@ -35,6 +35,7 @@ Kaksi laskentavaihetta:
    tiilien raa'an pistemaaran jos niita ei viela ole valimuistissa.
 """
 
+import hashlib
 import json
 import os
 import time
@@ -406,6 +407,68 @@ def lahde_sormenjalki(tile, buildings_path):
         _tiedoston_sormenjalki(vesisto.GPKG),
     ]
     return "|".join(osat)
+
+
+# --- TIILISTOSTA RIIPPUVAT VALIMUISTIT ---
+#
+# Osa valimuisteista ei kuvaa YHTA tiilta vaan koko aineistoa: "parhaat X %"
+# -kynnykset, tasapelin globaali jarjestysluku, rantaviivan jakauma ja
+# vektoritasot (jotka haetaan tiilien peittamalle alueelle). Ne vanhenevat
+# kun tiilia lisataan tai poistetaan - HILJAA: mikaan ei kaadu, kartta vain
+# varitetaan vaaraa jakaumaa vasten.
+#
+# Mosaiikit eivat ole talla listalla: ne tarkistavat oman geometriansa
+# rekisteria vasten (ks. get_or_compute_sea_mosaic), mika on tarkempi kuin
+# hajautusarvo. Myoskaan _fetch_global / _water_global eivat ole: ne on
+# avainnettu GLOBAALEILLA solutunnisteilla juuri siksi, etta ne sailyvat
+# tiiliston muuttuessa.
+REKISTERISTA_RIIPPUVAT = (
+    "_global_threshold_p*.json",
+    "_global_tiebreak_sorted.npy",
+    "_factor_thresholds.json", "_prime_thresholds.json",
+    "_shelter_thresholds.json", "_shoreline_stats.json",
+    "_vaylat.json", "_suojelualueet.json", "_palvelut.json",
+    # Naiden kuvien arvot on kvantisoitu globaalia jakaumaa vasten.
+    "*_top*.png", "*_factors.png", "*_tiebreak.png",
+)
+
+
+def rekisterin_sormenjalki():
+    """Tiiliston sormenjalki: tunnisteet ja rajat."""
+    reg = tiles.get_registry()
+    osat = [f"{t}:{tuple(reg[t].bounds)}" for t in sorted(reg)]
+    return hashlib.sha1("|".join(osat).encode()).hexdigest()
+
+
+def varmista_rekisteri():
+    """Mitatoi tiilistosta riippuvat valimuistit jos tiilisto on muuttunut.
+
+    Kutsutaan buildin alussa. Ilman tata Helsingin ajon paalle lisatty
+    Ahvenanmaa perisi Helsingin kynnysarvot ja vektoritasot."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    polku = CACHE_DIR / "_rekisteri.json"
+    nyt = rekisterin_sormenjalki()
+    ennen = json.loads(polku.read_text()).get("sormenjalki") if polku.exists() else None
+    if ennen == nyt:
+        return 0
+
+    poistetut = []
+    if ennen is None:
+        # ENSIMMAINEN AJO taman tarkistuksen kanssa: sormenjalkea ei ole,
+        # joten ei ole nayttoa vanhentumisesta. Olemassa oleva valimuisti on
+        # miltei varmasti rakennettu nykyiselle tiilistolle, ja sen
+        # heittaminen pois maksaisi tunteja ilman syyta - kirjataan vain.
+        print(f"  tiilisto kirjattu ({len(tiles.get_registry())} tiilta)", flush=True)
+    else:
+        for kuvio in REKISTERISTA_RIIPPUVAT:
+            poistetut += sorted(CACHE_DIR.glob(kuvio))
+        for p in poistetut:
+            p.unlink()
+        print(f"  TIILISTO MUUTTUNUT: mitatoitiin {len(poistetut)} tiilistosta "
+              f"riippuvaa valimuistia", flush=True)
+    polku.write_text(json.dumps({"sormenjalki": nyt,
+                                 "tiilia": len(tiles.get_registry())}))
+    return len(poistetut)
 
 
 def get_or_compute_raw(tile_id, buildings_path, force=False):
@@ -1478,11 +1541,22 @@ def get_or_compute_sea_mosaic(force=False):
     meri on oma tasonsa, joten mitaan naista ei tarvita."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_path = CACHE_DIR / "_sea_mosaic.npz"
+    (ox, oy), (h, w) = _sea_mosaic_geometry()
+
+    # GEOMETRIA TARKISTETAAN, ei vain olemassaolo. Mosaiikki kattaa tasan
+    # sen tiilijoukon jolla se rakennettiin; jos tiilia lisataan, vanha
+    # mosaiikki ei ulotu uusille ja niiden ruudut osuisivat sen ulkopuolelle.
+    # Tarkistus on tassa eika mitatointilistassa, koska se johtuu suoraan
+    # rekisterista eika voi jaada tekematta.
     if not force and cache_path.exists():
         data = np.load(cache_path)
-        return data["sea"], (float(data["ox"]), float(data["oy"]))
+        if (data["sea"].shape == (h, w)
+                and float(data["ox"]) == ox and float(data["oy"]) == oy):
+            return data["sea"], (ox, oy)
+        print(f"  merimosaiikki: tiilisto muuttunut "
+              f"({data['sea'].shape} -> {(h, w)}), rakennetaan uudelleen",
+              flush=True)
 
-    (ox, oy), (h, w) = _sea_mosaic_geometry()
     # Oletus TOSI = tuntematon kasitellaan avovetena, jolloin sade jatkaa
     # kulkuaan kattoon asti ja ranta tulkitaan alttiiksi.
     sea = np.ones((h, w), dtype=bool)
@@ -1849,7 +1923,17 @@ def get_or_compute_height_mosaic(buildings_path, force=False):
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_path = CACHE_DIR / "_height_mosaic.npy"
     if not force and cache_path.exists():
-        return np.load(cache_path)
+        # Sama geometriatarkistus kuin merimosaiikilla - ne jakavat ruudukon.
+        # Muoto luetaan mmapilla, jottei gigatavun taulukkoa ladata pelkan
+        # tarkistuksen takia.
+        _o, muoto = _sea_mosaic_geometry()
+        kurkistus = np.load(cache_path, mmap_mode="r")
+        if kurkistus.shape == muoto:
+            del kurkistus
+            return np.load(cache_path)
+        del kurkistus
+        print(f"  korkeusmosaiikki: tiilisto muuttunut, rakennetaan uudelleen",
+              flush=True)
 
     sea, origo = get_or_compute_sea_mosaic(force=force)
     height = _height_mosaic_for(list(tiles.get_registry()), sea, origo,
