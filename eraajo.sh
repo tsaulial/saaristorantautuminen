@@ -9,11 +9,18 @@
 # komennolla ilman etta tyo menee hukkaan.
 #
 # KAYTTO
-#   ./eraajo.sh --bbox MINX MINY MAXX MAXY      # uusi alue
+#   ./eraajo.sh --bbox MINX MINY MAXX MAXY      # yksi suorakaide
+#   ./eraajo.sh --rannikko [--leveys 20000]     # koko Suomen rannikko
 #   ./eraajo.sh                                 # vain rakenna nykyisesta
 #
 # ESIMERKKI (Helsingin edusta)
 #   ./eraajo.sh --bbox 370000 6658000 402000 6682000
+#
+# KOKO RANNIKKO on KAYTAVA eika suorakaide: rannikon ympari piirretty
+# suorakaide on 230 782 km2 ja vaatisi 6 496 karttalehtea (147 Gt), kun
+# 20 km kaytava vaatii 867 lehtea (19,7 Gt). Suorakaide ei myoskaan kelpaisi
+# vektorihakuun, joka ottaa enintaan 17 334 km2 kerralla.
+#   ./eraajo.sh --rannikko
 #
 # EDELLYTYKSET KONEELLA
 #   - Python 3.11+ ja requirements.txt asennettuna
@@ -41,11 +48,16 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-BBOX=""
+# --bbox suorakaide, tai --rannikko koko Suomen rannikko kaytavana.
+ALUE=""
 if [ "${1:-}" = "--bbox" ]; then
     shift
-    BBOX="$1 $2 $3 $4"
+    ALUE="--bbox $1 $2 $3 $4"
     shift 4
+elif [ "${1:-}" = "--rannikko" ]; then
+    shift
+    ALUE="--rannikko"
+    if [ "${1:-}" = "--leveys" ]; then ALUE="$ALUE --leveys $2"; shift 2; fi
 fi
 
 kello() { date '+%H:%M:%S'; }
@@ -80,11 +92,11 @@ fi
 echo "  API-avain loytyy"
 echo "  levytilaa vapaana: $(df -h . | tail -1 | awk '{print $4}')"
 
-if [ -n "$BBOX" ]; then
-    vaihe "1/4  Lahtoaineiston lataus: $BBOX"
+if [ -n "$ALUE" ]; then
+    vaihe "1/4  Lahtoaineiston lataus: $ALUE"
     # Korkeusmalli, peruskartta, hydrografia (meri) ja rakennukset.
     # Jo levylla olevat lehdet ohitetaan.
-    python3 -u -m backend.mml_lataus --bbox $BBOX
+    python3 -u -m backend.mml_lataus $ALUE
 
     vaihe "2/4  Laserkeilaus puuttuville tiilille"
     # Raaka LAZ on kymmenia gigatavuja, joten se ladataan lehti kerrallaan,
@@ -114,7 +126,7 @@ PY
     # valimuistit vanhenevat HILJAA. Per-tiili raw ja lidar sailyvat.
     python3 -u -m backend.mml_lataus --mitatoi
 else
-    vaihe "1-3/4  Ohitetaan lataus (--bbox ei annettu)"
+    vaihe "1-3/4  Ohitetaan lataus (--bbox/--rannikko ei annettu)"
 fi
 
 vaihe "4/4  Staattinen build"

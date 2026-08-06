@@ -25,7 +25,7 @@ import json
 import shutil
 from pathlib import Path
 
-from . import karttalehti, mml
+from . import karttalehti, mml, rannikko
 
 ROOT = Path(__file__).resolve().parent.parent
 DEM_DIR = ROOT / "korkeusmalli-mml"
@@ -298,6 +298,10 @@ def main():
     ap = argparse.ArgumentParser(description="MML-aineiston lataus")
     ap.add_argument("--bbox", nargs=4, type=float, metavar=("MINX", "MINY", "MAXX", "MAXY"),
                     help="Ladattava alue EPSG:3067-metreina")
+    ap.add_argument("--rannikko", action="store_true",
+                    help="Koko Suomen rannikko itarajalta Torniojoelle kaytavana")
+    ap.add_argument("--leveys", type=float, default=rannikko.KAYTAVA_LEVEYS_M,
+                    help="Kaytavan leveys metreina (oletus 20000)")
     ap.add_argument("--todenna-kartta", metavar="LEHTI", nargs="?", const="",
                     help="Vertaa rajapinnan karttalehti olemassa olevaan")
     ap.add_argument("--mitatoi", action="store_true",
@@ -312,26 +316,43 @@ def main():
     if args.mitatoi:
         mitatoi(kuiva=args.kuiva)
         return 0
-    if not args.bbox:
-        ap.error("anna --bbox, --todenna-kartta tai --mitatoi")
+    if not args.bbox and not args.rannikko:
+        ap.error("anna --bbox, --rannikko, --todenna-kartta tai --mitatoi")
 
-    bbox = tuple(args.bbox)
-    dem = karttalehti.sheets_for_bbox(bbox, "dem")
-    kartta = karttalehti.sheets_for_bbox(bbox, "kartta")
-    print(f"Alue {bbox}: {len(dem)} DEM-lehtea, {len(kartta)} karttalehtea")
+    if args.rannikko:
+        # KAYTAVA EIKA SUORAKAIDE. Rannikon ympari piirretty suorakaide on
+        # 230 782 km2 ja vaatisi 6 496 lehtea (147 Gt); kaytava vaatii 867
+        # lehtea (19,7 Gt). Suorakaide ei myoskaan kelpaisi vektorihakuun,
+        # koska se ylittaa rajapinnan 17 334 km2 katon 14-kertaisesti.
+        dem, kartta = rannikko.lehdet(args.leveys)
+        vektoribboxit = rannikko.vektoripalat(args.leveys)
+        print(f"RANNIKKO, kaytavan leveys {args.leveys/1000:.0f} km")
+    else:
+        bbox = tuple(args.bbox)
+        dem = karttalehti.sheets_for_bbox(bbox, "dem")
+        kartta = karttalehti.sheets_for_bbox(bbox, "kartta")
+        vektoribboxit = [bbox]
+        print(f"Alue {bbox}")
+
+    print(f"  {len(dem)} DEM-lehtea, {len(kartta)} karttalehtea, "
+          f"{len(vektoribboxit)} vektoripalaa")
     if args.kuiva:
-        print("  DEM:   ", " ".join(dem))
-        print("  kartta:", " ".join(kartta))
+        print("  DEM:   ", " ".join(dem[:20]), "..." if len(dem) > 20 else "")
+        print("  kartta:", " ".join(kartta[:20]), "..." if len(kartta) > 20 else "")
+        ala = sum((b[2]-b[0])*(b[3]-b[1]) for b in vektoribboxit) / 1e6
+        print(f"  vektorihaut yhteensa {ala:.0f} km2")
         return 0
 
     key = mml.api_key()
     lataa_kartta(kartta, key=key)
     lataa_korkeusmalli(dem, key=key)
-    uudet_h = lataa_hydrografia(bbox, key=key)
-    yhdista_hydrografia([p for p in uudet_h if p.suffix.lower() == ".gpkg"])
-    if not args.ei_rakennuksia:
-        uudet = lataa_rakennukset(bbox, key=key)
-        yhdista_rakennukset([p for p in uudet if p.suffix.lower() == ".gpkg"])
+    for i, bb in enumerate(vektoribboxit, 1):
+        print(f"vektoripala {i}/{len(vektoribboxit)}")
+        uudet_h = lataa_hydrografia(bb, key=key, dest=ROOT / "vesistot-mml" / f"_pala{i}")
+        yhdista_hydrografia([p for p in uudet_h if p.suffix.lower() == ".gpkg"])
+        if not args.ei_rakennuksia:
+            uudet = lataa_rakennukset(bb, key=key, dest=BUILDINGS_DIR / f"_pala{i}")
+            yhdista_rakennukset([p for p in uudet if p.suffix.lower() == ".gpkg"])
     print("Lataus valmis. Aja seuraavaksi:  python3 -m backend.mml_lataus --mitatoi")
     return 0
 
