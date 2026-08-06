@@ -382,56 +382,6 @@ Kasvillisuusarvio on siksi **eristetty omaksi funktiokseen** (`pipeline.vegetati
 
 ---
 
-## 5d. Itälaajennus ja MML-latausputki (2026-08-05)
-
-Demo kattoi 18×30 km Ahvenanmaalta (11 tiiltä), ja aineisto oli ladattu käsin Karttapaikasta. Nyt mukana on myös **Helsingin edusta** — yhteensä **38 tiiltä**, `docs/` 353 Mt.
-
-### Lataus rajapinnasta
-
-`backend/mml_lataus.py` hakee kolme aineistoa MML:n tiedostopalvelusta (sama OGC API Processes -rajapinta kuin laserkeilauksella): `korkeusmalli_2m_karttalehti` (TIFF), `maastokartta_rasteri_karttalehti` + `dataSetInput=maastokartta_rasteri_10k_painovari` (PNG) ja `maastotietokanta_bbox` + `themeInput=rakennukset` (GPKG). Rajat: **100 lehteä/haku**, maastotietokannalla 17 334 km².
-
-`backend/mml.py` sisältää avaimen käsittelyn ja työn ajamisen — **yksi toteutus, koska avain on salaisuus**. `lidar.py` käyttää nyt samaa.
-
-### Karttalehtijako johdettu aineistosta
-
-`backend/karttalehti.py` laskee TM35FIN-lehtinimen koordinaateista ja päinvastoin. Sääntö on **johdettu olemassa olevista tiedostoista, ei dokumentaatiosta**, ja se toistaa kaikki 20 tunnettua lehteä metrin tarkkuudella molempiin suuntiin (`python3 -m backend.karttalehti`).
-
-Tämä ei ole ylityötä: Helsingin edusta osuu **kahden ykköstason lehden rajalle** (`K42…`/`L41…`), koska raja kulkee y = 6 666 000 eli kaupungin läpi. Arvaamalla se olisi mennyt väärin.
-
-### Karttatuote todennettiin ennen joukkolatausta
-
-Vesimaski tunnistaa meren **väristä**. Väärä tuotevariantti ei kaataisi mitään vaan tekisi kaikista pistemääristä vääriä. Siksi `--todenna-kartta` lataa yhden lehden, joka meillä jo on, ja vertaa `detect_water_fill_mask`-maskit pikselitasolla. Tulos: **0 eroavaa pikseliä 144 miljoonasta.**
-
-### Rannaton tiili kaatoi ajon — ja paljasti hiljaisen vian
-
-`build_static.py` kaatui kolmen tunnin jälkeen tiileen `L4131F` (Helsingin sisämaata, 100 % maata):
-
-```
-ValueError: index -6000 is out of bounds for array with size 36000000
-```
-
-**`distance_transform_edt` ei kaadu jos taustapikseleitä ei ole yhtään** — se mittaa etäisyyden haamupisteeseen rivillä −1 ja palauttaa `indices[0] = -1`. Etäisyydet näyttävät täysin uskottavilta (1, 2, 3 … metriä yläreunasta). Toistettu erikseen pienoiskoossa.
-
-Sama haamu tuotti hiljaisen vian, joka ei kaatanut mitään: neljä rannatonta tiiltä sai **160 puskuripikseliä** yläreunaansa, ja ne olivat mukana kynnysarvojen laskennassa. Molemmat korjattu eksplisiittisellä haaralla `pipeline.py`:ssä.
-
-Kolmas `distance_transform_edt`-kutsu (`score_engine.py`, rakennusetäisyys) on **turvassa vahingossa**: taulukkoa paddataan `DIST_IDEAL_M` = 150 m, joten haamu jää rajauksen ulkopuolelle. Mitattu `L3124G`:llä (Ahvenanmaan tiili ilman rakennuksia): kaikki 367 261 puskuripikseliä saivat tasan 1,0.
-
-### Laajennus paljasti reunavirheen vanhassa aineistossa
-
-Todennuksen tärkein invariantti oli, ettei Ahvenanmaa saa muuttua (yli 200 km päässä, `MAX_FETCH_M` 15 km). Pyyhkäisymatkat olivatkin **bitilleen identtiset**. Estekorkeuksista sen sijaan **0,53 % arvoista muuttui, ja jokainen muuttunut arvo oli pienempi** (8 603 pienempää, 0 suurempaa, keskiarvo −0,32 m).
-
-Syy on `_march_ray`-funktion esteenetsinnässä: se rajaa katseen `np.clip`illä taulukon reunaan. Vanha 18×30 km mosaiikki oli niin pieni, että reunalla katse leikkautui takaisin maalle ja **yliarvioi esteen korkeuden**. Kaikki muuttuneet solut ovat alle 15 km vanhan reunan etäisyydellä (mediaani 1 495 m, muuttumattomilla 4 910 m).
-
-**Ahvenanmaan tuulensuoja on siis ollut liian optimistinen alueen reunoilla.** Virhe on näkymätön niin kauan kuin katsoo vain yhtä aluetta — ja se koskee edelleen koko aineiston ulkoreunaa, ei vain entistä. Jos tämä halutaan poistaa, mosaiikkia on levennettävä `MAX_FETCH_M`:n verran tiilijoukon ympärille.
-
-### Välimuistin mitätöinti
-
-Tiilien lisääminen muuttaa merimosaiikin origon ja muodon, jolloin kaikki mosaiikkiin sidotut välimuistit vanhenevat **hiljaa**. `--mitatoi` poistaa ne. Per-tiili `*_raw.npz` ja `*_lidar.npz` säilyvät (eivät riipu mosaiikista) — se säästää nykyisten tiilien kalleimman työn.
-
-Listalta jäi ensin pois `{tiili}_water.npz` ja `{tiili}_fetch.npz`, koska kuviot osuivat vain PNG-nimiin. Juuri sellaista hiljaista vanhentumista tämä listaus torjuu.
-
----
-
 ## 5c. Vektorikarttatasot: väylät, suojelualueet ja palvelut (2026-08-05)
 
 Sovellus vastasi vain kysymykseen *onko tämä ranta hyvä rantautua*. Melojalle ja pienveneilijälle puuttui kolme asiaa: mitä pitää **väistää**, minne ei ehkä saa **mennä**, ja mitä on **tarjolla**. Kaikki kolme löytyivät avoimena datana ja ovat nyt toteutettuina (`backend/vektoritasot.py`).
@@ -482,6 +432,122 @@ Ahvenanmaa hoitaa omat aineistonsa itse. Mitattuna samankokoisilla alueilla:
 - **Ei lajihavaintoja.** laji.fi karkeistaa arkaluontoisten lajien sijainnit nimenomaan siksi, ettei pesiä löydettäisi kartalta. Karkeistettu piste olisi sekä hyödytön että helposti väärin luettu.
 - **Ei merimerkkejä**: `turvalaitteet_uusi` antoi 173 kohdetta pelkällä koealueella. Milloin merimerkki auttaa melojaa ja milloin se on ruuhkaa, on oma suunnittelukysymyksensä.
 - **Koko**: kolme JSONia yhteensä 63 kt eli häviävän pieni osa `docs/`-hakemiston 93 Mt:sta.
+
+---
+
+## 5d. Itälaajennus ja MML-latausputki (2026-08-05)
+
+Demo kattoi 18×30 km Ahvenanmaalta (11 tiiltä), ja aineisto oli ladattu käsin Karttapaikasta. Nyt mukana on myös **Helsingin edusta** — yhteensä **38 tiiltä**, `docs/` 353 Mt.
+
+### Lataus rajapinnasta
+
+`backend/mml_lataus.py` hakee kolme aineistoa MML:n tiedostopalvelusta (sama OGC API Processes -rajapinta kuin laserkeilauksella): `korkeusmalli_2m_karttalehti` (TIFF), `maastokartta_rasteri_karttalehti` + `dataSetInput=maastokartta_rasteri_10k_painovari` (PNG) ja `maastotietokanta_bbox` + `themeInput=rakennukset` (GPKG). Rajat: **100 lehteä/haku**, maastotietokannalla 17 334 km².
+
+`backend/mml.py` sisältää avaimen käsittelyn ja työn ajamisen — **yksi toteutus, koska avain on salaisuus**. `lidar.py` käyttää nyt samaa.
+
+### Karttalehtijako johdettu aineistosta
+
+`backend/karttalehti.py` laskee TM35FIN-lehtinimen koordinaateista ja päinvastoin. Sääntö on **johdettu olemassa olevista tiedostoista, ei dokumentaatiosta**, ja se toistaa kaikki 20 tunnettua lehteä metrin tarkkuudella molempiin suuntiin (`python3 -m backend.karttalehti`).
+
+Tämä ei ole ylityötä: Helsingin edusta osuu **kahden ykköstason lehden rajalle** (`K42…`/`L41…`), koska raja kulkee y = 6 666 000 eli kaupungin läpi. Arvaamalla se olisi mennyt väärin.
+
+### Karttatuote todennettiin ennen joukkolatausta
+
+Vesimaski tunnistaa meren **väristä**. Väärä tuotevariantti ei kaataisi mitään vaan tekisi kaikista pistemääristä vääriä. Siksi `--todenna-kartta` lataa yhden lehden, joka meillä jo on, ja vertaa `detect_water_fill_mask`-maskit pikselitasolla. Tulos: **0 eroavaa pikseliä 144 miljoonasta.**
+
+### Rannaton tiili kaatoi ajon — ja paljasti hiljaisen vian
+
+`build_static.py` kaatui kolmen tunnin jälkeen tiileen `L4131F` (Helsingin sisämaata, 100 % maata):
+
+```
+ValueError: index -6000 is out of bounds for array with size 36000000
+```
+
+**`distance_transform_edt` ei kaadu jos taustapikseleitä ei ole yhtään** — se mittaa etäisyyden haamupisteeseen rivillä −1 ja palauttaa `indices[0] = -1`. Etäisyydet näyttävät täysin uskottavilta (1, 2, 3 … metriä yläreunasta). Toistettu erikseen pienoiskoossa.
+
+Sama haamu tuotti hiljaisen vian, joka ei kaatanut mitään: neljä rannatonta tiiltä sai **160 puskuripikseliä** yläreunaansa, ja ne olivat mukana kynnysarvojen laskennassa. Molemmat korjattu eksplisiittisellä haaralla `pipeline.py`:ssä.
+
+Kolmas `distance_transform_edt`-kutsu (`score_engine.py`, rakennusetäisyys) on **turvassa vahingossa**: taulukkoa paddataan `DIST_IDEAL_M` = 150 m, joten haamu jää rajauksen ulkopuolelle. Mitattu `L3124G`:llä (Ahvenanmaan tiili ilman rakennuksia): kaikki 367 261 puskuripikseliä saivat tasan 1,0.
+
+### Laajennus paljasti reunavirheen vanhassa aineistossa
+
+Todennuksen tärkein invariantti oli, ettei Ahvenanmaa saa muuttua (yli 200 km päässä, `MAX_FETCH_M` 15 km). Pyyhkäisymatkat olivatkin **bitilleen identtiset**. Estekorkeuksista sen sijaan **0,53 % arvoista muuttui, ja jokainen muuttunut arvo oli pienempi** (8 603 pienempää, 0 suurempaa, keskiarvo −0,32 m).
+
+Syy on `_march_ray`-funktion esteenetsinnässä: se rajaa katseen `np.clip`illä taulukon reunaan. Vanha 18×30 km mosaiikki oli niin pieni, että reunalla katse leikkautui takaisin maalle ja **yliarvioi esteen korkeuden**. Kaikki muuttuneet solut ovat alle 15 km vanhan reunan etäisyydellä (mediaani 1 495 m, muuttumattomilla 4 910 m).
+
+**Ahvenanmaan tuulensuoja on siis ollut liian optimistinen alueen reunoilla.** Virhe on näkymätön niin kauan kuin katsoo vain yhtä aluetta — ja se koskee edelleen koko aineiston ulkoreunaa, ei vain entistä. Jos tämä halutaan poistaa, mosaiikkia on levennettävä `MAX_FETCH_M`:n verran tiilijoukon ympärille.
+
+### Välimuistin mitätöinti
+
+Tiilien lisääminen muuttaa merimosaiikin origon ja muodon, jolloin kaikki mosaiikkiin sidotut välimuistit vanhenevat **hiljaa**. `--mitatoi` poistaa ne. Per-tiili `*_raw.npz` ja `*_lidar.npz` säilyvät (eivät riipu mosaiikista) — se säästää nykyisten tiilien kalleimman työn.
+
+Listalta jäi ensin pois `{tiili}_water.npz` ja `{tiili}_fetch.npz`, koska kuviot osuivat vain PNG-nimiin. Juuri sellaista hiljaista vanhentumista tämä listaus torjuu.
+
+---
+
+## 5e. Vektorirantaviiva, vanhan toteutuksen poisto ja skaalautuvuus (2026-08-06)
+
+### Rantaviiva ja meri tulevat nyt vektorista (`backend/vesisto.py`)
+
+Ne luettiin peruskartan **väreistä**. Helsingin aineisto hajotti sen kahdella tavalla:
+
+- **Meri ja järvi ovat samanvärisiä**, joten ne erotettiin 50 ha pinta-alalla. Tiiliruukinlahti Herttoniemessä jäi 9,9 ha "sisävedeksi" — Itäväylän penger katkaisee lahden suun — eikä sinne ulottunut rantaviiva eikä aallokkoanalyysi.
+- **Vesistöjen nimet on painettu tasan samalla sinisellä kuin rantaviiva.** Sanat "Purolahti" ja "Bäckviken" tulkittiin rantaviivaksi keskellä lahtea.
+
+Viisi erottelijaa kokeiltiin tekstin poistamiseksi — maan läheisyys, sama avattuna, viivan paksuus (mediaani 1,0 px molemmilla), valkoinen reunus (0,210 vs 0,177, jakaumat päällekkäin) ja etäisyys vesialueen rajasta (5 m kynnys poisti 58 % aidosta). **Yksikään ei toiminut.**
+
+Maastotietokannan `hydrografia`-teemassa meri on oma tasonsa ja järvi omansa. Vaihto poisti kolme kiertotietä: `SEA_MIN_AREA_M2`, `SEA_CLOSING_RADIUS_M`, `SEA_BRIDGE_M` ja funktiot `compute_sea_mask`/`sea_closing`.
+
+**Todennettu vanhaa vasten:** Ahvenanmaalla (L3123F) uusi rantaviiva on samassa paikassa kuin vanha (mediaanietäisyys **0,0 m**, 90 % 0,0 m). Helsingissä mediaani 2,8 m mutta 90 % piste 281 m — ero on tasan ne lahdet jotka rasteripolku hukkasi. Rantaruutuja tuli 473 006 → 500 153 (**+5,7 %**).
+
+Lataus on 0,03 Mt/km² eli 41 Mt koko nykyalueelle. Kallio ja suo luetaan edelleen rasterista; niillä ei ole vastaavaa nimitörmäystä.
+
+### Vanha toteutus poistettu, uusi ruudukko 2,0 m
+
+Kartta piirrettiin kahdella tavalla rinnakkain. Esilasketut paksuus × prosentti × taso -kuvat (50/tiili) olivat **53 % koosta ja 2/3 laskenta-ajasta**.
+
+Ennen poistoa mitattiin laatu, koska ehtona oli ettei se heikkene. 3,5 m ruudulla pistemäärät olivat käytännössä samat (mediaaniero 0,003) mutta **rantakaistale leveni 44 %** ja reunat porrastuivat näkyvästi; väriluokka vaihtui 3,2 %:ssa pikseleistä.
+
+Ratkaisu ei ollut valita kahdesta huonosta vaan tihentää ruutua: `NEW_PIXEL_FACTOR` 3,5 → **2,0**. Mitattu koko: factors+tiebreak 1,22 Mt/tiili (3,5 m: 0,57), ja `docs/` on silti pienempi kuin ennen — säästö ei tullut karkeasta ruudusta vaan yhdistelmäräjähdyksen poistosta. Jopa 1 m tarkkuudella tulos olisi ollut nykyistä pienempi.
+
+Tulos: `docs/` 358 → **256 Mt**, tiedostoja 8 930 → **570**.
+
+Poistettu: `get_or_compute_overlay`, `get_or_compute_top`, `/api/overlay/*`, toteutusvalinta legendassa, `currentImpl`/`oldScoreGroup`/`oldTopGroup`/`refreshOld`.
+
+### Mosaiikki alueellistettu — koko rannikko on nyt mahdollinen
+
+Merimosaiikki on tiheä taulukko tiilien rajaaman suorakaiteen yli. Itärajalta Tornioon se olisi 39 566 × 71 680 = **2,8 miljardia solua** eli korkeusmalli float32:na **11,3 Gt**, vaikka käytävä on siitä ~5 %.
+
+Laskenta jaetaan nyt alueisiin (`_laskenta_alueet`, `MAX_MOSAIC_CELLS = 300 M`). Kukin kattaa osan tiilistä (**ydin**) ja lisäksi kaikki alle `MAX_FETCH_M` päässä olevat (**konteksti**), jotta reunan säteet näkevät oikean maan. **Alueet limittyvät tahallaan.**
+
+**Todennettu:** alueittain laskettu tulos on bitilleen identtinen kerralla laskettuun (104 098 solua, fetch ja obstacle max ero 0,000000).
+
+Sivutuotteena per-tiili-laskenta irrotettiin globaalista mosaiikista: `_tile_mosaic_cells` laskee tunnisteet koordinaateista ja vesiruudukon merimaski rasteroidaan suoraan vektorista.
+
+### Lähteen sormenjälki — välimuisti tunnistaa päivityksen
+
+Välimuisti tarkisti **vain tiedoston olemassaolon**. Jos MML julkaisi uuden karttalehden tai korjatun rantaviivan, putki käytti vanhaa tulosta hiljaa.
+
+Nyt jokaisen tiilen `_raw.npz`:ään tallennetaan `lahde_sormenjalki` (koko + muokkausaika DEM:stä, karttalehdestä, rakennuksista ja hydrografiasta). Muuttunut tiili käsitellään pyyhkäisymatkoissa samoin kuin lisätty — koneisto oli jo olemassa, vain muutossignaali puuttui.
+
+Sormenjälki ei ole sisällön tiiviste: lähteet ovat satoja megatavuja ja tiivisteen laskenta maksaisi enemmän kuin uudelleenlaskenta. Hinta on että aikaleiman hävittävä kopiointi näyttää muutokselta. **Se on oikea suunta erehtyä.**
+
+### Eräajo toiselle koneelle (`eraajo.sh`)
+
+Koko putki yhdellä komennolla: lataus → laserkeilaus → mitätöinti → build. Toistettava ja keskeytettävä.
+
+Raportoi etenemisen rivi kerrallaan jokaisessa pitkässä vaiheessa — **pyyhkäisymatkat tulostavat ilmansuunnan kerrallaan (48 kpl) aika-arvioineen**, koska se on ajon pisin hiljainen jakso. Kaikki Python-kutsut `-u`-lipulla: puskuroitu tuloste näyttää tunteja tyhjältä lokilta.
+
+Edellytystarkistus ajetaan **ennen** tuntien työtä. Se löysi ensimmäisellä ajolla puuttuvat `Pillow` ja `laspy[lazrs]` — todellinen puute `requirements.txt`:ssä, joka ei näkynyt kehityskoneella koska paketit olivat asennettuina muuta kautta.
+
+### Julkaisu: Railway, ei vielä käytössä (linjaus 2026-08-06)
+
+- **Railway on ensisijainen julkaisualusta.** Palvelua ei ole vielä tilattu; se otetaan käyttöön kun projekti on pidemmällä.
+- **GitHub on vain sisäinen versionhallinta.** Ei GitHub Pages -julkaisua.
+- **Mitään ei julkaista Railwayhin nyt.**
+- `docs/` on `.gitignore`ssa, joten sivustoa ei ole verkossa. Sovellus ajetaan paikallisesti (`python3 -m http.server docs/` tai kehityspalvelin).
+
+Mitoitus julkaisua varten: nykyinen 38 tiiltä = 256 Mt, 20 km käytävä (244 lehteä) ≈ 1,6 Gt, koko rannikko (867 lehteä) ≈ 5,8 Gt.
 
 ---
 

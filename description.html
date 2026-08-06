@@ -79,10 +79,19 @@
 
   <h1>🧭 Rantautumispaikkojen analysointisovellus</h1>
   <p class="tagline">
-    Näyttää kartalla mihin kohtiin Saaristomeren rannikkoa kannattaa rantautua veneellä
+    Näyttää kartalla mihin kohtiin rannikkoa kannattaa rantautua veneellä
     tai kajakilla — ja mihin ei.
   </p>
-  <a class="cta" href="https://tsaulial.github.io/saaristorantautuminen/">Kokeile sovellusta →</a>
+  <p>
+    Mukana on kaksi erillistä aluetta: Ahvenanmaan saaristoa ja Helsingin edustaa.
+    Ne ovat noin 200 km päässä toisistaan, ja väli täytetään myöhemmin. Tavoitteena on
+    koko Suomen rannikko itärajalta Torniojoelle.
+  </p>
+  <p>
+    Sovellusta ei ole tällä hetkellä julkaistu verkkoon. Se ajetaan paikallisesti, ja
+    julkaisualustaksi on valittu <b>Railway</b> — se otetaan käyttöön kun projekti on
+    pidemmällä. GitHubia käytetään vain versionhallintaan, ei julkaisuun.
+  </p>
 
   <h2>Miten pisteytys toimii?</h2>
   <p>Jokainen rantaviivan lähellä oleva kohta saa värin:</p>
@@ -190,7 +199,7 @@
   </p>
   <p>
     Rantaviivaa on kaikkiaan noin <b>700 km</b> (haarukka 600–900 km). Luku on arvio:
-    rantaviiva on luettu peruskartan kuvasta, ei valmiista viivageometriasta, joten sen pituus
+    rantaviivan pituus
     riippuu siitä millä tarkkuudella mitataan — sama ilmiö kuin klassisessa kysymyksessä
     ”kuinka pitkä on Britannian rannikko”. Jakauman muoto ja prosenttiosuudet ovat sen sijaan
     tarkkoja.
@@ -210,19 +219,7 @@
     <p>Kuinka tiukka "parhaat rantautumispaikat" -näkymä on. 1 % näyttää vain aivan huippukohdat, 10 % selvästi laajemman joukon. Vertailu on aina koko alueen laajuinen, ei saarikohtainen — ja se ottaa huomioon juuri ne tekijät jotka on valittu.</p>
   </div>
 
-  <h3 class="sub">Kokeellinen vertailu</h3>
-  <p>
-    Valikossa on toistaiseksi myös <b>"Toteutus (vertailua varten)"</b> -valinta
-    (<i>Nykyinen</i> / <i>Uusi</i>). Se ei muuta pisteytystä eikä lopputulosta, vain tavan
-    jolla kartta piirretään: uudessa tavassa väritys ja rajaukset lasketaan vasta selaimessa
-    yhdestä esilasketusta kuvasta, kun nykyisessä jokainen säätimen asento on oma valmiiksi
-    laskettu kuvansa. Uusi tapa on hieman karkeampi (3,5 metrin ruutu), mutta vie murto-osan
-    levytilasta — sillä on merkitystä, jos kartoitettava alue joskus laajenee koko
-    Suomenlahdelle ja länsirannikolle. Valinta on kehityksen aikainen vertailu eikä jää
-    lopulliseen sovellukseen.
-  </p>
-
-  <h2>Entä tuuli ja aallokko?</h2>
+<h2>Entä tuuli ja aallokko?</h2>
   <p>
     Sama ranta on eri ranta eri tuulella. Kartta ottaa sään huomioon kahdella tavalla.
   </p>
@@ -289,8 +286,28 @@
       <span>MML:n rekisteri rakennuksista ja rakennelmista — etäisyyksien laskemiseen.</span>
     </li>
     <li>
+      <b>Maastotietokanta, hydrografia</b>
+      <span>Meri omana tasonaan — tästä tulevat sekä merialue että rantaviiva.</span>
+    </li>
+    <li>
       <b>Peruskartta</b>
-      <span>MML:n karttapohja, josta väreistä tunnistettiin kalliot, rannat ja suot.</span>
+      <span>MML:n karttapohja, josta väreistä tunnistetaan kalliot ja suot.</span>
+    </li>
+    <li>
+      <b>Laserkeilaus (0,5 p/m²)</b>
+      <span>Puuston korkeus tuulensuojamallia varten.</span>
+    </li>
+    <li>
+      <b>Vesiväylät</b>
+      <span>Väylävirasto — väyläluokat, väyläalueet ja rajoitusalueet.</span>
+    </li>
+    <li>
+      <b>Suojelualueet</b>
+      <span>Suomen ympäristökeskus — Natura-alueet ja luonnonsuojelualueet.</span>
+    </li>
+    <li>
+      <b>Palvelut</b>
+      <span>OpenStreetMap — kaupat, saunat, laavut, veneluiskat ja satamat.</span>
     </li>
     <li>
       <b>Sää- ja aallokkoennuste</b>

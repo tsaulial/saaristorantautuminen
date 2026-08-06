@@ -2,7 +2,9 @@
 
 ## Mikä tämä on?
 
-Verkkosovellus, joka näyttää kartalla **mihin kohtiin Saaristomeren rannikkoa kannattaa rantautua** veneellä tai kajakilla — ja mihin ei.
+Verkkosovellus, joka näyttää kartalla **mihin kohtiin rannikkoa kannattaa rantautua** veneellä tai kajakilla — ja mihin ei.
+
+Mukana on tällä hetkellä kaksi erillistä aluetta: Ahvenanmaan saaristoa ja Helsingin edustaa. Ne ovat noin 200 km päässä toisistaan, ja väli täytetään myöhemmin. Tavoitteena on koko Suomen rannikko itärajalta Torniojoelle.
 
 Sovellus katsoo jokaista rantaviivan lähellä olevaa kohtaa ja pisteyttää sen väreillä:
 
@@ -10,7 +12,7 @@ Sovellus katsoo jokaista rantaviivan lähellä olevaa kohtaa ja pisteyttää sen
 - 🟡 **keltainen** = ihan ok
 - 🔴 **punainen** = huono
 
-Kokeile sovellusta: **https://tsaulial.github.io/saaristorantautuminen/**
+Sovellusta ei ole tällä hetkellä julkaistu verkkoon. Se ajetaan paikallisesti, ja julkaisualustaksi on valittu **Railway** — se otetaan käyttöön kun projekti on pidemmällä. GitHubia käytetään vain versionhallintaan, ei julkaisuun.
 
 ## Miten pisteytys toimii?
 
@@ -68,7 +70,7 @@ Oletusasetuksilla kuva on tämä: **noin 500 km helppoa (72 %), 186 km kohtalais
 
 Kuvaajassa on lisäksi violetti käyrä, joka näyttää saman rantaviivan **kärkipaikkojen mittapuulla** — eli kun jokainen kohta arvioidaan koko rantakaistaleensa heikoimman osan mukaan. Ero on iso ja kertoo paljon: helpon rannan määrä putoaa 502 kilometristä **191 kilometriin**. Kaksi kolmasosaa siitä rannasta, joka näyttää vesirajassa helpolta, ei siis ole helppoa enää muutamaa metriä kauempana. Jos katsoo pelkkää maaston jyrkkyyttä, vaikean osuus nousee 93 kilometriin — jyrkkiä kalliorantoja on selvästi enemmän kuin mitä kokonaispisteytys antaa ymmärtää, koska muut tekijät nostavat niiden pisteitä.
 
-Rantaviivaa on kaikkiaan noin **700 km** (haarukka 600–900 km). Luku on arvio: rantaviiva on luettu peruskartan kuvasta, ei valmiista viivageometriasta, joten sen pituus riippuu siitä millä tarkkuudella mitataan — sama ilmiö kuin klassisessa kysymyksessä "kuinka pitkä on Britannian rannikko". Jakauman muoto ja prosenttiosuudet ovat sen sijaan tarkkoja.
+Rantaviivaa on kaikkiaan noin **700 km** (haarukka 600–900 km). Luku on arvio: rantaviivan pituus riippuu siitä millä tarkkuudella mitataan — sama ilmiö kuin klassisessa kysymyksessä "kuinka pitkä on Britannian rannikko". Jakauman muoto ja prosenttiosuudet ovat sen sijaan tarkkoja.
 
 ### Esitystapa
 
@@ -77,9 +79,13 @@ Asetussivulla on lisäksi kaksi liukusäädintä, jotka eivät vaikuta pisteytyk
 - **Rantaviivan korostuksen paksuus** (1–20 pikseliä, oletus 10) — kuinka leveänä rantakaista piirretään.
 - **Parhaat rannat** (1–10 %, oletus 7 %) — kuinka tiukka "parhaat rantautumispaikat" -näkymä on. 1 % näyttää vain aivan huippukohdat, 10 % selvästi laajemman joukon. Vertailu on aina **koko alueen** laajuinen, ei saarikohtainen — ja se ottaa huomioon juuri ne tekijät jotka on valittu.
 
-### Kokeellinen vertailu
+## Mitä muuta kartalla näkyy?
 
-Valikossa on toistaiseksi myös **"Toteutus (vertailua varten)"** -valinta (*Nykyinen* / *Uusi*). Se ei muuta pisteytystä eikä lopputulosta, vain tavan jolla kartta piirretään: uudessa tavassa väritys ja rajaukset lasketaan vasta selaimessa yhdestä esilasketusta kuvasta, kun nykyisessä jokainen säätimen asento on oma valmiiksi laskettu kuvansa. Uusi tapa on hieman karkeampi (3,5 metrin ruutu), mutta vie murto-osan levytilasta — sillä on merkitystä, jos kartoitettava alue joskus laajenee koko Suomenlahdelle ja länsirannikolle. Valinta on kehityksen aikainen vertailu eikä jää lopulliseen sovellukseen.
+Rantautumispisteytyksen lisäksi kartalle voi ottaa kolme lisätasoa:
+
+- **Väylät** — vesiväylät luokkineen. Kauppamerenkulun pääväylät erottuvat paksuna punaisena: niillä liikkuu satojen metrien rahtialuksia, jotka eivät väistä.
+- **Suojelualueet** — Natura-alueet sekä valtion ja yksityisten suojelualueet. Taso kertoo **missä olet**, ei sitä saako siellä rantautua: maihinnousukieltoja ei ole olemassa paikkatietona, vaan ne ovat järjestyssäännöissä. Siksi kartta kehottaa aina tarkistamaan säännön.
+- **Palvelut** — kaupat, saunat, majoitus, laavut, nuotiopaikat, veneluiskat, satamat, juomavesi ja käymälät.
 
 ## Entä tuuli ja aallokko?
 
@@ -113,15 +119,31 @@ Pallo hakee lisäksi **Norjan ilmatieteen laitoksen ennusteen** omalta kohdaltaa
 
 ## Käytetyt avoimet aineistot
 
-Kolme Maanmittauslaitoksen (MML) avointa aineistoa:
+Maanmittauslaitokselta (MML) neljä aineistoa:
 
-1. **Korkeusmalli (2 m)** — MML:n avoin korkeusmalliaineisto, kertoo maaston muodot ja jyrkkyyden.
-2. **Maastotietokanta, rakennukset** (`rakennukset.gpkg`) — MML:n rekisteri rakennuksista ja rakennelmista, käytetty etäisyyksien laskemiseen.
-3. **Peruskartta** (rasterikuvat) — MML:n tavallinen karttapohja, josta luettiin värien perusteella kalliot, rannat ja suot.
-4. **Sää- ja aallokkoennuste** — Ilmatieteen laitoksen avoin data: tuuli, puuskat ja aallonkorkeus.
-5. **Vertailuennuste** — MET Norway, toinen mielipide tietopalloissa; näytetään vain jos se poikkeaa.
+1. **Korkeusmalli (2 m)** — kertoo maaston muodot ja jyrkkyyden.
+2. **Maastotietokanta, rakennukset** — rekisteri rakennuksista ja rakennelmista, käytetty etäisyyksien laskemiseen.
+3. **Maastotietokanta, hydrografia** — **meri omana tasonaan**. Tästä tulevat sekä merialue että rantaviiva.
+4. **Peruskartta** (rasterikuvat) — karttapohja, josta luetaan värien perusteella kalliot ja suot.
+5. **Laserkeilaus (0,5 p/m²)** — puuston korkeus tuulensuojamallia varten.
 
-Kolme ensimmäistä ovat osa MML:n avoimen tietoaineiston kokonaisuutta. Myös sääaineistot ovat avointa dataa eivätkä vaadi tunnuksia — juuri siksi sivu toimii ilman omaa palvelinta.
+Muilta toimittajilta:
+
+6. **Sää- ja aallokkoennuste** — Ilmatieteen laitos: tuuli, puuskat ja aallonkorkeus.
+7. **Vertailuennuste** — MET Norway, toinen mielipide tietopalloissa; näytetään vain jos se poikkeaa.
+8. **Vesiväylät** — Väylävirasto.
+9. **Suojelualueet** — Suomen ympäristökeskus.
+10. **Palvelut** — OpenStreetMap.
+
+### Miksi rantaviiva luetaan vektorista eikä kartasta
+
+Rantaviiva ja meri luettiin aluksi peruskartan **väreistä**. Se toimi kunnes aineisto laajeni Helsinkiin, ja hajosi silloin kahdella tavalla.
+
+Meri ja järvi ovat kartassa samanvärisiä, joten ne piti erottaa pinta-alan perusteella. Kapeat lahdet, joiden suun ylittää siltapenger, jäivät silloin "sisävesiksi" ja katosivat kartalta kokonaan. Lisäksi **vesistöjen nimet on painettu samalla sinisellä kuin rantaviiva**, joten sanat tulkittiin rannaksi keskellä lahtea.
+
+Peruskartta on ihmiselle piirretty kuva, ei mittausaineisto. Maastotietokannassa meri on oma tasonsa ja järvi omansa, eikä tekstiä ole. Lähteen vaihto poisti kolme kiertotietä kerralla.
+
+MML:n aineistot vaativat ilmaisen API-avaimen; sää- ja muut aineistot eivät vaadi tunnuksia lainkaan.
 
 ### Mitä rakennusaineistosta otettiin mukaan?
 
