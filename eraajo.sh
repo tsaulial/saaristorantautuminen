@@ -59,7 +59,8 @@ vaihe "0/4  Edellytysten tarkistus"
 python3 -u - <<'PY'
 import sys
 puuttuu = []
-for m in ("numpy", "scipy", "cv2", "rasterio", "geopandas", "pyproj", "PIL", "laspy"):
+for m in ("numpy", "scipy", "cv2", "rasterio", "geopandas", "pyproj", "PIL",
+          "laspy", "lazrs", "pandas", "pyogrio"):
     try:
         __import__(m)
     except ImportError:

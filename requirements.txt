@@ -7,3 +7,12 @@ opencv-python-headless==4.11.0.86
 numpy==2.2.1
 scipy==1.17.0
 pyproj==3.7.2
+# Kuvien kirjoitus (build_static.py: WebP-enkoodaus)
+Pillow==10.4.0
+# Laserkeilausaineiston luku. lazrs-lisaosa on PAKOLLINEN: MML jakelee
+# aineiston LAZ-muodossa, jota pelkka laspy ei osaa purkaa.
+laspy[lazrs]==2.7.0
+# Tulevat geopandasin mukana, mutta koodi tuo ne SUORAAN (mml_lataus.py),
+# joten ne kuuluvat tanne nakyviin eivatka jaa epasuoraksi riippuvuudeksi.
+pandas>=2.0
+pyogrio>=0.8
