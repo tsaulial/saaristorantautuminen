@@ -56,6 +56,34 @@ def _puuttuvat(lehdet, kansio, paate):
     return [s for s in lehdet if not (kansio / f"{s}{paate}").exists()]
 
 
+def _aja_era(process, inputs_fn, era, kansio, key, mita):
+    """Ajaa yhden eran ja OHITTAA lehdet joita aineistossa ei ole.
+
+    MML hylkaa koko eran jos yksikaan lehti puuttuu, ja nimeaa puuttuvat
+    virheviestissa. Puuttuvia on aidosti: 1:10 000 karttaa ei ole pelkkaa
+    avomerta olevalle ruudulle, ja 40 km kaytava Saaristomerella osuu
+    sellaisiin. Ilman tata 149 lehden haku kaatui kolmen takia.
+
+    Puuttuva lehti EI OLE VIRHE vaan tieto: siella ei ole karttaa. Tiili
+    jaa silloin pois rekisterista (tiles.build_registry vaatii seka DEM:n
+    etta kartan), mika on oikein - avomerella ei ole rantaviivaa."""
+    ohitetut = []
+    while era:
+        try:
+            return mml.run_job(process, inputs_fn(era), key=key), ohitetut
+        except mml.LataustyoVirhe as e:
+            puuttuvat = [x for x in e.puuttuvat_lehdet() if x in era]
+            if not puuttuvat:
+                raise
+            ohitetut += puuttuvat
+            era = [x for x in era if x not in puuttuvat]
+            print(f"    {mita}: {len(puuttuvat)} lehtea ei ole aineistossa "
+                  f"({', '.join(puuttuvat[:6])}"
+                  f"{'...' if len(puuttuvat) > 6 else ''}), ohitetaan",
+                  flush=True)
+    return [], ohitetut
+
+
 def lataa_korkeusmalli(lehdet, key=None):
     """DEM 2 m -lehdet TIFF-muodossa. Palauttaa ladatut polut."""
     key = key or mml.api_key()
@@ -64,10 +92,10 @@ def lataa_korkeusmalli(lehdet, key=None):
     ulos = []
     for i, era in enumerate(_erat(puuttuu), 1):
         print(f"  era {i}: {len(era)} lehtea...")
-        tulokset = mml.run_job(DEM_PROCESS, {
-            "mapSheetInput": era,
-            "fileFormatInput": "TIFF",
-        }, key=key)
+        tulokset, _ohi = _aja_era(
+            DEM_PROCESS,
+            lambda e: {"mapSheetInput": e, "fileFormatInput": "TIFF"},
+            era, DEM_DIR, key, "korkeusmalli")
         for item in tulokset:
             ulos.append(mml.download_to(item, DEM_DIR, key))
     return ulos
@@ -81,11 +109,11 @@ def lataa_kartta(lehdet, key=None):
     ulos = []
     for i, era in enumerate(_erat(puuttuu), 1):
         print(f"  era {i}: {len(era)} lehtea...")
-        tulokset = mml.run_job(MAP_PROCESS, {
-            "mapSheetInput": era,
-            "fileFormatInput": "PNG",
-            "dataSetInput": MAP_DATASET,
-        }, key=key)
+        tulokset, _ohi = _aja_era(
+            MAP_PROCESS,
+            lambda e: {"mapSheetInput": e, "fileFormatInput": "PNG",
+                       "dataSetInput": MAP_DATASET},
+            era, MAP_DIR, key, "kartta")
         for item in tulokset:
             ulos.append(mml.download_to(item, MAP_DIR, key))
     return ulos
@@ -148,11 +176,11 @@ def lataa_taustakartta(lehdet, taso, key=None):
     ulos = []
     for i, era in enumerate(_erat(puuttuu), 1):
         print(f"  era {i}: {len(era)} lehtea...", flush=True)
-        tulokset = mml.run_job(TAUSTA_PROCESS, {
-            "mapSheetInput": era,
-            "fileFormatInput": "PNG",
-            "dataSetInput": aineisto,
-        }, key=key)
+        tulokset, _ohi = _aja_era(
+            TAUSTA_PROCESS,
+            lambda e: {"mapSheetInput": e, "fileFormatInput": "PNG",
+                       "dataSetInput": aineisto},
+            era, kansio, key, f"taustakartta {taso}")
         for item in tulokset:
             ulos.append(mml.download_to(item, kansio, key))
     return ulos

@@ -16,6 +16,7 @@ toteutusta tarkoittaisi kaksi tilaisuutta vuotaa se. Saannot:
 
 import base64
 import json
+import re
 import time
 import urllib.request
 from pathlib import Path
@@ -50,6 +51,30 @@ def request(url, key, data=None, timeout=120):
 MAX_SHEETS_PER_JOB = 100
 
 
+class LataustyoVirhe(RuntimeError):
+    """Lataustyo epaonnistui. Osaa poimia viestista PUUTTUVAT LEHDET.
+
+    MML:n rajapinta hylkaa KOKO eran jos yksikaan pyydetty lehti puuttuu
+    aineistosta, ja viesti nimeaa ne:
+
+        data not found with user's parameters:
+        maastokartta_rasteri_10k_painovari/K3344L,K4231L,K4234L
+
+    Puuttuvia lehtia on aidosti olemassa: 1:10 000 karttaa ei ole
+    pelkkaa avomerta olevalle ruudulle. Ilman tata 149 lehden haku kaatuu
+    kolmen puuttuvan takia."""
+
+    def __init__(self, status, viesti):
+        super().__init__(f"Lataustyo epaonnistui: {status} {viesti}")
+        self.status = status
+        self.viesti = viesti
+
+    def puuttuvat_lehdet(self):
+        m = re.search(r"data not found with user's parameters:\s*\S*?/([\w,]+)",
+                      self.viesti)
+        return [x for x in m.group(1).split(",") if x] if m else []
+
+
 def run_job(process_id, inputs, key=None, poll_s=5, max_polls=240):
     """Ajaa lataustyon ja palauttaa tulosalkiot.
 
@@ -74,7 +99,7 @@ def run_job(process_id, inputs, key=None, poll_s=5, max_polls=240):
             break
         time.sleep(poll_s)
     if status != "successful":
-        raise RuntimeError(f"Lataustyo epaonnistui: {status} {st.get('message', '')}")
+        raise LataustyoVirhe(status, st.get("message", ""))
 
     res = json.loads(request(f"{OGC_BASE}/jobs/{job_id}/results", key))
     return [item for item in res.get("results", []) if item.get("path")]
