@@ -187,15 +187,18 @@ def yhdista_rakennukset(uudet_gpkg, kohde=BUILDINGS_PATH):
 # Per-tiili _raw.npz ja _lidar.npz SAILYVAT: ne katsovat vain omaa tiiltaan
 # (score_engine.compute lukee yhden DEM:n) eivatka riipu mosaiikista. Ne ovat
 # laskennan kallein osa, joten nykyisten tiilien tyo ei mene hukkaan.
+# Nimissa on LASKENTA_VERSIO (ks. pipeline.LASKENTA_VERSIO), joten kuviot
+# paattyvat jokeriin - muuten mitatointi ei osuisi versionnoston jalkeen
+# vanhoihin tiedostoihin, ja ne jaisivat levylle ikuisiksi ajoiksi.
 POISTETTAVAT_TIEDOSTOT = (
-    "_sea_mosaic.npz", "_height_mosaic.npy", "_fetch_global.npz",
-    "_water_global.npz", "_global_tiebreak_sorted.npy",
-    "_factor_thresholds.json", "_prime_thresholds.json",
-    "_shelter_thresholds.json", "_shoreline_stats.json",
     "_vaylat.json", "_suojelualueet.json", "_palvelut.json",
 )
 POISTETTAVAT_KUVIOT = (
-    "_global_threshold_p*.json",
+    "_sea_mosaic_v*.npz", "_height_mosaic_v*.npy", "_fetch_global_v*.npz",
+    "_water_global_v*.npz", "_global_tiebreak_sorted_v*.npy",
+    "_factor_thresholds_v*.json", "_prime_thresholds_v*.json",
+    "_shelter_thresholds_v*.json", "_shoreline_stats_v*.json",
+    "_global_threshold_p*_v*.json",
     "*_fetch?.png", "*_fetchobs?.png", "*_water?.png", "*_waterobs?.png",
     # Kvantisoidut tasot per tiili: johdettu suoraan _fetch_global /
     # _water_global -tiedostoista, joten ne vanhenevat niiden mukana.
@@ -206,7 +209,13 @@ POISTETTAVAT_KUVIOT = (
     # tiilia lisataan:
     #   top*  - compute_global_threshold ("parhaat X %" kynnys)
     #   factors/tiebreak - _global_tiebreak_sorted (tasapelin ratkaisun rank)
-    "*_top*.png", "*_factors.png", "*_tiebreak.png",
+    "*_top*.png", "*_factors*.png", "*_tiebreak*.png",
+    # Vanhat versioimattomat nimet (ennen LASKENTA_VERSIOta) siivotaan pois.
+    "_sea_mosaic.npz", "_height_mosaic.npy", "_fetch_global.npz",
+    "_water_global.npz", "_global_tiebreak_sorted.npy",
+    "_factor_thresholds.json", "_prime_thresholds.json",
+    "_shelter_thresholds.json", "_shoreline_stats.json",
+    "_global_threshold_p[0-9]*.json",
 )
 
 # EI poisteta, koska nama eivat riipu muiden tiilien olemassaolosta:

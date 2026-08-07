@@ -208,11 +208,33 @@ def emphasize_low_scores(score, radius_px):
     return minimum_filter(score, size=2 * radius_px + 1, mode="nearest")
 
 
-def compute_shoreline_buffer(shoreline_mask, dem, pixel_size):
+def maa_maski(dem, meri):
+    """Maa = korkeutta YLI nollan JA ei merta vektoriaineiston mukaan.
+
+    PELKKA `dem > 0` EI RIITA, ja se oli pitkaan vaarin. Mitattuna 18
+    tiilta 37:sta oli ristiriidassa Maastotietokannan merialueen kanssa;
+    pahimmillaan `dem > 0` vaitti tiilta 100-prosenttisesti maaksi kun
+    vektoriaineiston mukaan siita oli merta 99,9 % (K4244H, K4244B).
+    Korkeusmallin nodata avomerella luetaan positiivisena korkeutena.
+
+    Seuraus oli hiljainen mutta vaara suuntaan: puskurivyohyke
+    (compute_shoreline_buffer) rajataan maahan, joten valemaalla se levisi
+    rantaviivan MOLEMMIN PUOLIN eli myos veteen - kartta lupasi
+    rantautumiskelpoista rantaa siella missa on avovetta. Vika nakyi vasta
+    kun karkeat resoluutiotasot paksunsivat kaistaleen nakyvaksi.
+
+    Sama peruste on kirjattu jo pyyhkaisymatkojen puolelle: "MERIMASKI EIKA
+    ~land_mask: jalkimmainen on DEM-pohjainen, jolloin korkeusmallin
+    nodata-alueet tulkittaisiin vedeksi". Tassa se patee toiseen suuntaan -
+    nodata tulkittiin maaksi."""
+    return (dem > 0.0) & ~meri
+
+
+def compute_shoreline_buffer(shoreline_mask, dem, pixel_size, meri):
     """Palauttaa boolean-maskin: True niille pikseleille jotka ovat maalla
-    JA 5-15m etaisyydella lahimmasta rantaviivapikselista. Maa/vesi
-    eroteltu DEM:n 0m-tason perusteella (instructions.md kohta D)."""
-    land = dem > 0.0
+    JA 5-15m etaisyydella lahimmasta rantaviivapikselista. Maa/vesi tulee
+    maa_maski():sta - EI pelkasta DEM:n 0m-tasosta (ks. sen dokumentaatio)."""
+    land = maa_maski(dem, meri)
     # TYHJA RANTAVIIVA ON KASITELTAVA ERIKSEEN. distance_transform_edt mittaa
     # etaisyyden lahimpaan NOLLAAN; jos nollia ei ole yhtaan, scipy ei kaadu
     # vaan mittaa etaisyyden HAAMUPISTEESEEN rivilla -1. Tulokseksi tulee
@@ -323,6 +345,9 @@ def compute_tile(tile, buildings_path):
     # jarvista - ks. backend/vesisto.py. Kallio ja suo luetaan edelleen
     # rasterista, koska niille ei ole tassa vastaavaa ongelmaa.
     shoreline_mask = vesisto.rantaviiva_maski(tile.bounds, map_transform, map_shape)
+    # Merialue SAMALTA ruudukolta: maa/vesi-raja ei saa jaada korkeusmallin
+    # nodatan varaan (ks. maa_maski).
+    meri_mask = vesisto.meri_maski(tile.bounds, map_transform, map_shape)
 
     slope_score = resample_to_grid(v1["slope_score"], v1["transform"], map_transform, map_shape)
     dist_score = resample_to_grid(v1["dist_score"], v1["transform"], map_transform, map_shape)
@@ -339,7 +364,7 @@ def compute_tile(tile, buildings_path):
     tiebreak = compute_tiebreak(slope_deg, dist_m)
     rank_score = total_score + TIEBREAK_EPSILON * tiebreak
 
-    buffer_mask = compute_shoreline_buffer(shoreline_mask, dem, pixel_size)
+    buffer_mask = compute_shoreline_buffer(shoreline_mask, dem, pixel_size, meri_mask)
 
     return {
         "score": total_score,
@@ -360,7 +385,7 @@ def compute_tile(tile, buildings_path):
         # laskentaa. Molemmat ovat boolean-maskeja eli pakkautuvat hyvin -
         # DEM:ia kokonaisuudessaan EI tallenneta (144 MB/tiili).
         "shoreline_mask": shoreline_mask,
-        "land_mask": dem > 0.0,
+        "land_mask": maa_maski(dem, meri_mask),
         "map_transform": map_transform,
         "n_buildings": v1["n_buildings"],
         "rock_pct": 100 * rock_mask.mean(),
@@ -398,9 +423,28 @@ def _tiedoston_sormenjalki(polku):
     return _SORMENJALKI_VALIMUISTI[polku]
 
 
+# --- LASKENTAVERSIO ---
+#
+# Sormenjalki kattoi LAHDEAINEISTON mutta ei ALGORITMIA. Kun laskenta
+# muuttuu, vanha valimuisti kelpaa yha - hiljaa ja vaarin. Versiointi on
+# siihen asti hoidettu ad hoc -merkeilla: get_or_compute_raw tarkisti
+# esiintyyko "shoreline_mask" avaimena, ja kynnystiedostoille tehtiin oma
+# muototarkistus. Molemmat ovat saman oireen paikkauksia.
+#
+# NOSTA TATA aina kun compute_tile tai sen kutsuma laskenta muuttaa
+# tuloksia. Silloin _raw.npz ja siita johdettu aineisto lasketaan
+# uudelleen ilman etta kukaan muistaa pyytaa sita.
+#
+#   1  lahtotilanne
+#   2  maa/vesi-raja vektorimerimaskista, ei pelkasta dem > 0
+#      (ks. maa_maski - 18 tiilta 37:sta oli ristiriidassa)
+LASKENTA_VERSIO = 2
+
+
 def lahde_sormenjalki(tile, buildings_path):
-    """Tiilen kaikkien lahteiden sormenjalki yhtena merkkijonona."""
+    """Tiilen kaikkien lahteiden JA laskennan sormenjalki merkkijonona."""
     osat = [
+        f"v{LASKENTA_VERSIO}",
         _tiedoston_sormenjalki(tile.dem_path),
         _tiedoston_sormenjalki(tile.map_path),
         _tiedoston_sormenjalki(buildings_path),
@@ -423,13 +467,20 @@ def lahde_sormenjalki(tile, buildings_path):
 # avainnettu GLOBAALEILLA solutunnisteilla juuri siksi, etta ne sailyvat
 # tiiliston muuttuessa.
 REKISTERISTA_RIIPPUVAT = (
-    "_global_threshold_p*.json",
-    "_global_tiebreak_sorted.npy",
-    "_factor_thresholds.json", "_prime_thresholds.json",
-    "_shelter_thresholds.json", "_shoreline_stats.json",
+    "_global_threshold_p*_v*.json",
+    "_global_tiebreak_sorted_v*.npy",
+    "_factor_thresholds_v*.json", "_prime_thresholds_v*.json",
+    "_shelter_thresholds_v*.json", "_shoreline_stats_v*.json",
     "_vaylat.json", "_suojelualueet.json", "_palvelut.json",
     # Naiden kuvien arvot on kvantisoitu globaalia jakaumaa vasten.
-    "*_top*.png", "*_factors.png", "*_tiebreak.png",
+    # JOKERI SUFFIKSIN KOHDALLA: analyysikerroksella on nyt kolme
+    # resoluutiotasoa (_mid, _overview), eika "*_factors.png" osu niihin.
+    "*_top*.png", "*_factors*.png", "*_tiebreak*.png",
+    # Vanhat versioimattomat nimet: siivotaan kertaalleen pois, muuten ne
+    # jaavat levylle ikuisiksi ajoiksi nyt kun nimissa on LASKENTA_VERSIO.
+    "_global_threshold_p[0-9]*.json", "_global_tiebreak_sorted.npy",
+    "_factor_thresholds.json", "_prime_thresholds.json",
+    "_shelter_thresholds.json", "_shoreline_stats.json",
 )
 
 
@@ -606,7 +657,7 @@ def compute_global_threshold(buildings_path, percentile, force=False):
     kaikkien tiilien raa'an laskennan (~2s/tiili, kertaalleen - tuloksena
     ei-persentiilikohtainen get_or_compute_raw on jo omalla valimuistillaan)."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    threshold_path = CACHE_DIR / f"_global_threshold_p{percentile}.json"
+    threshold_path = CACHE_DIR / f"_global_threshold_p{percentile}_v{LASKENTA_VERSIO}.json"
 
     if not force and threshold_path.exists():
         return json.loads(threshold_path.read_text())["threshold"]
@@ -755,7 +806,7 @@ def _global_tiebreak_sorted(buildings_path, force=False):
     kvantisointi hukkaisi tarkkuutta, koska arvot kasautuvat jakauman
     ylapaahan - juuri sinne missa tasapelit ratkotaan."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache_path = CACHE_DIR / "_global_tiebreak_sorted.npy"
+    cache_path = CACHE_DIR / f"_global_tiebreak_sorted_v{LASKENTA_VERSIO}.npy"
     if not force and cache_path.exists():
         return np.load(cache_path)
 
@@ -1025,7 +1076,7 @@ def compute_factor_thresholds(buildings_path, force=False):
     kuvista (ei natiiveista liukuluvuista), jotta kynnys ja naytetty kuva
     vastaavat toisiaan pikselilleen."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache_path = CACHE_DIR / "_factor_thresholds.json"
+    cache_path = CACHE_DIR / f"_factor_thresholds_v{LASKENTA_VERSIO}.json"
     if not force and cache_path.exists():
         vanha = json.loads(cache_path.read_text())
         if _tasokynnykset_kelpaa(vanha):
@@ -1144,7 +1195,7 @@ def compute_shoreline_stats(buildings_path, force=False):
     jakaumasta, jolloin merkki ja pylvaat ovat keskenaan tasmalleen
     yhtapitavia."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache_path = CACHE_DIR / "_shoreline_stats.json"
+    cache_path = CACHE_DIR / f"_shoreline_stats_v{LASKENTA_VERSIO}.json"
     if not force and cache_path.exists():
         return json.loads(cache_path.read_text())
 
@@ -1467,7 +1518,7 @@ def compute_prime_thresholds(buildings_path, force=False):
     samaa osuutta rantaviivasta molemmissa kerroksissa - ero on siina MITKA
     7 % valitaan."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache_path = CACHE_DIR / "_prime_thresholds.json"
+    cache_path = CACHE_DIR / f"_prime_thresholds_v{LASKENTA_VERSIO}.json"
     if not force and cache_path.exists():
         vanha = json.loads(cache_path.read_text())
         if _tasokynnykset_kelpaa(vanha):
@@ -1710,7 +1761,7 @@ def get_or_compute_sea_mosaic(force=False):
     ja erillissaanto tiilirajalla katkeaville lahdille. Maastotietokannassa
     meri on oma tasonsa, joten mitaan naista ei tarvita."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache_path = CACHE_DIR / "_sea_mosaic.npz"
+    cache_path = CACHE_DIR / f"_sea_mosaic_v{LASKENTA_VERSIO}.npz"
     (ox, oy), (h, w) = _sea_mosaic_geometry()
 
     # GEOMETRIA TARKISTETAAN, ei vain olemassaolo. Mosaiikki kattaa tasan
@@ -1961,7 +2012,7 @@ def compute_shelter_thresholds(buildings_path, force=False):
     tuulen suuntaa sektoriin eika nopeutta luokkaan - se voi interpoloida
     pyyhkaisymatkan sektorien valilla ja kayttaa tarkkaa nopeutta."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache_path = CACHE_DIR / "_shelter_thresholds.json"
+    cache_path = CACHE_DIR / f"_shelter_thresholds_v{LASKENTA_VERSIO}.json"
     if not force and cache_path.exists():
         vanha = json.loads(cache_path.read_text())
         if _tasokynnykset_kelpaa(vanha):
@@ -2096,7 +2147,7 @@ def get_or_compute_height_mosaic(buildings_path, force=False):
     korkeimman kohtansa mittainen tuulen kannalta - plus mahdollinen
     kasvillisuuslisa."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache_path = CACHE_DIR / "_height_mosaic.npy"
+    cache_path = CACHE_DIR / f"_height_mosaic_v{LASKENTA_VERSIO}.npy"
     if not force and cache_path.exists():
         # Sama geometriatarkistus kuin merimosaiikilla - ne jakavat ruudukon.
         # Muoto luetaan mmapilla, jottei gigatavun taulukkoa ladata pelkan
@@ -2631,7 +2682,7 @@ def get_or_compute_fetch_global(buildings_path, force=False):
     if not force and avain in _GLOBAALI_MUISTI:
         return _GLOBAALI_MUISTI[avain]
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache_path = CACHE_DIR / "_fetch_global.npz"
+    cache_path = CACHE_DIR / f"_fetch_global_v{LASKENTA_VERSIO}.npz"
     if force and cache_path.exists():
         cache_path.unlink()
 
@@ -2809,7 +2860,7 @@ def get_or_compute_water_global(buildings_path, force=False):
     if not force and avain in _GLOBAALI_MUISTI:
         return _GLOBAALI_MUISTI[avain]
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache_path = CACHE_DIR / "_water_global.npz"
+    cache_path = CACHE_DIR / f"_water_global_v{LASKENTA_VERSIO}.npz"
     if force and cache_path.exists():
         cache_path.unlink()
 
