@@ -73,6 +73,24 @@ ALKU=$(date +%s)
 # Tarkistetaan edellytykset ETUKATEEN: tuntien ajon kaatuminen puuttuvaan
 # avaimeen tai kirjastoon on turhauttavaa.
 vaihe "0/4  Edellytysten tarkistus"
+
+# VIRTUAALIYMPARISTO AKTIVOIDAAN ITSE jos sellainen on projektin vieressa
+# eika mikaan ole jo aktiivinen. Ilman tata unohtunut aktivointi nayttaa
+# puuttuvilta kirjastoilta, ja "pip install -r requirements.txt" -neuvo
+# johtaa Ubuntulla umpikujaan: PEP 668 estaa asennuksen jarjestelman
+# Pythoniin, ja --break-system-packages rikkoisi apt-paketteja. Paketit
+# ovat jo olemassa - vain polku puuttuu.
+if [ -z "${VIRTUAL_ENV:-}" ]; then
+    for v in .venv venv ../.venv; do
+        if [ -f "$v/bin/activate" ]; then
+            # shellcheck disable=SC1090
+            . "$v/bin/activate"
+            echo "  aktivoitiin virtuaaliymparisto: $v"
+            break
+        fi
+    done
+fi
+
 python3 -u - <<'PY'
 import sys
 puuttuu = []
@@ -82,9 +100,19 @@ for m in ("numpy", "scipy", "cv2", "rasterio", "geopandas", "pyproj", "PIL",
         __import__(m)
     except ImportError:
         puuttuu.append(m)
-print(f"  python {sys.version.split()[0]}")
+print(f"  python {sys.version.split()[0]}  ({sys.prefix})")
 if puuttuu:
-    print(f"  PUUTTUU: {', '.join(puuttuu)}  ->  pip install -r requirements.txt")
+    print(f"  PUUTTUU: {', '.join(puuttuu)}")
+    if sys.prefix == sys.base_prefix:
+        print("  Virtuaaliymparisto EI ole aktiivinen eika sellaista loytynyt.")
+        print("  Luo ja asenna:")
+        print("      python3 -m venv .venv && . .venv/bin/activate")
+        print("      pip install -r requirements.txt")
+        print("  ALA kayta 'pip install --break-system-packages' - se asentaa")
+        print("  jarjestelman Pythoniin ja voi rikkoa apt-paketteja.")
+    else:
+        print("  Virtuaaliymparisto on aktiivinen mutta paketteja puuttuu:")
+        print("      pip install -r requirements.txt")
     raise SystemExit(1)
 print("  kirjastot ok")
 PY
