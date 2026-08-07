@@ -493,8 +493,25 @@ def get_or_compute_raw(tile_id, buildings_path, force=False):
             return False
         return True
 
-    if not force and npz_path.exists() and _kelpaa(data := np.load(npz_path)):
-        return {
+    def _lataa():
+        """Valimuisti tai None. VIALLINEN TIEDOSTO KASITELLAAN PUUTTUVANA.
+
+        Keskeytynyt ajo jattaa katkenneen npz:n levylle, ja np.load kaataa
+        koko buildin BadZipFilella ennen kuin sormenjalkea ehditaan
+        tarkistaa. Tunteja kestava ajo ei saa kaatua siihen etta yksi
+        valimuistitiedosto on rikki - se on tasan se tapaus jonka varalta
+        valimuisti on olemassa. Loydettiin kun L3114D_raw.npz oli katkennut
+        29 Mt:n kohdalta."""
+        if force or not npz_path.exists():
+            return None
+        try:
+            data = np.load(npz_path)
+            if not _kelpaa(data):
+                return None
+            # Taulukot puretaan TASSA eika kutsujassa: np.load on laiska ja
+            # lukee zipista vasta kun alkiota pyydetaan, joten katkennut
+            # tiedosto voi kaatua vasta taman funktion ulkopuolella.
+            return {
             "score": data["score"],
             "rank_score": data["rank_score"],
             "buffer_mask": data["buffer_mask"].astype(bool),
@@ -511,7 +528,14 @@ def get_or_compute_raw(tile_id, buildings_path, force=False):
             "swamp_pct": float(data["swamp_pct"]),
             "shoreline_px": int(data["shoreline_px"]),
             "buffer_px": int(data["buffer_px"]),
-        }
+            }
+        except Exception as e:
+            print(f"  {tile_id}: valimuisti viallinen ({type(e).__name__}), "
+                  f"lasketaan uudelleen", flush=True)
+            return None
+
+    if (valmis := _lataa()) is not None:
+        return valmis
 
     registry = tiles.get_registry()
     if tile_id not in registry:
@@ -547,6 +571,18 @@ def top_percent_to_percentile(top_percent):
     """'Paras rannan %' (ks. TOP_PERCENT_PRESETS) -> numpy.percentile-parametri
     (esim. top_percent=7 -> persentiili 93)."""
     return 100 - top_percent
+
+
+def _tasokynnykset_kelpaa(d):
+    """Onko levylla oleva kynnystiedosto UUTTA, tasokohtaista muotoa?
+
+    Muoto muuttui litteasta {maski: {prosentti: kynnys}} tasokohtaiseksi
+    {taso: {maski: {prosentti: kynnys}}}. Ilman tata tarkistusta vanha
+    tiedosto luettaisiin sellaisenaan, selain ei loytaisi tasoaan ja
+    korostuskerros jaisi tyhjaksi ILMAN VIRHEILMOITUSTA - sama hiljaisen
+    vanhentumisen luokka jota vastaan skeemantarkistus on muuallakin
+    (ks. get_or_compute_raw: "shoreline_mask")."""
+    return isinstance(d, dict) and set(d) == set(ANALYYSI_TASOT)
 
 
 def kynnykset_esiasetuksille(arvot):
@@ -679,16 +715,27 @@ def _masked_downsample(arr, buffer_native_f, native_shape, weight_small):
     return masked / np.maximum(weight_small, 1e-6)
 
 
+# Yhden tiilen muisti. Sama tiili kysytaan nyt kolmesti perakkain (kolme
+# resoluutiotasoa), ja joka kerta luettaisiin 29 Mt raakadataa levylta ja
+# alinaytteistettaisiin viisi 6000x6000 taulukkoa. Kynnyslaskenta ei
+# valmistunut kymmenessa minuutissa ennen tata. Yksi paikka riittaa, koska
+# silmukat on jarjestetty tiili ulommaksi ja taso sisemmaksi.
+_KOMPONENTTIMUISTI = {"avain": None, "arvo": None}
+
+
 def downsampled_components(tile_id, buildings_path, force=False):
     """Pisteytyksen osatekijat selainpuolen ruudukolla (ks. NEW_PIXEL_FACTOR),
     peittopainotettuna. Palauttaa dict:n jossa kaikki taulukot ovat samaa
     muotoa - 'buffer' kertoo mitka ruudut ovat lainkaan naytettavia."""
+    avain = (tile_id, str(buildings_path))
+    if not force and _KOMPONENTTIMUISTI["avain"] == avain:
+        return _KOMPONENTTIMUISTI["arvo"]
     raw = get_or_compute_raw(tile_id, buildings_path, force=force)
     native_shape = raw["score"].shape
     buffer_native_f = raw["buffer_mask"].astype(np.float32)
     weight_small = _resize_new_grid(buffer_native_f, native_shape, NEW_PIXEL_FACTOR)
 
-    return {
+    tulos = {
         "slope": _masked_downsample(raw["slope_score"], buffer_native_f, native_shape, weight_small),
         "dist": _masked_downsample(raw["dist_score"], buffer_native_f, native_shape, weight_small),
         "rock": _masked_downsample(raw["rock_mask"], buffer_native_f, native_shape, weight_small),
@@ -697,6 +744,8 @@ def downsampled_components(tile_id, buildings_path, force=False):
         "buffer": weight_small > 0.0,
         "raw": raw,
     }
+    _KOMPONENTTIMUISTI["avain"], _KOMPONENTTIMUISTI["arvo"] = avain, tulos
+    return tulos
 
 
 def _global_tiebreak_sorted(buildings_path, force=False):
@@ -784,11 +833,89 @@ def rank_from_components(slope_b, dist_b, rock_bit, swamp_bit, tiebreak_b, facto
     return score + TIEBREAK_EPSILON * (tiebreak_b / 255.0)
 
 
-def get_or_compute_factor_arrays(tile_id, buildings_path, force=False):
+# --- ANALYYSIKERROKSEN RESOLUUTIOTASOT ---
+#
+# Analyysikerros laskettiin aina 2 m/px tarkkuudella riippumatta zoomista,
+# vaikka peruskartalla on neljä tasoa. Mitattuna uloimmalla zoomilla tiili
+# peittaa 28x28 ruutupikselia mutta siita laskettiin 3000x3000 - 11 585
+# kertaa liikaa. Yhden tiilen renderointi kesti 1,9-3,8 s ja 38 tiilta
+# 74-144 s, jonka ajan selain ei vastannut lainkaan.
+#
+# Kerroin on NEW_PIXEL_FACTOR:n PAALLE, eli 2 / 8 / 32 m/px.
+ANALYYSI_TASOT = {"detail": 1, "mid": 4, "overview": 16}
+ANALYYSI_SUFFIKSIT = {"detail": "", "mid": "_mid", "overview": "_overview"}
+
+
+def _edustava_lohko(jarjestys, taulukot, buffer, k):
+    """Tiivistaa lohkoiksi k x k valitsemalla kustakin lohkosta EDUSTAVAN
+    PIKSELIN: sen jolla on suurin `jarjestys`-arvo puskurivyohykkeella.
+
+    EI KESKIARVOA EIKA SYNTEETTISTA PIKSELIA. Keskiarvo hukuttaisi kapean
+    hyvan rannan huonon ympariston sekaan - juuri se kapea kohta on se mita
+    kayttaja etsii. Osatekijoiden tiivistaminen erikseen taas loisi pikselin
+    jota ei ole olemassa ("tassa on loiva rinne ja tassa on etaisyytta
+    rakennuksiin", mutta ei valttamatta samassa kohdassa), mika olisi
+    keksittya tietoa. Edustava pikseli on aina oikea mittaustulos jostain
+    lohkon kohdasta.
+
+    RAJOITE: edustava valitaan KAIKKIEN tekijoiden pistemaaralla, koska
+    kayttajan tekijavalinta ei ole tiedossa laskenta-aikana. Jos kayttaja on
+    kytkenyt tekijoita pois, lohkon edustaja ei ole *sen* valinnan paras.
+    Karkealla zoomilla se on hyvaksyttava approksimaatio; tarkalla zoomilla
+    kaytetaan detail-tasoa jossa approksimaatiota ei ole.
+
+    Palauttaa (tiivistetyt_taulukot, tiivistetty_buffer)."""
+    h, w = jarjestys.shape
+    ph, pw = (-h) % k, (-w) % k          # taytto tasajaolliseksi
+
+    def lohkoiksi(a, tayte):
+        a = np.pad(a, ((0, ph), (0, pw)), constant_values=tayte)
+        H, W = a.shape
+        return a.reshape(H // k, k, W // k, k).transpose(0, 2, 1, 3).reshape(
+            H // k, W // k, k * k)
+
+    # Puskurin ulkopuoliset eivat saa tulla valituiksi: annetaan niille
+    # jarjestysarvo joka havioaa aina oikealle pikselille.
+    j = np.where(buffer, jarjestys.astype(np.float32), -np.inf)
+    jl = lohkoiksi(j, -np.inf)
+    bl = lohkoiksi(buffer, False)
+    idx = np.argmax(jl, axis=2)
+    uusi_buffer = bl.any(axis=2)
+
+    ulos = {}
+    for nimi, arr in taulukot.items():
+        al = lohkoiksi(arr, arr.flat[0] if arr.size else 0)
+        ulos[nimi] = np.take_along_axis(al, idx[:, :, None], axis=2)[:, :, 0]
+    return ulos, uusi_buffer
+
+
+def get_or_compute_factor_arrays(tile_id, buildings_path, taso="detail", force=False):
     """Kvantisoidut (8-bittiset) osatekijataulukot yhdelle tiilelle - tasan
-    ne arvot jotka selain lukee kuvista."""
+    ne arvot jotka selain lukee kuvista.
+
+    taso valitsee resoluution (ks. ANALYYSI_TASOT). Karkeammat tasot
+    tiivistetaan detail-tasosta edustavalla pikselilla, jolloin ne ovat
+    keskenaan yhtapitavia: karkean tason arvo on aina JONKIN detail-ruudun
+    arvo samasta kohdasta."""
     comp = downsampled_components(tile_id, buildings_path, force=force)
     sorted_tiebreak = _global_tiebreak_sorted(buildings_path, force=force)
+
+    if taso != "detail":
+        k = ANALYYSI_TASOT[taso]
+        # Jarjestysperuste on sama rank_score jolla globaali kynnyskin
+        # lasketaan, tuotuna selaimen ruudukolle.
+        raw = comp["raw"]
+        jarj = _masked_downsample(raw["rank_score"],
+                                  raw["buffer_mask"].astype(np.float32),
+                                  raw["score"].shape,
+                                  _resize_new_grid(raw["buffer_mask"].astype(np.float32),
+                                                   raw["score"].shape, NEW_PIXEL_FACTOR))
+        pienet, uusi_buffer = _edustava_lohko(
+            jarj,
+            {"slope": comp["slope"], "dist": comp["dist"], "rock": comp["rock"],
+             "swamp": comp["swamp"], "tiebreak": comp["tiebreak"]},
+            comp["buffer"], k)
+        comp = dict(comp, **pienet, buffer=uusi_buffer)
 
     return {
         "slope_b": np.clip(comp["slope"] * 255.0, 0, 255).astype(np.uint8),
@@ -804,15 +931,16 @@ def get_or_compute_factor_arrays(tile_id, buildings_path, force=False):
     }
 
 
-def get_or_compute_factor_png(tile_id, buildings_path, part="factors", force=False):
+def get_or_compute_factor_png(tile_id, buildings_path, part="factors",
+                              taso="detail", force=False):
     """Palauttaa (png_bytes, meta_dict) osatekijakuvalle. part="factors" tai
-    "tiebreak" (ks. moduulin kanavakuvaus). Yksi kuvapari per tiili
+    "tiebreak" (ks. moduulin kanavakuvaus). Yksi kuvapari per tiili JA TASO
     riippumatta tekijavalinnoista, paksuudesta ja prosentista."""
     if part not in ("factors", "tiebreak"):
         raise ValueError(f"Tuntematon part: {part}")
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    png_path = CACHE_DIR / f"{tile_id}_{part}.png"
+    png_path = CACHE_DIR / f"{tile_id}_{part}{ANALYYSI_SUFFIKSIT[taso]}.png"
     meta_path = CACHE_DIR / f"{tile_id}.json"
 
     if not force and png_path.exists() and meta_path.exists():
@@ -822,7 +950,7 @@ def get_or_compute_factor_png(tile_id, buildings_path, part="factors", force=Fal
     if tile_id not in registry:
         raise KeyError(f"Tuntematon tile_id: {tile_id}")
 
-    arrays = get_or_compute_factor_arrays(tile_id, buildings_path, force=force)
+    arrays = get_or_compute_factor_arrays(tile_id, buildings_path, taso=taso, force=force)
     raw = arrays["raw"]
 
     if part == "factors":
@@ -899,32 +1027,43 @@ def compute_factor_thresholds(buildings_path, force=False):
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_path = CACHE_DIR / "_factor_thresholds.json"
     if not force and cache_path.exists():
-        return json.loads(cache_path.read_text())
+        vanha = json.loads(cache_path.read_text())
+        if _tasokynnykset_kelpaa(vanha):
+            return vanha
+        print(f"  _factor_thresholds.json: vanha muoto, lasketaan uudelleen", flush=True)
 
-    parts = []
+    # KYNNYS LASKETAAN ERIKSEEN JOKAISELLE RESOLUUTIOTASOLLE, jotta
+    # "parhaat 7 %" tarkoittaa aina 7 % siita mita ruudulla nakyy. Ilman
+    # tata karkealla zoomilla korostuisi selvasti enemman kuin pyydetty
+    # osuus: tiivistys valitsee lohkon PARHAAN pikselin, joten karkean
+    # tason jakauma on systemaattisesti parempi kuin tarkan.
+    # TIILI ULOMPANA, TASO SISEMPANA. Toisin pain lahdeaineisto (29 Mt/tiili)
+    # luettaisiin ja alinaytteistettaisiin kolmeen kertaan - mitattuna se ei
+    # valmistunut kymmenessa minuutissa 37 tiilella.
+    osat = {taso: [] for taso in ANALYYSI_TASOT}
     for tid in tiilet_edistymisella("Tekijakynnykset"):
-        arrays = get_or_compute_factor_arrays(tid, buildings_path, force=force)
-        buf = arrays["buffer"]
-        if buf.any():
-            parts.append(
-                (
-                    arrays["slope_b"][buf],
-                    arrays["dist_b"][buf],
-                    arrays["rock_bit"][buf],
-                    arrays["swamp_bit"][buf],
-                    arrays["tiebreak_b"][buf],
-                )
-            )
+        for taso in ANALYYSI_TASOT:
+            arrays = get_or_compute_factor_arrays(tid, buildings_path, taso=taso,
+                                                  force=force)
+            buf = arrays["buffer"]
+            if buf.any():
+                osat[taso].append((arrays["slope_b"][buf], arrays["dist_b"][buf],
+                                   arrays["rock_bit"][buf], arrays["swamp_bit"][buf],
+                                   arrays["tiebreak_b"][buf]))
 
-    slope_b, dist_b, rock_bit, swamp_bit, tiebreak_b = (np.concatenate(c) for c in zip(*parts))
+    kynnykset_tasoittain = {}
+    for taso, parts in osat.items():
+        slope_b, dist_b, rock_bit, swamp_bit, tiebreak_b = (
+            np.concatenate(c) for c in zip(*parts))
+        taso_kynnykset = {}
+        for factor_mask in range(1, NO_SHELTER_MASK + 1):
+            rank = rank_from_components(slope_b, dist_b, rock_bit, swamp_bit,
+                                        tiebreak_b, factor_mask)
+            taso_kynnykset[str(factor_mask)] = kynnykset_esiasetuksille(rank)
+        kynnykset_tasoittain[taso] = taso_kynnykset
 
-    thresholds = {}
-    for factor_mask in range(1, NO_SHELTER_MASK + 1):
-        rank = rank_from_components(slope_b, dist_b, rock_bit, swamp_bit, tiebreak_b, factor_mask)
-        thresholds[str(factor_mask)] = kynnykset_esiasetuksille(rank)
-
-    cache_path.write_text(json.dumps(thresholds, indent=2))
-    return thresholds
+    cache_path.write_text(json.dumps(kynnykset_tasoittain, indent=2))
+    return kynnykset_tasoittain
 
 def get_or_compute_basemap(tile_id, level="detail", force=False):
     """Palauttaa taustakartaksi tarkoitetun karttakuva-leikkauksen PNG-tavuina
@@ -1149,6 +1288,11 @@ def _alongshore_min(anchor_ids, values, shape, radius_px):
     return filtered[ys, xs]
 
 
+# Sama peruste kuin _KOMPONENTTIMUISTI:lla: karkipaikat lasketaan nyt kerran
+# per resoluutiotaso, ja laskenta on mitattuna 5-6 s/tiili.
+_KARKIMUISTI = {"avain": None, "arvo": None}
+
+
 def compute_prime_components(tile_id, buildings_path, force=False, native=False):
     """Karkipaikkojen osatekijat selainruudukolla (ks. NEW_PIXEL_FACTOR).
     Arviointi tehdaan LEVEAMMALLA PRIME_ZONE-vyohykkeella, mutta tulos
@@ -1159,6 +1303,9 @@ def compute_prime_components(tile_id, buildings_path, force=False, native=False)
     rantaviivan jakauman laskentaa varten, jotta karkipaikkojen jakauma on
     laskettu TASMALLEEN samalla ruudukolla kuin tavallinen jakauma
     (compute_shoreline_stats) ja kayrat ovat vertailukelpoisia."""
+    avain = (tile_id, str(buildings_path), bool(native))
+    if not force and _KARKIMUISTI["avain"] == avain:
+        return _KARKIMUISTI["arvo"]
     raw = get_or_compute_raw(tile_id, buildings_path, force=force)
     shoreline = raw["shoreline_mask"]
     shape = shoreline.shape
@@ -1175,12 +1322,14 @@ def compute_prime_components(tile_id, buildings_path, force=False, native=False)
         nolla_native = np.zeros(shape, dtype=np.float32)
         pieni = _resize_new_grid(nolla_native, shape, NEW_PIXEL_FACTOR)
         tyhja = nolla_native if native else np.zeros_like(pieni)
-        return {
+        tulos = {
             "slope": tyhja, "dist": tyhja.copy(), "rock": tyhja.copy(),
             "not_swamp": tyhja.copy(),
             "buffer": np.zeros(tyhja.shape, dtype=bool),
             "raw": raw,
         }
+        _KARKIMUISTI["avain"], _KARKIMUISTI["arvo"] = avain, tulos
+        return tulos
 
     dist, indices = distance_transform_edt(
         ~shoreline, sampling=(pixel_size, pixel_size), return_indices=True
@@ -1220,7 +1369,7 @@ def compute_prime_components(tile_id, buildings_path, force=False, native=False)
             return out
         return _masked_downsample(out, buffer_native_f, shape, weight_small)
 
-    return {
+    tulos = {
         "slope": aggregate(raw["slope_score"].astype(np.float32)),
         "dist": aggregate(raw["dist_score"].astype(np.float32)),
         # Kallio: persentiili 10 nolla/ykkos-taulukosta = tosi vain jos
@@ -1235,12 +1384,27 @@ def compute_prime_components(tile_id, buildings_path, force=False, native=False)
         "buffer": buffer_mask if native else (weight_small > 0.0),
         "raw": raw,
     }
+    _KARKIMUISTI["avain"], _KARKIMUISTI["arvo"] = avain, tulos
+    return tulos
 
 
-def get_or_compute_prime_arrays(tile_id, buildings_path, force=False):
+def get_or_compute_prime_arrays(tile_id, buildings_path, taso="detail", force=False):
     """Kvantisoidut (8-bittiset) karkipaikka-osatekijat - tasan ne arvot
-    jotka selain lukee kuvasta."""
+    jotka selain lukee kuvasta. Karkeammat tasot tiivistetaan edustavalla
+    pikselilla (ks. _edustava_lohko)."""
     comp = compute_prime_components(tile_id, buildings_path, force=force)
+    if taso != "detail":
+        # Jarjestysperuste on karkipaikkojen OMA pistemaara, ei tavallinen
+        # rank_score: muuten karkeat karkipaikat valittaisiin eri
+        # perusteella kuin miten ne naytetaan.
+        jarj = (comp["slope"] + comp["dist"] + comp["rock"]
+                + comp["not_swamp"]).astype(np.float32)
+        pienet, uusi_buffer = _edustava_lohko(
+            jarj,
+            {"slope": comp["slope"], "dist": comp["dist"],
+             "rock": comp["rock"], "not_swamp": comp["not_swamp"]},
+            comp["buffer"], ANALYYSI_TASOT[taso])
+        comp = dict(comp, **pienet, buffer=uusi_buffer)
     return {
         "slope_b": np.clip(comp["slope"] * 255.0, 0, 255).astype(np.uint8),
         "dist_b": np.clip(comp["dist"] * 255.0, 0, 255).astype(np.uint8),
@@ -1251,12 +1415,12 @@ def get_or_compute_prime_arrays(tile_id, buildings_path, force=False):
     }
 
 
-def get_or_compute_prime_png(tile_id, buildings_path, force=False):
+def get_or_compute_prime_png(tile_id, buildings_path, taso="detail", force=False):
     """Palauttaa (png_bytes, meta_dict) karkipaikkakuvalle. Kanavat kuten
     factors-kuvassa (R=jyrkkyys, G=etaisyys, B=kallio/suo-bitit,
     A=puskurimaski), mutta arvot ovat kaistaleen yli aggregoituja."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    png_path = CACHE_DIR / f"{tile_id}_prime.png"
+    png_path = CACHE_DIR / f"{tile_id}_prime{ANALYYSI_SUFFIKSIT[taso]}.png"
     meta_path = CACHE_DIR / f"{tile_id}.json"
 
     if not force and png_path.exists() and meta_path.exists():
@@ -1265,7 +1429,7 @@ def get_or_compute_prime_png(tile_id, buildings_path, force=False):
     if tile_id not in tiles.get_registry():
         raise KeyError(f"Tuntematon tile_id: {tile_id}")
 
-    arrays = get_or_compute_prime_arrays(tile_id, buildings_path, force=force)
+    arrays = get_or_compute_prime_arrays(tile_id, buildings_path, taso=taso, force=force)
     raw = arrays["raw"]
 
     r = arrays["slope_b"]
@@ -1305,36 +1469,38 @@ def compute_prime_thresholds(buildings_path, force=False):
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_path = CACHE_DIR / "_prime_thresholds.json"
     if not force and cache_path.exists():
-        return json.loads(cache_path.read_text())
+        vanha = json.loads(cache_path.read_text())
+        if _tasokynnykset_kelpaa(vanha):
+            return vanha
+        print(f"  _prime_thresholds.json: vanha muoto, lasketaan uudelleen", flush=True)
 
-    parts = []
+    osat = {taso: [] for taso in ANALYYSI_TASOT}
     for tid in tiilet_edistymisella("Karkipaikkakynnykset"):
-        prime = get_or_compute_prime_arrays(tid, buildings_path, force=force)
+      for taso in ANALYYSI_TASOT:
+        prime = get_or_compute_prime_arrays(tid, buildings_path, taso=taso, force=force)
         # Tasapelinpurku otetaan SAMASTA kuvasta kuin top-kerroksessa:
         # aggregoitu pistemaara saturoituu sekin, ja jarjestys tasapelien
         # sisalla on ratkaistava jotenkin.
-        factors = get_or_compute_factor_arrays(tid, buildings_path, force=force)
+        factors = get_or_compute_factor_arrays(tid, buildings_path, taso=taso, force=force)
         buf = prime["buffer"]
         if buf.any():
-            parts.append(
-                (
-                    prime["slope_b"][buf],
-                    prime["dist_b"][buf],
-                    prime["rock_bit"][buf],
-                    prime["swamp_bit"][buf],
-                    factors["tiebreak_b"][buf],
-                )
-            )
+            osat[taso].append((prime["slope_b"][buf], prime["dist_b"][buf],
+                               prime["rock_bit"][buf], prime["swamp_bit"][buf],
+                               factors["tiebreak_b"][buf]))
 
-    slope_b, dist_b, rock_bit, swamp_bit, tiebreak_b = (np.concatenate(c) for c in zip(*parts))
+    kynnykset_tasoittain = {}
+    for taso, parts in osat.items():
+        slope_b, dist_b, rock_bit, swamp_bit, tiebreak_b = (
+            np.concatenate(c) for c in zip(*parts))
+        taso_kynnykset = {}
+        for factor_mask in range(1, NO_SHELTER_MASK + 1):
+            rank = rank_from_components(slope_b, dist_b, rock_bit, swamp_bit,
+                                        tiebreak_b, factor_mask)
+            taso_kynnykset[str(factor_mask)] = kynnykset_esiasetuksille(rank)
+        kynnykset_tasoittain[taso] = taso_kynnykset
 
-    thresholds = {}
-    for factor_mask in range(1, NO_SHELTER_MASK + 1):
-        rank = rank_from_components(slope_b, dist_b, rock_bit, swamp_bit, tiebreak_b, factor_mask)
-        thresholds[str(factor_mask)] = kynnykset_esiasetuksille(rank)
-
-    cache_path.write_text(json.dumps(thresholds, indent=2))
-    return thresholds
+    cache_path.write_text(json.dumps(kynnykset_tasoittain, indent=2))
+    return kynnykset_tasoittain
 
 
 # --- SUOJAISUUS: PYYHKAISYMATKA (FETCH) ---
@@ -1797,38 +1963,46 @@ def compute_shelter_thresholds(buildings_path, force=False):
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_path = CACHE_DIR / "_shelter_thresholds.json"
     if not force and cache_path.exists():
-        return json.loads(cache_path.read_text())
+        vanha = json.loads(cache_path.read_text())
+        if _tasokynnykset_kelpaa(vanha):
+            return vanha
+        print(f"  _shelter_thresholds.json: vanha muoto, lasketaan uudelleen", flush=True)
 
-    normal, prime, tiebreak = [], [], []
+    osat = {taso: ([], [], []) for taso in ANALYYSI_TASOT}
     for tid in tiilet_edistymisella("Suojaisuuskynnykset"):
-        f = get_or_compute_factor_arrays(tid, buildings_path, force=force)
-        p = get_or_compute_prime_arrays(tid, buildings_path, force=force)
+      for taso in ANALYYSI_TASOT:
+        f = get_or_compute_factor_arrays(tid, buildings_path, taso=taso, force=force)
+        p = get_or_compute_prime_arrays(tid, buildings_path, taso=taso, force=force)
         buf = f["buffer"]
         if not buf.any():
             continue
+        normal, prime, tiebreak = osat[taso]
         normal.append((f["slope_b"][buf], f["dist_b"][buf], f["rock_bit"][buf], f["swamp_bit"][buf]))
         prime.append((p["slope_b"][buf], p["dist_b"][buf], p["rock_bit"][buf], p["swamp_bit"][buf]))
         tiebreak.append(f["tiebreak_b"][buf])
 
-    def merge(parts):
-        return tuple(np.concatenate(c) for c in zip(*parts))
+    kynnykset_tasoittain = {}
+    for taso, (normal, prime, tiebreak) in osat.items():
+      def merge(parts):
+          return tuple(np.concatenate(c) for c in zip(*parts))
 
-    tb_all = np.concatenate(tiebreak)
-    shelter_masks = [m for m in range(1, ALL_FACTORS_MASK + 1) if m & FACTOR_SHELTER]
-    out = {"normal": {}, "prime": {}}
-    for layer, parts in (("normal", normal), ("prime", prime)):
-        s, d, r, w = merge(parts)
-        for mask in shelter_masks:
-            # Tuulennopeus 0 -> suojaisuuspiste 1 kaikkialla, jolloin
-            # pyyhkaisymatkalla ei ole merkitysta ja kynnys kuvaa
-            # nimenomaan tyynen olosuhteen parhaita.
-            rank = rank_from_components(s, d, r, w, tb_all, mask,
-                                        fetch_level=np.zeros(len(s), dtype=np.int64),
-                                        wind_speed=0.0)
-            out[layer][str(mask)] = kynnykset_esiasetuksille(rank)
+      tb_all = np.concatenate(tiebreak)
+      shelter_masks = [m for m in range(1, ALL_FACTORS_MASK + 1) if m & FACTOR_SHELTER]
+      out = {"normal": {}, "prime": {}}
+      for layer, parts in (("normal", normal), ("prime", prime)):
+          s, d, r, w = merge(parts)
+          for mask in shelter_masks:
+              # Tuulennopeus 0 -> suojaisuuspiste 1 kaikkialla, jolloin
+              # pyyhkaisymatkalla ei ole merkitysta ja kynnys kuvaa
+              # nimenomaan tyynen olosuhteen parhaita.
+              rank = rank_from_components(s, d, r, w, tb_all, mask,
+                                          fetch_level=np.zeros(len(s), dtype=np.int64),
+                                          wind_speed=0.0)
+              out[layer][str(mask)] = kynnykset_esiasetuksille(rank)
+      kynnykset_tasoittain[taso] = out
 
-    cache_path.write_text(json.dumps(out))
-    return out
+    cache_path.write_text(json.dumps(kynnykset_tasoittain))
+    return kynnykset_tasoittain
 
 
 

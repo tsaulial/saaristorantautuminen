@@ -121,9 +121,15 @@ URL_REPLACEMENTS = {
     "fetch('/api/wind-grid')": "fetch('wind_grid.json')",
     # Kolme visuaalista kerrosta -> .webp (ks. to_webp). Loput jaavat .png:ksi.
     "`/api/basemap/${tile.tile_id}${level.suffix}.png`": "`cache/${tile.tile_id}_base${level.suffix}.webp`",
-    "`/api/factors/${tileId}.png`": "`cache/${tileId}_factors.png`",
-    "`/api/tiebreak/${tileId}.png`": "`cache/${tileId}_tiebreak.png`",
-    "`/api/prime/${tileId}.png`": "`cache/${tileId}_prime.png`",
+    # Analyysikerroksella on nyt kolme resoluutiotasoa (ks.
+    # pipeline.ANALYYSI_SUFFIKSIT); taso.suffix on ajonaikainen muuttuja
+    # samaan tapaan kuin peruskartan level.suffix ylla.
+    # "${s}" on tason suffiksi _tasokuvaTaiDetail-apurin sisalla (tyhja =
+    # detail). Muoto on tarkka merkkijono, ja build kaatuu jos se ei osu -
+    # ks. tarkistus main():ssa.
+    "`/api/factors/${tileId}${s}.png`": "`cache/${tileId}_factors${s}.png`",
+    "`/api/tiebreak/${tileId}${s}.png`": "`cache/${tileId}_tiebreak${s}.png`",
+    "`/api/prime/${tileId}${s}.png`": "`cache/${tileId}_prime${s}.png`",
     "fetch('/api/factor-thresholds')": "fetch('factor_thresholds.json')",
     "`/api/fetch/${tileId}/${part}.png`": "`cache/${tileId}_fetch${part}.png`",
     "`/api/water/${tileId}/${part}.png`": "`cache/${tileId}_water${part}.png`",
@@ -222,18 +228,24 @@ def build():
 
         # Osatekijakuvapari (ks. pipeline-moduulin kanavakuvaus) - yksi pari
         # per tiili riippumatta tekijavalinnoista/paksuudesta/prosentista.
-        for part in ("factors", "tiebreak"):
-            part_bytes, part_meta = pipeline.get_or_compute_factor_png(
-                tile_id, str(BUILDINGS_PATH), part=part
-            )
-            (DOCS_CACHE_DIR / f"{tile_id}_{part}.png").write_bytes(part_bytes)
-            meta = meta or part_meta
+        # KOLME RESOLUUTIOTASOA (ks. pipeline.ANALYYSI_TASOT). Karkeat tasot
+        # ovat pienia - 750x750 ja 188x188 vs 3000x3000 - joten ne lisaavat
+        # docs/-hakemistoon vain n. 7 %, mutta poistavat uloimman zoomin
+        # 11 585-kertaisen ylilaskennan.
+        for taso, suffiksi in pipeline.ANALYYSI_SUFFIKSIT.items():
+            for part in ("factors", "tiebreak"):
+                part_bytes, part_meta = pipeline.get_or_compute_factor_png(
+                    tile_id, str(BUILDINGS_PATH), part=part, taso=taso
+                )
+                (DOCS_CACHE_DIR / f"{tile_id}_{part}{suffiksi}.png").write_bytes(part_bytes)
+                meta = meta or part_meta
 
-        # Karkipaikat: sama kanavarakenne, mutta arvot aggregoitu koko
-        # rantakaistaleen yli (ks. pipeline.get_or_compute_prime_png).
-        prime_bytes, prime_meta = pipeline.get_or_compute_prime_png(tile_id, str(BUILDINGS_PATH))
-        (DOCS_CACHE_DIR / f"{tile_id}_prime.png").write_bytes(prime_bytes)
-        meta = meta or prime_meta
+            # Karkipaikat: sama kanavarakenne, mutta arvot aggregoitu koko
+            # rantakaistaleen yli (ks. pipeline.get_or_compute_prime_png).
+            prime_bytes, prime_meta = pipeline.get_or_compute_prime_png(
+                tile_id, str(BUILDINGS_PATH), taso=taso)
+            (DOCS_CACHE_DIR / f"{tile_id}_prime{suffiksi}.png").write_bytes(prime_bytes)
+            meta = meta or prime_meta
 
         # Pyyhkaisymatkat ja esteiden korkeudet suojaisuustekijaa varten:
         # 12 sektoria kummallekin, kaksi kuvaa per suure.

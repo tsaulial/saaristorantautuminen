@@ -1789,11 +1789,86 @@ function refreshBase() {
 // Canvasilla selaimessa (ks. backend/pipeline.py: kanavakuvaus
 // get_or_compute_factor_png-funktion ylla). ---
 const NEW_PIXEL_FACTOR = 2.0; // pidettava samassa kuin backend/pipeline.py: NEW_PIXEL_FACTOR
+
+// --- ANALYYSIKERROKSEN RESOLUUTIOTASOT ---
+//
+// Pidettava samassa kuin backend/pipeline.py: ANALYYSI_TASOT. Kerroin on
+// NEW_PIXEL_FACTOR:n paalle, eli 2 / 8 / 32 m/px.
+//
+// Aiemmin kerros laskettiin AINA 2 m/px riippumatta zoomista. Mitattuna
+// uloimmalla zoomilla tiili peittaa 28x28 ruutupikselia mutta siita
+// laskettiin 3000x3000 - 11 585 kertaa liikaa, ja yhden tiilen renderointi
+// kesti 1,9-3,8 s.
+//
+// KYNNYKSET VALITAAN SAMALLA TASOLLA: karkean tason jakauma on
+// systemaattisesti parempi (tiivistys valitsee lohkon parhaan pikselin),
+// joten detail-tason kynnys korostaisi siella selvasti yli pyydetyn
+// osuuden.
+const TASO_KERTOIMET = { detail: 1, mid: 4, overview: 16 };
+const ANALYYSI_TASOT = [
+  { name: 'overview', suffix: '_overview', maxZoom: -3 },
+  { name: 'mid', suffix: '_mid', maxZoom: -1.5 },
+  { name: 'detail', suffix: '', maxZoom: Infinity },
+];
+
+function analyysiTaso(zoom) {
+  return ANALYYSI_TASOT.find((t) => zoom < t.maxZoom)
+    || ANALYYSI_TASOT[ANALYYSI_TASOT.length - 1];
+}
 const TOP_HIGHLIGHT_RGB = [255, 0, 255]; // sama kuin backendin TOP_HIGHLIGHT_BGR (magenta)
 // Karkipaikat omalla varillaan (violetti) - erottuu seka magentasta etta
 // pisteytyksen punainen-keltainen-vihrea-asteikosta ja merensinisesta.
 const PRIME_HIGHLIGHT_RGB = [123, 47, 247];
-const factorImageCache = new Map(); // tile_id -> { factors, tiebreak } (ImageData, ladataan kerran per tiili)
+// --- RAJATTU VALIMUISTI ---
+//
+// Valimuistit olivat rajattomia, ja se oli oma erillinen ongelmansa:
+// mitattuna 10 tiilen lataus nosti JS-keon 118 MB:sta 736 MB:iin, eli
+// 69 MB/tiili (kaksi 3000x3000 ImageDataa a 34 MB). 38 tiilella se on
+// 2,6 GB ja 188 tiilella 12,9 GB - selain kaatuu tai alkaa sivuttaa, mika
+// tuntuu nykimisena myos silloin kun renderointi itsessaan on valmis.
+//
+// RAJA ON TAVUISSA EIKA KAPPALEISSA. Yksi detail-tiili on 69 MB mutta yksi
+// overview-tiili 0,14 MB, joten kappalemaara olisi tuhat kertaa vaara mitta
+// tason mukaan. Poisto vanhimmasta paasta (Mapin lisaysjarjestys = LRU kun
+// osuma siirretaan loppuun).
+class RajattuValimuisti {
+  constructor(budjettiTavua, kokoFn) {
+    this.budjetti = budjettiTavua;
+    this.koko = kokoFn;
+    this.tavuja = 0;
+    this.m = new Map();
+  }
+  has(k) { return this.m.has(k); }
+  get(k) {
+    if (!this.m.has(k)) return undefined;
+    const v = this.m.get(k);
+    this.m.delete(k); this.m.set(k, v);   // tuorein loppuun
+    return v;
+  }
+  set(k, v) {
+    if (this.m.has(k)) { this.tavuja -= this.koko(this.m.get(k)); this.m.delete(k); }
+    this.m.set(k, v);
+    this.tavuja += this.koko(v);
+    for (const avain of this.m.keys()) {
+      if (this.tavuja <= this.budjetti || this.m.size <= 1) break;
+      this.tavuja -= this.koko(this.m.get(avain));
+      this.m.delete(avain);
+    }
+  }
+  clear() { this.m.clear(); this.tavuja = 0; }
+  get size() { return this.m.size; }
+}
+
+const kuvaTavut = (im) => im.width * im.height * 4;
+const pariTavut = (p) => kuvaTavut(p.factors) + kuvaTavut(p.tiebreak);
+
+// Budjetit: kuvadata on ylivoimaisesti suurin erä, valmiit data-URLit
+// pienia (n. 0,3 MB/tiili).
+const KUVA_BUDJETTI = 350 * 1048576;
+const TULOS_BUDJETTI = 80 * 1048576;
+
+// avain: `${tile_id}|${taso}` -> { factors, tiebreak }
+const factorImageCache = new RajattuValimuisti(KUVA_BUDJETTI, pariTavut);
 
 // "Parhaat X %" -kynnysarvot per tekijayhdistelma ja prosentti, esilaskettu
 // backendissa (ks. pipeline.compute_factor_thresholds) - GLOBAALI suure jota
@@ -1803,10 +1878,13 @@ let factorThresholds = null;
 // Karkipaikkojen kynnykset ja kuvat ladataan VASTA kun kerros valitaan -
 // suurin osa kayttajista ei avaa sita lainkaan.
 let primeThresholds = null;
-const primeImageCache = new Map();
+const primeImageCache = new RajattuValimuisti(KUVA_BUDJETTI, kuvaTavut);
 // Suojaisuuden data ladataan vasta kun tekija otetaan kayttoon.
 let shelterThresholds = null;
-const fetchImageCache = new Map();
+// Pyyhkaisymatkat ovat 1714x1714 x 4 kuvaa = 47 MB/tiili, joten nekin
+// tarvitsevat rajan.
+const fetchImageCache = new RajattuValimuisti(
+  KUVA_BUDJETTI, (d) => d.levels.byteLength + d.obstacles.byteLength);
 
 function loadImageData(url, what) {
   return new Promise((resolve, reject) => {
@@ -1824,10 +1902,12 @@ function loadImageData(url, what) {
   });
 }
 
-async function loadPrimeImage(tileId) {
-  if (primeImageCache.has(tileId)) return primeImageCache.get(tileId);
-  const img = await loadImageData(`/api/prime/${tileId}.png`, `${tileId} prime`);
-  primeImageCache.set(tileId, img);
+async function loadPrimeImage(tileId, taso) {
+  const avain = `${tileId}|${taso.name}`;
+  if (primeImageCache.has(avain)) return primeImageCache.get(avain);
+  const img = await _tasokuvaTaiDetail(
+    (s) => `/api/prime/${tileId}${s}.png`, tileId, taso, 'prime');
+  primeImageCache.set(avain, img);
   return img;
 }
 
@@ -1947,14 +2027,30 @@ async function loadFetchLevels(tileId) {
   return result;
 }
 
-async function loadFactorImages(tileId) {
-  if (factorImageCache.has(tileId)) return factorImageCache.get(tileId);
+// Puuttuva TASOKUVA ei saa kaataa koko kerrosta: yksi keskeytynyt
+// kuvankirjoitus buildissa pimentaisi kartan kaikilta 188 tiilelta. Karkea
+// taso on optimointi, joten sen puuttuessa palataan detail-tasoon - kartta
+// on silloin hitaampi mutta oikea. Sama periaate kuin vektoritasoilla ja
+// saaennusteella: kerros ei kaadu ulkoisen tiedoston mukana.
+async function _tasokuvaTaiDetail(polku, tileId, taso, mika) {
+  try {
+    return await loadImageData(polku(taso.suffix), `${tileId} ${mika}`);
+  } catch (err) {
+    if (!taso.suffix) throw err;      // detail puuttuu -> aito virhe
+    console.warn(`${tileId}: ${mika}${taso.suffix} puuttuu, kaytetaan detail-tasoa`);
+    return loadImageData(polku(''), `${tileId} ${mika}`);
+  }
+}
+
+async function loadFactorImages(tileId, taso) {
+  const avain = `${tileId}|${taso.name}`;
+  if (factorImageCache.has(avain)) return factorImageCache.get(avain);
   const [factors, tiebreak] = await Promise.all([
-    loadImageData(`/api/factors/${tileId}.png`, `${tileId} factors`),
-    loadImageData(`/api/tiebreak/${tileId}.png`, `${tileId} tiebreak`),
+    _tasokuvaTaiDetail((s) => `/api/factors/${tileId}${s}.png`, tileId, taso, 'factors'),
+    _tasokuvaTaiDetail((s) => `/api/tiebreak/${tileId}${s}.png`, tileId, taso, 'tiebreak'),
   ]);
   const pair = { factors, tiebreak };
-  factorImageCache.set(tileId, pair);
+  factorImageCache.set(avain, pair);
   return pair;
 }
 
@@ -2081,7 +2177,7 @@ function dilateWithNearestColor(alpha, w, h, radiusPx) {
 // pudotti kuvataajuuden n. 17 fps:aan (mitattu) - VANHAN toteutuksen
 // staattiset kuvat eivat karsi tasta koska selaimen HTTP-valimuisti
 // hoitaa saman asian ilmaiseksi.
-const renderResultCache = new Map();
+const renderResultCache = new RajattuValimuisti(TULOS_BUDJETTI, (url) => url.length);
 
 // Pistemaara 0-1 valituista tekijoista. **Tama on selaimen puoli
 // sopimuksesta** - backendin (backend/pipeline.py: score_from_components) on
@@ -2111,20 +2207,22 @@ function scoreFromComponents(slopeByte, distByte, rockBit, swampBit, mask, fetch
   return score < 0 ? 0 : score > 1 ? 1 : score;
 }
 
-async function renderFactorTile(tileId, displayMode, thicknessPx, topPercent, mask) {
+async function renderFactorTile(tileId, displayMode, thicknessPx, topPercent, mask, taso) {
   // Tuuli kuuluu valimuistiavaimeen vain kun suojaisuus on mukana - muuten
   // sen muuttuminen mitatoisi valimuistin turhaan.
   const windOsa = (mask & FACTOR_BITS.shelter) ? `|${windKey()}` : '';
-  const cacheKey = `${tileId}|${displayMode}|${thicknessPx}|${topPercent}|${mask}${windOsa}`;
+  // TASO ON OSA AVAINTA: ilman sita eri resoluutiot sekoittuisivat
+  // keskenaan ja zoomaus nayttaisi vaaran tason valimuistista.
+  const cacheKey = `${tileId}|${taso.name}|${displayMode}|${thicknessPx}|${topPercent}|${mask}${windOsa}`;
   if (renderResultCache.has(cacheKey)) return renderResultCache.get(cacheKey);
 
-  const { factors, tiebreak } = await loadFactorImages(tileId);
+  const { factors, tiebreak } = await loadFactorImages(tileId, taso);
   // Karkipaikat lukevat SAMAN kanavarakenteen omasta kuvastaan, jossa arvot
   // on aggregoitu koko 5-30 m rantakaistaleen yli (ks. backend/pipeline.py:
   // compute_prime_components). Peittomaski on kummassakin sama 5-15 m
   // puskurivyohyke, joten kerrokset asettuvat tarkalleen paallekkain.
   const isPrime = displayMode === 'prime';
-  const src = isPrime ? await loadPrimeImage(tileId) : factors;
+  const src = isPrime ? await loadPrimeImage(tileId, taso) : factors;
 
   const w = src.width, h = src.height;
   const data = src.data; // RGBA: R=jyrkkyys, G=etaisyys, B=kallio/suo-bitit, A=peittomaski
@@ -2137,7 +2235,7 @@ async function renderFactorTile(tileId, displayMode, thicknessPx, topPercent, ma
   const alpha = new Uint8Array(w * h);
   const threshold = displayMode === 'score'
     ? 0
-    : thresholdFor(mask, topPercent, isPrime ? 'prime' : 'normal');
+    : thresholdFor(mask, topPercent, isPrime ? 'prime' : 'normal', taso.name);
 
   // Suojaisuus lukee valitun sektorin pyyhkaisymatkan omasta kuvaparistaan.
   const useShelter = (mask & FACTOR_BITS.shelter) !== 0;
@@ -2176,7 +2274,26 @@ async function renderFactorTile(tileId, displayMode, thicknessPx, topPercent, ma
     }
   }
 
-  const radiusPx = Math.round(thicknessPx / NEW_PIXEL_FACTOR);
+  // PAKSUUS ON METREJA, EI KUVAPIKSELEITA. Karkealla tasolla yksi kuvapikseli
+  // on 4 tai 16 kertaa leveampi, joten sama metrimaara on vastaavasti
+  // vahemman pikseleita. Ilman jakoa 10 px reunus olisi overview-tasolla
+  // 16-kertainen maastossa ja peittaisi koko saariston - ja dilataatio, joka
+  // on mittausten mukaan renderoinnin kallein osa (1 105 ms 9 M pikselilla),
+  // maksaisi sailyneen sateen takia moninkertaisesti.
+  const tasoKerroin = TASO_KERTOIMET[taso.name] || 1;
+  // VAHIMMAIS­LEVEYS KARKEILLA TASOILLA. Ilman sita jakolasku pyoristyy
+  // nollaan (10 / 2 / 16 = 0,3) ja kaistale jaa yhden kuvapikselin
+  // levyiseksi, mika uloimmalla zoomilla on 0,15 RUUTUpikselia - kerros
+  // katoaa nakyvista vaikka se on laskettu oikein.
+  //
+  // Tama on tietoista kartografista liioittelua, samaa lajia kuin se etta
+  // tiet piirretaan pienissa mittakaavoissa satoja metreja leveina. Se ei
+  // vaita rannan olevan leveampi vaan kertoo etta TASSA ON rantaa jonka
+  // laatu on tama - juuri se kysymys johon uloimmalla zoomilla haetaan
+  // vastausta.
+  const radiusPx = tasoKerroin > 1
+    ? Math.max(1, Math.round(thicknessPx / NEW_PIXEL_FACTOR / tasoKerroin))
+    : Math.max(0, Math.round(thicknessPx / NEW_PIXEL_FACTOR));
   const out = new Uint8ClampedArray(w * h * 4);
 
   if (displayMode === 'score') {
@@ -2217,19 +2334,20 @@ async function renderFactorTile(tileId, displayMode, thicknessPx, topPercent, ma
 // Kynnysarvo valitulle tekijayhdistelmalle, kerrokselle ja prosentille.
 // Suojaisuuden mukana kynnys riippuu MYOS tuulesta, jolloin se haetaan
 // omasta taulukostaan (maski -> sektori -> nopeusluokka -> prosentti).
-function thresholdFor(mask, topPercent, layer) {
+function thresholdFor(mask, topPercent, layer, taso) {
+  const t = taso || analyysiTaso(map.getZoom()).name;
   let value;
   if (mask & FACTOR_BITS.shelter) {
     // Kynnys on laskettu TYYNESSA eika riipu tuulesta: "parhaat X %"
     // tarkoittaa "paikat jotka olisivat parhaan X %:n joukossa tyynella",
     // ja tuuli voi vain pudottaa paikkoja pois.
-    value = shelterThresholds
-      && shelterThresholds[layer]
-      && shelterThresholds[layer][String(mask)]
-      && shelterThresholds[layer][String(mask)][String(topPercent)];
+    const taul = shelterThresholds && shelterThresholds[t];
+    value = taul && taul[layer] && taul[layer][String(mask)]
+      && taul[layer][String(mask)][String(topPercent)];
   } else {
-    const table = layer === 'prime' ? primeThresholds : factorThresholds;
-    value = table && table[String(mask)] && table[String(mask)][String(topPercent)];
+    const juuri = layer === 'prime' ? primeThresholds : factorThresholds;
+    const taul = juuri && juuri[t];
+    value = taul && taul[String(mask)] && taul[String(mask)][String(topPercent)];
   }
   // Puuttuva kynnys -> aareton, jolloin kerros jaa mieluummin tyhjaksi kuin
   // nayttaa mielivaltaisen alueen.
@@ -2242,16 +2360,33 @@ async function refreshNew() {
   const visible = visibleTiles();
   const myGeneration = ++newRenderGeneration;
   const mask = factorMask();
+  const taso = analyysiTaso(map.getZoom());
   if (currentDisplay === 'prime') await ensurePrimeThresholds();
   if (currentDisplay !== 'paddle' && (mask & FACTOR_BITS.shelter)) await ensureShelterThresholds();
-  const rendered = await Promise.all(
-    visible.map(async (tile) => ({
+  // TIILET YKSI KERRALLAAN JA TAPAHTUMASILMUKKA VAPAAKSI VALISSA.
+  //
+  // Promise.all NAYTTI rinnakkaiselta mutta ei ollut: renderointi on
+  // synkronista silmukkatyota, joten kaikki tiilet laskettiin yhdessa
+  // katkeamattomassa palassa ja selain lakkasi vastaamasta koko ajaksi -
+  // mitattuna yli 45 sekuntia, jolloin kartta on jaassa eika edes
+  // vierityspalkki liiku.
+  //
+  // Nyt jokaisen tiilen jalkeen palataan tapahtumasilmukkaan. Kokonaisaika
+  // on sama tai hitusen pidempi, mutta kartta pysyy kaytettavana ja
+  // sukupolvitarkistus ehtii perua vanhentuneen ajon kesken - ennen se
+  // huomattiin vasta kun kaikki oli jo laskettu.
+  const rendered = [];
+  for (const tile of visible) {
+    if (myGeneration !== newRenderGeneration) return;
+    rendered.push({
       tile,
       dataUrl: currentDisplay === 'paddle'
         ? await renderPaddleTile(tile.tile_id)
-        : await renderFactorTile(tile.tile_id, currentDisplay, currentThickness, currentTopPercent, mask),
-    }))
-  );
+        : await renderFactorTile(tile.tile_id, currentDisplay, currentThickness,
+                                 currentTopPercent, mask, taso),
+    });
+    await new Promise((r) => setTimeout(r, 0));
+  }
   if (myGeneration !== newRenderGeneration) return; // uudempi pyynto on jo kaynnissa/valmis, hylataan tama
   newGroup.clearLayers();
   rendered.forEach(({ tile, dataUrl }) => {
