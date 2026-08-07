@@ -81,11 +81,12 @@ Asetussivulla on lisäksi kaksi liukusäädintä, jotka eivät vaikuta pisteytyk
 
 ## Mitä muuta kartalla näkyy?
 
-Rantautumispisteytyksen lisäksi kartalle voi ottaa kolme lisätasoa:
+Rantautumispisteytyksen lisäksi kartalle voi ottaa neljä lisätasoa:
 
 - **Väylät** — vesiväylät luokkineen. Kauppamerenkulun pääväylät erottuvat paksuna punaisena: niillä liikkuu satojen metrien rahtialuksia, jotka eivät väistä.
 - **Suojelualueet** — Natura-alueet sekä valtion ja yksityisten suojelualueet. Taso kertoo **missä olet**, ei sitä saako siellä rantautua: maihinnousukieltoja ei ole olemassa paikkatietona, vaan ne ovat järjestyssäännöissä. Siksi kartta kehottaa aina tarkistamaan säännön.
 - **Palvelut** — kaupat, saunat, majoitus, laavut, nuotiopaikat, veneluiskat, satamat, juomavesi ja käymälät.
+- **Levätilanne** — sinilevä satelliittihavainnoista ja rannalta tehdyistä havainnoista. Ks. oma lukunsa alla.
 
 ## Entä tuuli ja aallokko?
 
@@ -117,6 +118,58 @@ Varoitus on niistä tärkein. Vaarallinen tilanne ei ole se, että keli on kova 
 
 Pallo hakee lisäksi **Norjan ilmatieteen laitoksen ennusteen** omalta kohdaltaan ja näyttää sen **vain jos lähteet ovat eri mieltä**. Kun ne ovat samaa mieltä, toinen luku ei kerro mitään. Erimielisyys sen sijaan kertoo juuri sen, mitä on hyödyllistä tietää: että lukuun ei kannata luottaa liikaa.
 
+## Entä sinilevä?
+
+Levän ympäröimä saari ei ole houkutteleva rantautumiskohde. Levätilanne on
+oma lisätasonsa, jota **päivitetään kerran vuorokaudessa** erillään muusta
+aineistosta — muu kartta muuttuu harvoin, levä päivittäin.
+
+**Kartta kertoo myös sen, mitä se ei tiedä.** Kolme eri syytä olla
+värittämättä pidetään erillään:
+
+| Merkintä | Tarkoittaa |
+|---|---|
+| Väri (sininen → keltainen → punainen) | havaittu tilanne |
+| Haalea väri | havainto on vanha **tai** sen jälkeen on tuullut |
+| Viirutus | aluetta **ei ole nähty** — ei että vesi olisi puhdasta |
+| Ympyrä | havainto rannalta, tehty silmämääräisesti |
+
+### Miksi luotettavuus, eikä pelkkä tilanne
+
+Pintalevä nousee näkyviin tyynellä ja sekoittuu syvemmälle kun tuuli ylittää
+noin 5 m/s. Tuuli siis **mitätöi havainnon molempiin suuntiin**: nähty levä on
+voinut sekoittua pois, ja "ei levää" -havainnon jälkeen tyyni on voinut nostaa
+kukinnan pintaan. Siksi luotettavuus ei riipu siitä, mitä havaittiin — vain
+havainnon iästä ja sen jälkeisestä tuulesta.
+
+Luotettavuuden vakiot ovat **perusteltuja arvioita, eivät julkaistu
+standardi**. Mallia ei ole kalibroitu mittausaineistoa vastaan.
+
+### Mitä kerros ei kerro
+
+Satelliitti ei näe aivan rannan tuntumaan: matalassa vedessä pohjan heijastus
+estää tulkinnan. Mitattuna alle 500 m päässä rannasta katetaan noin 11 %
+merialueesta, yli 5 km päässä 56 %. Kerros vastaa siis kysymykseen **"onko
+levää vesillä joiden yli kuljen"**, ei kysymykseen "onko tämä saari levän
+ympäröimä".
+
+Juuri tämän aukon takia mukana on toinen lähde: **rannalta tehdyt
+kansalaishavainnot** osuvat mediaanietäisyydeltään 60 metrin päähän rannasta
+eli tasan sinne, minne satelliitti ei näe. Ne ovat kuitenkin harvassa —
+näkemättömästä rannikkovedestä vain 23 % on alle kahden kilometrin päässä
+havainnosta — joten ne piirretään **pisteinä eikä levitetä veden yli**.
+Levittäminen olisi keksittyä tietoa.
+
+Havaintojen asteikko on eri kuin satelliitin: ihminen arvioi **määrää**
+(ei / hieman / runsaasti / erittäin runsaasti), satelliitti
+**todennäköisyyttä** (ei / mahdollista / todennäköistä / varmaa).
+
+Ahvenanmaalla kansalaishavaintoja ei ole — sama katve kuin muissakin
+valtakunnallisissa aineistoissa.
+
+**Levä ei vaikuta rantautumispisteytykseen.** Se on olosuhde kuten tuuli, ei
+rannan pysyvä ominaisuus.
+
 ## Käytetyt avoimet aineistot
 
 Maanmittauslaitokselta (MML) neljä aineistoa:
@@ -134,6 +187,8 @@ Muilta toimittajilta:
 8. **Vesiväylät** — Väylävirasto.
 9. **Suojelualueet** — Suomen ympäristökeskus.
 10. **Palvelut** — OpenStreetMap.
+11. **Sinilevä satelliitista** — Suomen ympäristökeskus: Sentinel-3/OLCI (300 m, päivittäin) ja Landsat 8 (30 m, noin 16 vrk kierto).
+12. **Sinilevähavainnot rannalta** — Suomen ympäristökeskuksen kansalaishavainnot (CC0).
 
 ### Miksi rantaviiva luetaan vektorista eikä kartasta
 

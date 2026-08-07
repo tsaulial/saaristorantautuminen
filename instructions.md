@@ -551,6 +551,153 @@ Mitoitus julkaisua varten: nykyinen 38 tiiltä = 256 Mt, 20 km käytävä (244 l
 
 ---
 
+## 5f. Levätilanne: kaksi satelliittia ja rannalta tehdyt havainnot (2026-08-07)
+
+`backend/leva.py`, ajetaan **erillään buildista**:
+
+    python3 -m backend.leva --paivita [--ulos docs] [--paivia 7]
+
+Buildista erillään siksi, että täysi ajo kestää tunteja ja koskee aineistoa
+joka muuttuu harvoin; levä muuttuu päivittäin. **Ajojärjestys: build ensin,
+levä sen jälkeen** — `build_static.py` tyhjentää `docs/`-hakemiston.
+Railwaylla tämä on cron-palvelun komento; komennossa ei ole
+ajastinoletuksia.
+
+### Luokka-asteikko mitattiin, ei oletettu
+
+GeoTIFF-arvo on legendan luokka **miinus yksi**. Tämä piti ratkaista
+mittaamalla, koska tiedoston `nodata`-tagi on 4 ja SYKE:n legendassa luokka
+4 on "Varmaa" — väärä tulkinta olisi värittänyt kartan tasan päinvastoin.
+Todennettu hakemalla sama rajaus sekä GeoTIFFinä että PNG:nä ja vertaamalla
+pikseli pikseliltä: **100 % vastaavuus jokaisella luokalla**, myös 2:lla ja
+3:lla, ja erikseen molemmille satelliittikerroksille.
+
+| Arvo | Väri | Merkitys |
+|---:|---|---|
+| 0 | `#2B7EA8` | ei levää |
+| 1 | `#FFFFC9` | mahdollista |
+| 2 | `#FFDC28` | todennäköistä |
+| 3 | `#CD3301` | varmaa |
+| 4 | `#FFFFFF` | ei dataa |
+
+### Kattavuusongelma ei ollut pilvi vaan vesimaski
+
+Pelkkä Sentinel-3 kattaa Helsingin edustalla 27 % merialueesta ja alle
+kilometrin päässä rannasta vain 10 %. Ikkunan pidentäminen 7:stä 21
+vuorokauteen **ei lisännyt kattavuutta lainkaan**. Syy: eri päivien
+datalliset ruudut ovat aina saman joukon **osajoukkoja** (Jaccard 1,000) —
+pilvi vain poistaa ruutuja, ei koskaan lisää. Matalassa vedessä pohjan
+heijastus estää tulkinnan.
+
+Lisälähde auttoi siihen mihin pidempi ikkuna ei:
+
+| | OLCI 300 m | + Landsat 8, 30 m |
+|---|---:|---:|
+| koko merialueesta | 27 % | **56 %** |
+| alle 2 km rannasta | 15 % | 45 % |
+| alle 1 km rannasta | 10 % | 27 % |
+| alle 0,5 km rannasta | 7,5 % | 10,6 % |
+
+Ahvenanmaalla ero on suurempi (0,5 % → 12 %), koska sen merialue on lähes
+kokonaan kapeaa saaristovettä.
+
+**Tuoreus ratkaisee ennen tarkkuutta**: päivät käydään uusimmasta
+vanhimpaan ja saman päivän sisällä tarkin lähde ensin. Ikä on
+luotettavuuden päätekijä, joten vuorokauden vanha OLCI voittaa kahden
+vuorokauden ikäisen Landsatin. Ruudukko on 60 m eli Landsatin rehellinen
+alinäytteistys; karkeampi yhteinen ruudukko olisi heittänyt pois sen mitä
+Landsatista haettiin.
+
+### Kansalaishavainnot täyttävät rantavyöhykkeen
+
+Open311, `rajapinnat.ymparisto.fi/api/kansalaishavainnot`, palvelukoodi
+`algaebloom_service_code_201808151546171`, ei avainta, **CC0**.
+
+Havainnot osuvat tasan sinne minne satelliitti ei näe: Helsingin edustalla
+27 merihavaintoa, **mediaanietäisyys rannasta 60 m**, kaikki alle 180 m.
+
+Kaksi rajoitetta, jotka on kirjattu koodiin:
+
+- **Harvuus.** Näkemättömästä rannikkovedestä 23 % on alle 2 km:n päässä
+  havainnosta, 68 % alle 5 km:n. Siksi pisteet **piirretään pisteinä eikä
+  levitetä** — interpolointi olisi keksittyä tietoa, ja rannan tuntumassa
+  se olisi vaarallisinta.
+- **Eri asteikko kuin satelliitilla.** Luettu rajapinnan omasta
+  määrittelystä (`services/<koodi>.xml`): 1 = ei sinilevää, 2 = hieman,
+  3 = runsaasti, 4 = erittäin runsaasti. Ihminen arvioi **määrää**,
+  satelliitti **todennäköisyyttä**. Nimet pidetään erillään; väriramppi on
+  sama, koska molemmat kulkevat ei-levää → paljon-levää.
+
+**Rajapinnassa on 1 000 havainnon katto eikä sivutus toimi**: `page`
+palauttaa joka kerta saman joukon (todennettu sivuille 1–3, päällekkäisyys
+1000/1000). Kierretään kahden vuorokauden ikkunoilla, joiden
+päällekkäisyys on mitattuna 0. Jos katto silti tulee vastaan, siitä
+varoitetaan lokissa.
+
+Ahvenanmaalla havaintoja on 0 — sama valtakunnallisten aineistojen katve
+kuin suojelualueilla.
+
+### Luotettavuusmalli
+
+    sekoitusannos = Σ max(0, U − 5 m/s) · Δt
+    luotettavuus  = exp(−annos/40 − ikä_vrk/10)
+
+Pintalevä sekoittuu syvemmälle kun tuuli ylittää noin 5 m/s. Tuuli
+**mitätöi havainnon molempiin suuntiin** — nähty levä on voinut sekoittua
+pois, ja "ei levää" -havainnon jälkeen tyyni on voinut nostaa kukinnan
+pintaan. Siksi luotettavuus **ei riipu havaitusta luokasta**. Sama malli
+koskee myös kansalaishavaintoja: annos luetaan samasta tuulikentästä.
+
+| Tilanne | Luotettavuus |
+|---|---:|
+| 1 vrk, tyyni | 0,90 |
+| 3 vrk, tyyni | 0,74 |
+| 7 vrk, tyyni | 0,50 |
+| 3 vrk, joista 12 h 12 m/s | 0,09 |
+
+**Vakiot ovat arvioita, eivät julkaistu standardi** — sama asema kuin
+`PADDLE_WAVE_LIMITS`-rajoilla. Mallia ei ole kalibroitu mittausaineistoa
+vastaan.
+
+**Tunnettu vinouma:** tuulen havaintoasemat ovat rannikolla ja saarissa,
+joten avomerituuli aliarvioituu ja luotettavuus on siltä osin liian
+optimistinen. Tätä ei korjata keksityllä kertoimella vaan dokumentoidaan.
+
+### Esitystapa: kolme eri syytä olla värittämättä
+
+Datakuvan kanavat (`R` = luokka, `254` = maa, `255` = merta ilman
+havaintoa; `G` = ikä vrk; `B` = luotettavuus; **`A` = 255 aina**, koska
+esikerrottu alfa turmelisi RGB:n `getImageData`:ssa).
+
+Selaimessa nämä erotellaan toisistaan:
+
+- **maa** — ei piirretä lainkaan
+- **näkemättä jäänyt** — vino **viirutus**, ei tasaväri
+- **epävarma havainto** — värillinen mutta haalea
+
+Viirutus siksi, että tasaväri asettuisi samalle asteikolle värikoodattujen
+luokkien kanssa ja käyttäjä lukisi sen arvona ("harmaa = vähän levää").
+Ensimmäinen yritys oli harmaa tasaväri alfalla 0,20, ja se hukkui
+peruskartan sinisen alle kokonaan.
+
+**Pisteet menevät `vektorit`-paneen, eivät `leva`-paneen.** Samassa panessa
+kuvakerros ja SVG jäisivät `leaflet.css`:n säännön
+`.leaflet-map-pane svg { z-index: 200 }` varaan — mitattuna svg 200 ja img
+1, eli pisteet olisivat rasterin päällä **vahingossa**. Juuri tämä sääntö
+on projektissa jo kerran aiheuttanut piiloon jääneen elementin.
+
+### Rajaukset
+
+- **Pisteytys ei muutu.** Levä on olosuhde kuten tuuli, ei rannan pysyvä
+  ominaisuus. Python↔JS-sopimus pysyy koskemattomana.
+- **Ei kasautumisen ennustamista.** Tuulta käytetään vain havainnon
+  vanhenemiseen, mikä on paljon heikompi ja siksi puolustettava väite.
+- **Vikasietoisuus:** jos SYKE tai FMI ei vastaa, vanha tiedosto jää
+  voimaan eikä kartta kaadu. Kansalaishavaintojen puuttuminen ei kaada
+  satelliittikerrosta.
+
+---
+
 ## 6. Natiivisovellus (iOS/Android) — tuleva suunta, EI toteuteta vielä
 
 **Tilanne (kirjattu muistiin 2026-07-28)**: web-pohjaista sovellusta kehitetään edelleen ensisijaisesti, eikä natiivin kehitystä aloiteta lähiaikoina. Tämä kohta dokumentoi tehdyn arvioinnin, jotta web-kehityksen aikana tehtävät arkkitehtuuripäätökset voivat ottaa tulevan natiivitarpeen huomioon eivätkä vahingossa sulje sitä pois. **Ei aktiivinen tehtävälista — ei toteuteta ilman erillistä pyyntöä.**

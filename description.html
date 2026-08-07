@@ -275,6 +275,64 @@
     tietää: että lukuun ei kannata luottaa liikaa.
   </p>
 
+  <h2>Entä sinilevä?</h2>
+  <p>
+    Levän ympäröimä saari ei ole houkutteleva rantautumiskohde. Levätilanne on oma
+    lisätasonsa, jota <b>päivitetään kerran vuorokaudessa</b> erillään muusta aineistosta —
+    muu kartta muuttuu harvoin, levä päivittäin.
+  </p>
+  <p>
+    <b>Kartta kertoo myös sen, mitä se ei tiedä.</b> Kolme eri syytä olla värittämättä
+    pidetään erillään, koska ne tarkoittavat eri asioita:
+  </p>
+  <ul class="score-list">
+    <li><span class="dot" style="background:#FFDC28"></span> <b>Väri</b> — havaittu tilanne (sininen → keltainen → punainen)</li>
+    <li><span class="dot" style="background:#FFDC28;opacity:0.35"></span> <b>Haalea väri</b> — havainto on vanha <i>tai</i> sen jälkeen on tuullut</li>
+    <li><span class="dot" style="background:repeating-linear-gradient(45deg,#60626c,#60626c 2px,transparent 2px,transparent 5px)"></span> <b>Viirutus</b> — aluetta <i>ei ole nähty</i>, ei että vesi olisi puhdasta</li>
+    <li><span class="dot" style="background:#2B7EA8;border-radius:50%"></span> <b>Ympyrä</b> — havainto rannalta, tehty silmämääräisesti</li>
+  </ul>
+
+  <h3 class="sub">Miksi luotettavuus, eikä pelkkä tilanne</h3>
+  <p>
+    Pintalevä nousee näkyviin tyynellä ja sekoittuu syvemmälle kun tuuli ylittää noin
+    5 m/s. Tuuli siis <b>mitätöi havainnon molempiin suuntiin</b>: nähty levä on voinut
+    sekoittua pois, ja &rdquo;ei levää&rdquo; -havainnon jälkeen tyyni on voinut nostaa
+    kukinnan pintaan. Siksi luotettavuus ei riipu siitä, <i>mitä</i> havaittiin — vain
+    havainnon iästä ja sen jälkeisestä tuulesta.
+  </p>
+  <p>
+    Luotettavuuden vakiot ovat <b>perusteltuja arvioita, eivät julkaistu standardi</b>.
+    Mallia ei ole kalibroitu mittausaineistoa vastaan.
+  </p>
+
+  <h3 class="sub">Mitä kerros ei kerro</h3>
+  <p>
+    Satelliitti ei näe aivan rannan tuntumaan: matalassa vedessä pohjan heijastus estää
+    tulkinnan. Mitattuna alle 500 m päässä rannasta katetaan noin <b>11 %</b>
+    merialueesta, yli 5 km päässä <b>56 %</b>. Kerros vastaa siis kysymykseen
+    <b>&rdquo;onko levää vesillä joiden yli kuljen&rdquo;</b>, ei kysymykseen
+    &rdquo;onko tämä saari levän ympäröimä&rdquo;.
+  </p>
+  <p>
+    Juuri tämän aukon takia mukana on toinen lähde: <b>rannalta tehdyt
+    kansalaishavainnot</b> osuvat mediaanietäisyydeltään 60 metrin päähän rannasta eli
+    tasan sinne, minne satelliitti ei näe. Ne ovat kuitenkin harvassa — näkemättömästä
+    rannikkovedestä vain 23 % on alle kahden kilometrin päässä havainnosta — joten ne
+    piirretään <b>pisteinä eikä levitetä veden yli</b>. Levittäminen olisi keksittyä
+    tietoa, ja juuri rannan tuntumassa se olisi vaarallisinta.
+  </p>
+  <p>
+    Havaintojen asteikko on eri kuin satelliitin: ihminen arvioi <b>määrää</b>
+    (ei / hieman / runsaasti / erittäin runsaasti), satelliitti
+    <b>todennäköisyyttä</b> (ei / mahdollista / todennäköistä / varmaa). Ahvenanmaalla
+    kansalaishavaintoja ei ole — sama katve kuin muissakin valtakunnallisissa
+    aineistoissa.
+  </p>
+  <p>
+    <b>Levä ei vaikuta rantautumispisteytykseen.</b> Se on olosuhde kuten tuuli, ei rannan
+    pysyvä ominaisuus.
+  </p>
+
   <h2>Käytetyt avoimet aineistot</h2>
   <ul class="sources">
     <li>
@@ -316,6 +374,14 @@
     <li>
       <b>Vertailuennuste</b>
       <span>MET Norway — toinen mielipide tietopalloissa, näytetään vain jos se poikkeaa.</span>
+    </li>
+    <li>
+      <b>Sinilevä satelliitista</b>
+      <span>Suomen ympäristökeskus — Sentinel-3/OLCI (300 m, päivittäin) ja Landsat 8 (30 m, n. 16 vrk kierto).</span>
+    </li>
+    <li>
+      <b>Sinilevähavainnot rannalta</b>
+      <span>Suomen ympäristökeskuksen kansalaishavainnot (CC0) — silmämääräisiä havaintoja rannalta tai laiturilta.</span>
     </li>
   </ul>
   <p>
