@@ -422,6 +422,8 @@ def main():
                     help="Vertaa rajapinnan karttalehti olemassa olevaan")
     ap.add_argument("--taustakartta", action="store_true",
                     help="Lataa MYOS taustakartta karkeille zoom-tasoille")
+    ap.add_argument("--vain-taustakartta", action="store_true",
+                    help="Lataa VAIN taustakartta nykyiselle tiilistolle")
     ap.add_argument("--todenna-taustakartta", action="store_true",
                     help="Lataa yksi lehti per taso ja tarkista jako ja resoluutio")
     ap.add_argument("--mitatoi", action="store_true",
@@ -433,6 +435,21 @@ def main():
     if args.todenna_kartta is not None:
         tulos = todenna_kartta(args.todenna_kartta or None)
         return 0 if tulos["kelpaa"] else 1
+    if args.vain_taustakartta:
+        # Lehdet johdetaan TIILISTOSTA eika bboxista tai kaytavasta: silloin
+        # ladataan tasan se mita rakennetut tiilet tarvitsevat, eika mitaan
+        # muuta aineistoa kosketa. --rannikko --taustakartta lataisi myos
+        # hydrografian ja rakennukset uudelleen, mika veisi tunteja turhaan.
+        from . import tiles
+        key = mml.api_key()
+        reg = tiles.get_registry()
+        print(f"{len(reg)} tiilta rekisterissa")
+        for taso, (aineisto, jako, mpp) in TAUSTAKARTAT.items():
+            lehdet = set()
+            for t in reg.values():
+                lehdet |= set(karttalehti.sheets_for_bbox(t.bounds, jako))
+            lataa_taustakartta(sorted(lehdet), taso, key=key)
+        return 0
     if args.todenna_taustakartta:
         kaikki_ok = True
         for taso in TAUSTAKARTAT:
