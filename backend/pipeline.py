@@ -2259,35 +2259,40 @@ def _dirty_mask(gid, muuttuneet_tiilet):
     return likainen
 
 
-def _global_inkrementaalisesti(cache_path, gid, sea, height, origin, otsikko,
-                               buildings_path):
-    """Yhteinen runko pyyhkaisymatkojen ja vesiruudukon laskennalle.
+def _globaalin_tila(cache_path, gid, buildings_path):
+    """Paattaa MITA on laskettava - ilman mosaiikkia.
 
-    Laskee vain ne solut joita ei ole valimuistissa tai jotka ovat muuttuneen
-    tiilen lahella. Ilman tata koko globaali laskenta uusittaisiin joka kerta
-    kun tiilia lisataan, jolloin kasvava aineisto maksaa neliollisesti.
-
-    MUUTTUNUT tarkoittaa seka lisattya/poistettua tiilta ETTA tiilta jonka
-    lahdeaineisto on paivittynyt (ks. lahde_sormenjalki). Ilman jalkimmaista
-    MML:n uusi karttalehti ei koskaan paivittaisi pyyhkaisymatkoja."""
+    Erotettu omaksi funktiokseen siksi, etta paatos on halpa (levyvalimuistin
+    luku) mutta mosaiikin rakentaminen on kallis (161 tiilen merimaski ja
+    korkeusmalli). Aiemmin mosaiikki rakennettiin ENSIN ja vasta sitten
+    todettiin ettei laskettavaa ole: mitattuna koko rannikon ajossa 27
+    minuuttia tiilta kohti tyota jonka tulos oli "laskettava 0 (0 %)".
+    188 tiilella se on 85 tuntia tyhjaa."""
     registry = tiles.get_registry()
     nyt_tiilet = {tid: t.bounds for tid, t in registry.items()}
     nyt_sormenjaljet = {tid: lahde_sormenjalki(t, buildings_path)
                         for tid, t in registry.items()}
 
+    jarjestys = sorted(nyt_tiilet)
     vanha_gid = vanha_fetch = vanha_obs = None
     muuttuneet = list(nyt_tiilet.values())          # oletus: kaikki
+    # Onko levylla oleva METATIETO jo ajan tasalla? Jos on eika laskettavaa
+    # tule, tiedostoa ei tarvitse kirjoittaa uudelleen lainkaan - koko
+    # rannikolla se on satoja megatavuja pakkausta tiilta kohti.
+    metatieto_sama = False
     if cache_path.exists():
+        # Ladataan KERRAN: sama d kelpaa seka vanhoihin arvoihin etta
+        # metatiedon vertailuun.
         d = np.load(cache_path, allow_pickle=True)
         if int(d.get("versio", 0)) == GLOBAL_CACHE_VERSION:
             vanha_gid = d["cells"]
             vanha_fetch, vanha_obs = d["fetch"], d["obstacle"]
-            oli = set(str(s) for s in d["tiilet"])
+            vanhat_idt = [str(s) for s in d["tiilet"]]
+            oli = set(vanhat_idt)
             nyt = set(nyt_tiilet)
             vanhat_sj = {}
             if "sormenjaljet" in d.files:
-                vanhat_sj = dict(zip((str(x) for x in d["tiilet"]),
-                                     (str(x) for x in d["sormenjaljet"])))
+                vanhat_sj = dict(zip(vanhat_idt, (str(x) for x in d["sormenjaljet"])))
             muuttuneet_idt = set(nyt - oli)
             for tid in nyt & oli:
                 if vanhat_sj.get(tid) != nyt_sormenjaljet[tid]:
@@ -2297,6 +2302,8 @@ def _global_inkrementaalisesti(cache_path, gid, sea, height, origin, otsikko,
                 print(f"    muuttuneita tiilia: {len(muuttuneet_idt)}", flush=True)
             if oli - nyt:
                 muuttuneet = list(nyt_tiilet.values())   # poisto: varmin on laskea kaikki
+            metatieto_sama = (vanhat_idt == jarjestys and not muuttuneet_idt
+                              and bool(vanhat_sj))
 
     # Tulos on vanhan ja pyydetyn joukon YHDISTE, ei pelkka pyydetty. Ilman
     # tata alueittain ajettu laskenta kirjoittaisi vain viimeisen alueen solut
@@ -2319,24 +2326,58 @@ def _global_inkrementaalisesti(cache_path, gid, sea, height, origin, otsikko,
         fetch[loytyi] = vanha_fetch[pos[loytyi]]
         obstacle[loytyi] = vanha_obs[pos[loytyi]]
         laskettava = pyydetty & (~loytyi | _dirty_mask(kaikki_gid, muuttuneet))
-    gid = kaikki_gid
 
-    n = int(laskettava.sum())
-    print(f"  {otsikko}: {len(gid)} ruutua, laskettava {n} "
-          f"({100.0 * n / max(len(gid), 1):.0f} %)")
-    if n:
-        rows, cols = _gid_to_mosaic_rc(gid[laskettava], origin, sea.shape)
+    # Solujoukko saa kasvaa vain jos tiilia on lisatty; jos se kasvoi, levylla
+    # oleva tiedosto ei enaa vastaa tulosta ja on kirjoitettava.
+    metatieto_ajantasalla = (metatieto_sama and vanha_gid is not None
+                             and len(vanha_gid) == len(kaikki_gid))
+
+    return {"gid": kaikki_gid, "laskettava": laskettava, "fetch": fetch,
+            "obstacle": obstacle, "jarjestys": jarjestys,
+            "sormenjaljet": nyt_sormenjaljet,
+            "metatieto_ajantasalla": metatieto_ajantasalla}
+
+
+def _talleta_globaali(cache_path, tila):
+    np.savez_compressed(
+        cache_path, cells=tila["gid"], fetch=tila["fetch"],
+        obstacle=tila["obstacle"],
+        tiilet=np.array(tila["jarjestys"], dtype=object),
+        sormenjaljet=np.array([tila["sormenjaljet"][t] for t in tila["jarjestys"]],
+                              dtype=object),
+        versio=GLOBAL_CACHE_VERSION)
+
+
+def _global_inkrementaalisesti(cache_path, gid, sea, height, origin, otsikko,
+                               buildings_path):
+    """Yhteinen runko pyyhkaisymatkojen ja vesiruudukon laskennalle.
+
+    Laskee vain ne solut joita ei ole valimuistissa tai jotka ovat muuttuneen
+    tiilen lahella. Ilman tata koko globaali laskenta uusittaisiin joka kerta
+    kun tiilia lisataan, jolloin kasvava aineisto maksaa neliollisesti.
+
+    MUUTTUNUT tarkoittaa seka lisattya/poistettua tiilta ETTA tiilta jonka
+    lahdeaineisto on paivittynyt (ks. lahde_sormenjalki). Ilman jalkimmaista
+    MML:n uusi karttalehti ei koskaan paivittaisi pyyhkaisymatkoja."""
+    tila = _globaalin_tila(cache_path, gid, buildings_path)
+    n = int(tila["laskettava"].sum())
+    print(f"  {otsikko}: {len(tila['gid'])} ruutua, laskettava {n} "
+          f"({100.0 * n / max(len(tila['gid']), 1):.0f} %)")
+    _laske_globaali(cache_path, tila, sea, height, origin)
+    return tila["gid"], tila["fetch"], tila["obstacle"]
+
+
+def _laske_globaali(cache_path, tila, sea, height, origin):
+    """Laskee tilan osoittamat solut ja tallettaa tuloksen."""
+    laskettava = tila["laskettava"]
+    if laskettava.any():
+        rows, cols = _gid_to_mosaic_rc(tila["gid"][laskettava], origin, sea.shape)
         f, o = compute_fetch_and_obstacle((rows, cols), sea, height)
-        fetch[laskettava] = f
-        obstacle[laskettava] = o
-
-    jarjestys = sorted(nyt_tiilet)
-    np.savez_compressed(cache_path, cells=gid, fetch=fetch, obstacle=obstacle,
-                        tiilet=np.array(jarjestys, dtype=object),
-                        sormenjaljet=np.array([nyt_sormenjaljet[t] for t in jarjestys],
-                                              dtype=object),
-                        versio=GLOBAL_CACHE_VERSION)
-    return gid, fetch, obstacle
+        tila["fetch"][laskettava] = f
+        tila["obstacle"][laskettava] = o
+    elif tila["metatieto_ajantasalla"]:
+        return
+    _talleta_globaali(cache_path, tila)
 
 
 
@@ -2350,23 +2391,58 @@ def _alueittain(cache_path, solut_fn, buildings_path, force, otsikko):
     alueet = _laskenta_alueet()
     if len(alueet) == 1:
         ydin, _konteksti = alueet[0]
-        sea, origo = get_or_compute_sea_mosaic(force=force)
-        height = get_or_compute_height_mosaic(buildings_path, force=force)
-        return _global_inkrementaalisesti(cache_path, solut_fn(ydin), sea, height,
-                                          origo, otsikko, buildings_path)
+        # MOSAIIKKI VASTA KUN TIEDETAAN ETTA SITA TARVITAAN. Yhdenkin alueen
+        # tapauksessa se on gigatavun lataus levylta.
+        tila = _globaalin_tila(cache_path, solut_fn(ydin), buildings_path)
+        n = int(tila["laskettava"].sum())
+        print(f"  {otsikko}: {len(tila['gid'])} ruutua, laskettava {n} "
+              f"({100.0 * n / max(len(tila['gid']), 1):.0f} %)", flush=True)
+        if n or not tila["metatieto_ajantasalla"]:
+            sea = height = origo = None
+            if n:
+                sea, origo = get_or_compute_sea_mosaic(force=force)
+                height = get_or_compute_height_mosaic(buildings_path, force=force)
+            _laske_globaali(cache_path, tila, sea, height, origo)
+        return tila["gid"], tila["fetch"], tila["obstacle"]
 
     print(f"  {otsikko}: aineisto jaetaan {len(alueet)} alueeseen "
           f"(mosaiikki ei mahdu kerralla muistiin)", flush=True)
     for i, (ydin, konteksti) in enumerate(alueet, 1):
-        print(f"  alue {i}/{len(alueet)}: {len(ydin)} tiilta ydinta, "
-              f"{len(konteksti)} kontekstia", flush=True)
-        sea, height, origo = _alueen_mosaiikit(konteksti, buildings_path)
         gid = solut_fn(ydin)
-        _global_inkrementaalisesti(cache_path, gid, sea, height, origo,
-                                   f"{otsikko} alue {i}", buildings_path)
+        tila = _globaalin_tila(cache_path, gid, buildings_path)
+        n = int(tila["laskettava"].sum())
+        print(f"  alue {i}/{len(alueet)}: {len(ydin)} tiilta ydinta, "
+              f"{len(tila['gid'])} ruutua, laskettava {n} "
+              f"({100.0 * n / max(len(tila['gid']), 1):.0f} %)", flush=True)
+        if not n:
+            # Tassa oli se 27 minuuttia tiilta kohti: _alueen_mosaiikit
+            # rakensi 161 tiilen merimaskin ja korkeusmallin ennen kuin
+            # kukaan kysyi onko tyota.
+            if not tila["metatieto_ajantasalla"]:
+                _talleta_globaali(cache_path, tila)
+            continue
+        print(f"    rakennetaan mosaiikki {len(konteksti)} tiilesta", flush=True)
+        sea, height, origo = _alueen_mosaiikit(konteksti, buildings_path)
+        _laske_globaali(cache_path, tila, sea, height, origo)
         del sea, height
     d = np.load(cache_path, allow_pickle=True)
     return d["cells"], d["fetch"], d["obstacle"]
+
+
+# PROSESSIN SISAINEN MUISTI globaaleille tuloksille.
+#
+# build_static kutsuu naita KERRAN PER TIILI, ja jokainen kutsu kayo lapi
+# kaikkien tiilien solutunnisteet (_tile_mosaic_cells lataa jokaisen tiilen
+# osatekijataulukot) seka lataa ja mahdollisesti kirjoittaa satojen
+# megatavujen valimuistitiedoston. 188 tiilella se on 188 kertaa 188 tiilen
+# tyo, vaikka tulos on joka kerta sama.
+#
+# Levyvalimuisti ei riita: se estaa uudelleenlaskennan mutta ei
+# uudelleenlukua eika solutunnisteiden kokoamista.
+#
+# Lahdeaineisto ei muutu kesken buildin, joten rekisterin sormenjalki
+# riittaa avaimeksi.
+_GLOBAALI_MUISTI = {}
 
 
 def get_or_compute_fetch_global(buildings_path, force=False):
@@ -2377,6 +2453,9 @@ def get_or_compute_fetch_global(buildings_path, force=False):
 
     Tulos on inkrementaalinen: tiilien lisaaminen laskee uudelleen vain
     lisayksen laheiset ruudut."""
+    avain = ("fetch", rekisterin_sormenjalki(), str(buildings_path))
+    if not force and avain in _GLOBAALI_MUISTI:
+        return _GLOBAALI_MUISTI[avain]
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_path = CACHE_DIR / "_fetch_global.npz"
     if force and cache_path.exists():
@@ -2386,7 +2465,9 @@ def get_or_compute_fetch_global(buildings_path, force=False):
         osat = [_tile_mosaic_cells(t, buildings_path, force=force)[0] for t in tile_ids]
         return np.unique(np.concatenate(osat)) if osat else np.array([], dtype=np.int64)
 
-    return _alueittain(cache_path, solut, buildings_path, force, "rantaruudut")
+    tulos = _alueittain(cache_path, solut, buildings_path, force, "rantaruudut")
+    _GLOBAALI_MUISTI[avain] = tulos
+    return tulos
 
 
 def _tile_mosaic_cells(tile_id, buildings_path, force=False):
@@ -2550,6 +2631,9 @@ def get_or_compute_water_global(buildings_path, force=False):
     """Pyyhkaisymatkat ja esteiden korkeudet KAIKKIEN tiilien vesiruuduille
     kerralla - sama peruste kuin rantaruuduilla: sade kulkee tiilirajojen yli
     ja sadehaarukka on 13-kertainen."""
+    avain = ("water", rekisterin_sormenjalki(), str(buildings_path))
+    if not force and avain in _GLOBAALI_MUISTI:
+        return _GLOBAALI_MUISTI[avain]
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_path = CACHE_DIR / "_water_global.npz"
     if force and cache_path.exists():
@@ -2563,7 +2647,9 @@ def get_or_compute_water_global(buildings_path, force=False):
             osat.append(_tile_water_gids(tile)[water].ravel())
         return np.unique(np.concatenate(osat)) if osat else np.array([], dtype=np.int64)
 
-    return _alueittain(cache_path, solut, buildings_path, force, "vesiruudut")
+    tulos = _alueittain(cache_path, solut, buildings_path, force, "vesiruudut")
+    _GLOBAALI_MUISTI[avain] = tulos
+    return tulos
 
 
 def get_or_compute_water_levels(tile_id, buildings_path, force=False):
