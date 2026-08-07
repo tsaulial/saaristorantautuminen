@@ -1049,6 +1049,10 @@ legend.onAdd = function () {
           '<span class="swatch" style="background:repeating-linear-gradient(' +
           '45deg,#60626c,#60626c 3px,transparent 3px,transparent 8px)"></span>' +
           'Ei havaintoa<br>' +
+          // Kansalaishavainto on PISTE eika pinta, joten naytepalakin on
+          // ympyra - muoto kertoo etta kyse on eri lajin tiedosta.
+          '<span class="swatch" style="background:#FFDC28;border-radius:50%;' +
+          'box-shadow:0 0 0 2px #fff inset"></span>Havainto rannalta<br>' +
           '<small class="impl-note">Haalea väri = havainto on vanha tai sen ' +
           'jälkeen on tuullut. Viirutus = aluetta ei ole nähty — se ei ' +
           'tarkoita että vesi olisi puhdasta. Satelliitti ei näe aivan rannan ' +
@@ -2604,6 +2608,54 @@ function levaVarita(img) {
   return ulos;
 }
 
+// --- KANSALAISHAVAINNOT ---
+//
+// Nama ovat PISTEITA eika pintaa, ja ne piirretaan pisteina. Satelliitti
+// sokeutuu rannassa, ja juuri sinne nama osuvat (mitattuna mediaani 60 m
+// rannasta) - mutta ne ovat harvassa: nakemattomasta rannikkovedesta vain
+// 23 % on alle 2 km:n paassa havainnosta. Levittaminen veden yli olisi
+// keksittya tietoa, ja juuri rannan tuntumassa se olisi vaarallisinta.
+//
+// ASTEIKKO ON ERI KUIN SATELLIITILLA: ihminen arvioi MAARAA, satelliitti
+// TODENNAKOISYYTTA. Variramppi on sama, koska molemmat kulkevat
+// ei-levaa -> paljon-levaa, mutta NIMET tulevat aina omasta asteikosta
+// (leva.json: kansalaishavainto_nimet) eika kansalaishavaintoa koskaan
+// kuvata sanalla "todennakoista".
+const KH_VARIT = { 1: '#2B7EA8', 2: '#FFFFC9', 3: '#FFDC28', 4: '#CD3301' };
+// Nakyvyyden alaraja on korkeampi kuin pinnalla: yksittainen piste katoaa
+// helpommin kuin laaja alue, ja piste on tassa se ainoa tieto joka rannan
+// tuntumasta on olemassa.
+const KH_ALFA_MIN = 0.45;
+
+function piirraKansalaishavainnot(meta) {
+  const nimet = meta.kansalaishavainto_nimet || {};
+  for (const alue of meta.alueet) {
+    for (const h of (alue.kansalaishavainnot || [])) {
+      const alfa = KH_ALFA_MIN + (1 - KH_ALFA_MIN) * h.luotettavuus;
+      const ika = h.ika_vrk < 1 ? 'tänään'
+        : `${Math.round(h.ika_vrk)} vrk sitten`;
+      L.circleMarker([h.y, h.x], {
+        // PISTEET 'vektorit'-PANEEN, EI 'leva'-PANEEN. Samassa panessa
+        // kuvakerros ja SVG paatyisivat leaflet.css:n saannon
+        //   .leaflet-map-pane svg { z-index: 200 }
+        // varaan - mitattuna svg 200 ja img 1, eli pisteet olisivat
+        // rasterin paalla VAHINGOSSA. Juuri tama saanto on tassa
+        // projektissa jo kerran aiheuttanut piiloon jaaneen elementin,
+        // ja vika etsittiin vaarasta paikasta kolme kertaa.
+        pane: 'vektorit', radius: 6,
+        // Valkoinen reunus: piste on kartan paalla ja taustavari vaihtelee.
+        color: '#ffffff', weight: 2, opacity: Math.min(alfa + 0.2, 1),
+        fillColor: KH_VARIT[h.arvo] || '#888', fillOpacity: alfa,
+      })
+        .bindTooltip(
+          `${nimet[String(h.arvo)] || 'Levähavainto'}<br>`
+          + `havainto rannalta ${ika}`,
+          { direction: 'top', opacity: 0.95 })
+        .addTo(levaGroup);
+    }
+  }
+}
+
 async function piirraLeva() {
   const meta = await (await fetch('leva.json')).json();
   levaMeta = meta;
@@ -2620,6 +2672,9 @@ async function piirraLeva() {
       .addTo(levaGroup);
     alue._img = img;      // pallo lukee arvot tasta, ei varitetysta
   }
+  // Pisteet PINNAN PAALLE: ne ovat tarkein tieto siella missa pinta on
+  // viirutettu eli nakematta.
+  piirraKansalaishavainnot(meta);
   (meta.lahteet || []).forEach((l) => vectorAttribution(
     { lahde: l.nimi, lisenssi: l.lisenssi }));
   const el = document.getElementById('leva-legenda');

@@ -57,6 +57,7 @@ import datetime as dt
 import io
 import json
 import math
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -147,6 +148,44 @@ EI_DATAA = 4          # GeoTIFFin nodata
 # nayttaa eri tavalla kuin manner.
 MAA_ULOS = 254        # maata - ei koskaan piirreta
 EI_DATAA_ULOS = 255   # merta, mutta ei havaintoa ikkunan aikana
+
+# --- KANSALAISHAVAINNOT: SE MITA SATELLIITTI EI NAE ---
+#
+# Satelliitti sokeutuu juuri rannassa (alle 500 m paassa noin 11 %
+# kattavuus), koska matalassa vedessa pohjan heijastus estaa tulkinnan.
+# SYKE:n kansalaishavainnot osuvat TASAN sinne: mitattuna Helsingin
+# edustalla 27 merihavaintoa, mediaanietaisyys rannasta 60 m, kaikki alle
+# 180 m. Ne eivat korvaa satelliittia vaan taydentavat sita toisesta
+# paasta.
+#
+# HARVUUS ON KERROTTAVA REHELLISESTI. Nakemattomasta rannikkovedesta vain
+# 23 % on alle 2 km:n paassa havainnosta. Siksi naita EI LEVITETA veden yli
+# eika interpoloida: piste piirretaan pisteena. Levittaminen olisi keksittya
+# tietoa, ja juuri rannan tuntumassa se olisi vaarallisinta.
+#
+# ASTEIKKO ON ERI KUIN SATELLIITILLA, ja se on luettu rajapinnan omasta
+# maarittelysta (services/<koodi>.xml), ei paatelty:
+#
+#     1 = Ei sinilevaa            satelliitti: 0 = ei levaa
+#     2 = Hieman sinilevaa                     1 = mahdollista
+#     3 = Runsaasti sinilevaa                  2 = todennakoista
+#     4 = Erittain runsaasti                   3 = varmaa
+#
+# Satelliitti arvioi TODENNAKOISYYTTA, ihminen MAARAA. Nimet pidetaan siis
+# erillaan eika kansalaishavaintoa koskaan kuvata sanalla "todennakoista".
+# Variramppi on sama, koska molemmat kulkevat ei-levaa -> paljon-levaa ja
+# kaksi eri paletttia samasta ilmiosta olisi huonompi vaihtoehto.
+KANSALAISHAVAINNOT_URL = "https://rajapinnat.ymparisto.fi/api/kansalaishavainnot/1.0"
+KANSALAISHAVAINTO_KOODI = "algaebloom_service_code_201808151546171"
+KANSALAISHAVAINTO_NIMET = {1: "Ei sinilevää", 2: "Hieman sinilevää",
+                           3: "Runsaasti sinilevää",
+                           4: "Erittäin runsaasti sinilevää"}
+# Rajapinnassa on 1 000 havainnon katto per pyynto, eika sivutus toimi:
+# `page`-parametri palauttaa joka kerta saman joukon (todennettu sivuille
+# 1-3, paallekkaisyys 1000/1000). Kierretaan pilkkomalla aikaan - kahden
+# vuorokauden ikkunat, joiden paallekkaisyys on mitattuna 0.
+KANSALAISHAVAINTO_IKKUNA_VRK = 2
+KANSALAISHAVAINTO_KATTO = 1000
 
 
 def _pyyda(url, timeout=90):
@@ -265,6 +304,61 @@ def kokoa_ikkuna(bbox, paivat, on_meri=None):
             print(f"    {p} {nimi:5s}: {n:6d} uutta ruutua "
                   f"({100.0*n/max(nimittaja,1):4.1f} % merialueesta)", flush=True)
     return luokka, ika, kaytetyt
+
+
+# --- KANSALAISHAVAINNOT ---
+
+def hae_kansalaishavainnot(alku, loppu):
+    """Sinilevahavainnot Open311-rajapinnasta koko maasta.
+
+    Haku pilkotaan aikaan KANSALAISHAVAINTO_KATTO:n takia (ks. vakion
+    kommentti). Rajaus alueeseen tehdaan vasta taalla, koska rajapinta ei
+    tarjoa bbox-suodatinta."""
+    from pyproj import Transformer
+    t = Transformer.from_crs(4326, 3067, always_xy=True)
+    nahdyt = {}
+    reuna = alku
+    while reuna < loppu:
+        pate = min(reuna + dt.timedelta(days=KANSALAISHAVAINTO_IKKUNA_VRK), loppu)
+        q = {"service_code": KANSALAISHAVAINTO_KOODI,
+             "start_date": reuna.strftime("%Y-%m-%dT%H:%M:%SZ"),
+             "end_date": pate.strftime("%Y-%m-%dT%H:%M:%SZ")}
+        try:
+            osa = json.loads(_pyyda(
+                f"{KANSALAISHAVAINNOT_URL}/requests.json?{urllib.parse.urlencode(q)}"))
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            print(f"    kansalaishavainnot {reuna:%Y-%m-%d}: "
+                  f"haku epaonnistui ({type(e).__name__})", flush=True)
+            reuna = pate
+            continue
+        if len(osa) >= KANSALAISHAVAINTO_KATTO:
+            # Katto tuli vastaan: ikkuna oli liian pitka ja osa havainnoista
+            # jai hakematta. Kerrotaan se, ei vaieta.
+            print(f"    VAROITUS: {reuna:%Y-%m-%d} palautti {len(osa)} eli katon - "
+                  f"lyhenna KANSALAISHAVAINTO_IKKUNA_VRK", flush=True)
+        for h in osa:
+            tunnus = h.get("service_request_id")
+            if tunnus in nahdyt:
+                continue
+            m = re.search(r"algaebloom_singlevaluelist_\d+:(\d+)",
+                          h.get("description") or "")
+            if not m:
+                continue
+            try:
+                x, y = t.transform(float(h["long"]), float(h["lat"]))
+            except (TypeError, ValueError, KeyError):
+                continue
+            aika = (h.get("requested_datetime") or "")[:19]
+            nahdyt[tunnus] = {"x": round(x, 1), "y": round(y, 1),
+                              "arvo": int(m.group(1)), "aika": aika}
+        reuna = pate
+    return list(nahdyt.values())
+
+
+def _lisatieto(kuvaus):
+    """Havainnon vapaa lisatietoteksti, tai None."""
+    m = re.search(r"Ecology_additionalinfo:(.*?)(?:,Ecology_|$)", kuvaus or "", re.S)
+    return m.group(1).strip() or None if m else None
 
 
 # --- TUULIHAVAINNOT ---
@@ -438,6 +532,22 @@ def paivita(ulos=None, paivia=LEVA_IKKUNA_VRK):
               f"{saatavilla[taso][0] if saatavilla[taso] else '-'} "
               f"({natiivi:.0f} m)", flush=True)
 
+    # Kansalaishavainnot haetaan KERRAN koko maasta ja rajataan alueisiin
+    # taalla: rajapinnassa ei ole bbox-suodatinta, joten alueittain hakeminen
+    # toistaisi saman kyselyn turhaan.
+    kh_loppu = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    kh_alku = kh_loppu - dt.timedelta(days=paivia)
+    try:
+        kansalaishavainnot = hae_kansalaishavainnot(kh_alku, kh_loppu)
+        print(f"  kansalaishavaintoja koko maasta: {len(kansalaishavainnot)}",
+              flush=True)
+    except Exception as e:
+        # Vikasietoisuus: satelliittikerros on paatuote, eika sen pida
+        # kaatua taydentavan lahteen mukana.
+        print(f"  kansalaishavainnot: haku epaonnistui ({type(e).__name__}), "
+              f"jatketaan ilman", flush=True)
+        kansalaishavainnot = []
+
     tulokset = []
     for i, bbox in enumerate(bboxit, 1):
         w, h = _ruudukko(bbox)
@@ -466,6 +576,32 @@ def paivita(ulos=None, paivia=LEVA_IKKUNA_VRK):
         luot = np.where(luokka == EI_DATAA, 0.0, luot)
 
         _kirjoita_png(ulos / "leva" / f"alue{i}.png", luokka, ika, luot, on_meri)
+
+        # Kansalaishavainnot samalle alueelle, SAMALLA luotettavuusmallilla:
+        # nekin vanhenevat ian ja niiden jalkeisen tuulen mukana. Sekoitus-
+        # annos luetaan samasta kentasta kuin satelliittipikseleille, joten
+        # kaksi eri lahdetta kohtelee tuulta tasan samoin.
+        pisteet = []
+        for hav in kansalaishavainnot:
+            if not (bbox[0] <= hav["x"] < bbox[2] and bbox[1] <= hav["y"] < bbox[3]):
+                continue
+            try:
+                havaittu = dt.datetime.strptime(hav["aika"], "%Y-%m-%dT%H:%M:%S")
+            except ValueError:
+                continue
+            ika_vrk = max((kh_loppu - havaittu).total_seconds() / 86400.0, 0.0)
+            c = min(int((hav["x"] - bbox[0]) / LEVA_GRID_M), w - 1)
+            r = min(int((bbox[3] - hav["y"]) / LEVA_GRID_M), h - 1)
+            annos_p = float(annokset[min(int(round(ika_vrk)),
+                                         len(annokset) - 1), r, c])
+            pisteet.append({
+                "x": hav["x"], "y": hav["y"], "arvo": hav["arvo"],
+                "ika_vrk": round(ika_vrk, 2),
+                "luotettavuus": round(float(luotettavuus(np.float32(ika_vrk),
+                                                         np.float32(annos_p))), 3),
+            })
+        print(f"    kansalaishavaintoja alueella: {len(pisteet)}", flush=True)
+
         tulokset.append({
             "tiedosto": f"leva/alue{i}.png",
             "bounds_epsg3067": {"minx": bbox[0], "miny": bbox[1],
@@ -475,6 +611,7 @@ def paivita(ulos=None, paivia=LEVA_IKKUNA_VRK):
             "tuuliasemia": len(asemat_xy),
             "meriruutuja": merta,
             "katettu_meriruutua": katettu,
+            "kansalaishavainnot": pisteet,
         })
 
     meta = {
@@ -486,6 +623,10 @@ def paivita(ulos=None, paivia=LEVA_IKKUNA_VRK):
         "grid_m": LEVA_GRID_M,
         "kerrokset": [{"nimi": n, "taso": t, "natiivi_m": m}
                       for n, t, m in LEVA_KERROKSET],
+        # ERI ASTEIKKO kuin satelliitilla: ihminen arvioi maaraa, satelliitti
+        # todennakoisyytta. Nimet luetaan rajapinnan omasta maarittelysta.
+        "kansalaishavainto_nimet": {str(k): v
+                                    for k, v in KANSALAISHAVAINTO_NIMET.items()},
         "malli": {"tuuli_kynnys_ms": LEVA_TUULI_KYNNYS_MS,
                   "sekoitus_tau": LEVA_SEKOITUS_TAU,
                   "ika_tau_vrk": LEVA_IKA_TAU_VRK,
@@ -495,6 +636,8 @@ def paivita(ulos=None, paivia=LEVA_IKKUNA_VRK):
             {"nimi": "Suomen ympäristökeskus (Sentinel-3/OLCI, Landsat 8)",
              "lisenssi": "CC BY 4.0"},
             {"nimi": "Ilmatieteen laitos", "lisenssi": "CC BY 4.0"},
+            {"nimi": "Suomen ympäristökeskus, kansalaishavainnot",
+             "lisenssi": "CC0"},
         ],
     }
     ulos.mkdir(parents=True, exist_ok=True)
