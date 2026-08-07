@@ -91,6 +91,111 @@ def lataa_kartta(lehdet, key=None):
     return ulos
 
 
+# --- TAUSTAKARTTA: PIENTEN MITTAKAAVOJEN OMA TUOTE ---
+#
+# Uloimmat zoomit piirrettiin 1:10 000 kartasta pienentamalla, mika on kaksi
+# kertaa vaarin.
+#
+# KARTOGRAFISESTI: 1:10k on suunniteltu luettavaksi metrien tarkkuudella.
+# 16-kertaisesti pienennettyna sen viivat, tekstit ja symbolit muuttuvat
+# kohinaksi - kartta nayttaa sotkuiselta juuri silloin kun kayttaja haluaa
+# yleiskuvan.
+#
+# KOOLTAAN: painettu kartta on 214 VARIA, ja siihen perustuu haviottoman
+# pakkauksen teho (0,33 bittia/px). Alinaytteistys keskiarvoistaa
+# naapurivareja ja tuottaa niita kymmenia tuhansia - mitattuna 20 307 varia
+# ja 1,05 bittia/px (2 m/px) seka 53 110 varia ja 2,49 bittia/px (4 m/px).
+# Siksi NELJA KERTAA harvempi ruudukko maksaa vain 23 % vahemman tavuja, ja
+# peruskartta on 73 % koko docs/-hakemistosta.
+#
+# Taustakartta on MML:n oma yleistys pieniin mittakaavoihin, ja kun se
+# haetaan NATIIVIRESOLUUTIOSSA, alinaytteistysta ei tehda missaan ja
+# palettirakenne sailyy.
+#
+# Resoluutiosaanto m/px = mittakaava / 10 000 (esim. 1:10k -> 1 m/px) on
+# TODENNETTAVA ennen joukkolatausta - ks. todenna_taustakartta().
+TAUSTA_PROCESS = "taustakartta_rasteri_karttalehti"
+
+# taso -> (aineisto, lehtijako, m/px)
+#
+# RESOLUUTIO ON MITATTU, EI PAATELTY. Ensin oletin saannon
+# m/px = mittakaava / 10 000 (koska maastokartta_rasteri_10k on 1 m/px).
+# Se on VAARIN taustakartalle: 1:160 000 osoittautui 32 m/px:ksi, eli
+# jakaja on 5 000. Lehtijako sen sijaan osui metrilleen jo ensimmaisella
+# yrityksella. Tama on tasan se syy miksi tuote todennetaan yhdella
+# lehdella ennen joukkolatausta.
+TAUSTAKARTAT = {
+    "near":     ("taustakartta_rasteri_10k", "kartta", 2.0),
+    "mid":      ("taustakartta_rasteri_20k", "tausta20k", 4.0),
+    "overview": ("taustakartta_rasteri_80k", "tausta80k", 16.0),
+}
+
+TAUSTA_DIR = ROOT / "taustakartta-mml"
+
+
+def tausta_kansio(taso):
+    return TAUSTA_DIR / taso
+
+
+def lataa_taustakartta(lehdet, taso, key=None):
+    """Taustakarttarasterit yhdelle resoluutiotasolle."""
+    aineisto, _jako, _mpp = TAUSTAKARTAT[taso]
+    key = key or mml.api_key()
+    kansio = tausta_kansio(taso)
+    puuttuu = _puuttuvat(lehdet, kansio, ".png")
+    print(f"taustakartta {taso} ({aineisto}): {len(lehdet)} lehtea, "
+          f"joista puuttuu {len(puuttuu)}")
+    ulos = []
+    for i, era in enumerate(_erat(puuttuu), 1):
+        print(f"  era {i}: {len(era)} lehtea...", flush=True)
+        tulokset = mml.run_job(TAUSTA_PROCESS, {
+            "mapSheetInput": era,
+            "fileFormatInput": "PNG",
+            "dataSetInput": aineisto,
+        }, key=key)
+        for item in tulokset:
+            ulos.append(mml.download_to(item, kansio, key))
+    return ulos
+
+
+def todenna_taustakartta(taso="mid", lehti=None, key=None):
+    """Lataa YHDEN lehden ja tarkistaa etta lehtijako ja resoluutio ovat
+    sita mita oletamme.
+
+    Sama kaytanto kuin todenna_kartta(): tuote todennetaan ennen kuin
+    ladataan satoja megatavuja sen varassa. Aiemmin tama loysi 0 eroavaa
+    pikselia 144 miljoonasta - halpa tarkistus, kallis virhe."""
+    import rasterio
+    from . import karttalehti
+
+    aineisto, jako, mpp = TAUSTAKARTAT[taso]
+    lehti = lehti or karttalehti.sheet_name(385000.0, 6670000.0, jako)
+    odotettu = karttalehti.sheet_bounds(lehti)
+    print(f"todennus: {taso} / {aineisto} / lehti {lehti}")
+    print(f"  odotettu rajaus {tuple(round(v) for v in odotettu)}")
+    print(f"  odotettu resoluutio {mpp} m/px")
+
+    polut = lataa_taustakartta([lehti], taso, key=key)
+    if not polut:
+        polut = [p for p in tausta_kansio(taso).glob(f"{lehti}.*") if p.suffix == ".png"]
+    if not polut:
+        raise RuntimeError("lehtea ei saatu ladattua")
+    p = polut[0]
+
+    with rasterio.open(p) as ds:
+        b = (ds.bounds.left, ds.bounds.bottom, ds.bounds.right, ds.bounds.top)
+        todellinen_mpp = abs(ds.transform.a)
+        muoto = (ds.width, ds.height)
+    raja_ok = all(abs(a - c) < 1.0 for a, c in zip(odotettu, b))
+    mpp_ok = abs(todellinen_mpp - mpp) < 0.01
+    print(f"  todellinen rajaus {tuple(round(v) for v in b)}  "
+          f"{'OK' if raja_ok else 'ERI'}")
+    print(f"  todellinen resoluutio {todellinen_mpp} m/px, koko {muoto[0]}x{muoto[1]}  "
+          f"{'OK' if mpp_ok else 'ERI'}")
+    print(f"  tiedostokoko {p.stat().st_size / 1e6:.2f} MB")
+    return raja_ok and mpp_ok
+
+
 def lataa_hydrografia(bbox, key=None, dest=None):
     """Maastotietokannan hydrografia: meri, jarvi ym. omina tasoinaan.
 
@@ -315,6 +420,10 @@ def main():
                     help="Aja vain osa I kokonaisuudesta N, esim. 3/8")
     ap.add_argument("--todenna-kartta", metavar="LEHTI", nargs="?", const="",
                     help="Vertaa rajapinnan karttalehti olemassa olevaan")
+    ap.add_argument("--taustakartta", action="store_true",
+                    help="Lataa MYOS taustakartta karkeille zoom-tasoille")
+    ap.add_argument("--todenna-taustakartta", action="store_true",
+                    help="Lataa yksi lehti per taso ja tarkista jako ja resoluutio")
     ap.add_argument("--mitatoi", action="store_true",
                     help="Poista mosaiikkiin sidotut valimuistit")
     ap.add_argument("--kuiva", action="store_true", help="Nayta mita tehtaisiin")
@@ -324,6 +433,12 @@ def main():
     if args.todenna_kartta is not None:
         tulos = todenna_kartta(args.todenna_kartta or None)
         return 0 if tulos["kelpaa"] else 1
+    if args.todenna_taustakartta:
+        kaikki_ok = True
+        for taso in TAUSTAKARTAT:
+            kaikki_ok &= bool(todenna_taustakartta(taso))
+            print()
+        return 0 if kaikki_ok else 1
     if args.mitatoi:
         mitatoi(kuiva=args.kuiva)
         return 0
@@ -352,6 +467,19 @@ def main():
         vektoribboxit = [bbox]
         print(f"Alue {bbox}")
 
+    if args.taustakartta:
+        # Taustakartan lehtijako on ERI kuin DEM:n ja peruskartan, ja eri
+        # jokaisella mittakaavalla - siksi lehdet lasketaan tasoittain
+        # samasta alueesta eika johdeta toisistaan.
+        tausta = {}
+        for taso, (_a, jako, _m) in TAUSTAKARTAT.items():
+            lehdet = set()
+            for b in vektoribboxit:
+                lehdet |= set(karttalehti.sheets_for_bbox(b, jako))
+            tausta[taso] = sorted(lehdet)
+        print("  taustakartta: "
+              + ", ".join(f"{t} {len(v)} lehtea" for t, v in tausta.items()))
+
     print(f"  {len(dem)} DEM-lehtea, {len(kartta)} karttalehtea, "
           f"{len(vektoribboxit)} vektoripalaa")
     if args.kuiva:
@@ -364,6 +492,9 @@ def main():
     key = mml.api_key()
     lataa_kartta(kartta, key=key)
     lataa_korkeusmalli(dem, key=key)
+    if args.taustakartta:
+        for taso, lehdet in tausta.items():
+            lataa_taustakartta(lehdet, taso, key=key)
     for i, bb in enumerate(vektoribboxit, 1):
         print(f"vektoripala {i}/{len(vektoribboxit)}")
         uudet_h = lataa_hydrografia(bb, key=key, dest=ROOT / "vesistot-mml" / f"_pala{i}")

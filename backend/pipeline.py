@@ -1116,6 +1116,44 @@ def compute_factor_thresholds(buildings_path, force=False):
     cache_path.write_text(json.dumps(kynnykset_tasoittain, indent=2))
     return kynnykset_tasoittain
 
+def _taustakartta_ikkuna(tile, level):
+    """Tiilen ikkuna taustakarttalehdelta, tai None jos sita ei ole ladattu.
+
+    Palautuminen maastokarttaan on TAHALLISTA eika virhe: taustakartta on
+    esityksen parannus, ei laskennan edellytys. Ilman sita kartta on
+    sotkuisempi ja isompi mutta oikea, ja koko putki toimii kuten ennen.
+    Latauksen puuttuminen ei siis saa kaataa buildia."""
+    from . import mml_lataus
+    if level not in mml_lataus.TAUSTAKARTAT:
+        return None
+    _aineisto, jako, mpp = mml_lataus.TAUSTAKARTAT[level]
+    from . import karttalehti
+    # Tiili (6x6 km) osuu aina yhden taustakarttalehden sisaan, koska
+    # pieninkin niista on 12x12 km ja jako on sisakkainen.
+    keski = ((tile.bounds[0] + tile.bounds[2]) / 2,
+             (tile.bounds[1] + tile.bounds[3]) / 2)
+    lehti = karttalehti.sheet_name(keski[0], keski[1], jako)
+    polku = mml_lataus.tausta_kansio(level) / f"{lehti}.png"
+    if not polku.exists():
+        return None
+    lb = karttalehti.sheet_bounds(lehti)
+    im = cv2.imread(str(polku), cv2.IMREAD_COLOR)
+    if im is None:
+        print(f"  {lehti}: taustakarttaa ei voitu lukea, kaytetaan maastokarttaa",
+              flush=True)
+        return None
+    c0 = int(round((tile.bounds[0] - lb[0]) / mpp))
+    r0 = int(round((lb[3] - tile.bounds[3]) / mpp))
+    n = int(round((tile.bounds[2] - tile.bounds[0]) / mpp))
+    m = int(round((tile.bounds[3] - tile.bounds[1]) / mpp))
+    pala = im[r0:r0 + m, c0:c0 + n]
+    if pala.shape[:2] != (m, n):
+        print(f"  {lehti}: ikkuna {pala.shape[:2]} != odotettu {(m, n)}, "
+              f"kaytetaan maastokarttaa", flush=True)
+        return None
+    return pala
+
+
 def get_or_compute_basemap(tile_id, level="detail", force=False):
     """Palauttaa taustakartaksi tarkoitetun karttakuva-leikkauksen PNG-tavuina
     halutulla resoluutiotasolla, levyvalimuistilla. "detail" on
@@ -1133,8 +1171,28 @@ def get_or_compute_basemap(tile_id, level="detail", force=False):
         raise KeyError(f"Tuntematon tile_id: {tile_id}")
     tile = registry[tile_id]
 
-    map_bgr, _map_transform = raster_filters.load_map_window(str(tile.map_path), tile.bounds)
-    map_bgr = downsample_image(map_bgr, LEVEL_FACTORS[level])
+    # TAUSTAKARTTA KARKEILLE TASOILLE, jos se on ladattu.
+    #
+    # 1:10 000 karttaa pienentamalla saatu yleisnakyma on kaksi kertaa
+    # vaarin. Kartografisesti: viivat, tekstit ja symbolit on suunniteltu
+    # metrien tarkkuudelle ja muuttuvat pienennettyna kohinaksi. Kooltaan:
+    # painettu kartta on 214 varia, ja alinaytteistys keskiarvoistaa niita
+    # kymmeniksi tuhansiksi - juuri se litteys jonka varassa havioton
+    # pakkaus toimii. MITATTU samassa 4 m/px resoluutiossa:
+    #
+    #   maastokartta pienennettyna  53 110 varia  2,49 bit/px  19,42 kt/km2
+    #   taustakartta natiivina         238 varia  1,11 bit/px   8,65 kt/km2
+    #
+    # Detail-taso pysyy maastokarttana: siita luetaan kallio ja suo
+    # (raster_filters), joten sen VARIT ovat osa pisteytysta eivatka vain
+    # esitysta. Taustakartta on pelkka tausta.
+    lahde = _taustakartta_ikkuna(tile, level)
+    if lahde is not None:
+        map_bgr = lahde
+    else:
+        map_bgr, _map_transform = raster_filters.load_map_window(
+            str(tile.map_path), tile.bounds)
+        map_bgr = downsample_image(map_bgr, LEVEL_FACTORS[level])
 
     ok, encoded = cv2.imencode(".png", map_bgr)
     if not ok:

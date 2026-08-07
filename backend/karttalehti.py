@@ -72,8 +72,33 @@ def sheet_bounds(nimi):
     return (x, y, x + w, y + h)
 
 
+# Kaikki lehtijaot ovat SAMA laskeutuminen eri syvyyteen: ykkostasosta
+# (192 x 96 km) puolitetaan numerolla 1-4, ja lopuksi voidaan ottaa viela
+# L/R-puolisko tai A-H neljannes. Taulukko sanoo kuinka syvalle mennaan.
+#
+# Taustakartan jaot on LUETTU RAJAPINNAN OMASTA KUVAUKSESTA
+# (processes/taustakartta_rasteri_karttalehti, mapSheetInput), ei paatelty:
+#   taustakartta_rasteri_20k   karttalehtijako 1:25 000    esim. M5321
+#   taustakartta_rasteri_40k   1:100 000 puolilehti        esim. M53L
+#   taustakartta_rasteri_160k  1:200 000                   esim. M5
+#
+#   taso          numeroita  jatke      lehden koko
+LEHTIJAOT = {
+    "dem":        (3, "nelj"),   # 6 x 6 km
+    "kartta":     (3, "lr"),     # 12 x 12 km
+    "tausta20k":  (3, None),     # 24 x 12 km
+    "tausta40k":  (1, "lr"),     # 48 x 48 km
+    "tausta80k":  (0, "lr"),     # 96 x 96 km
+    "tausta160k": (0, None),     # 192 x 96 km
+}
+
+
 def sheet_name(x, y, taso="dem"):
-    """Koordinaatti -> lehtinimi. taso: "dem" (6x6 km) tai "kartta" (12x12 km)."""
+    """Koordinaatti -> lehtinimi. taso: ks. LEHTIJAOT."""
+    if taso not in LEHTIJAOT:
+        raise ValueError(f"Tuntematon taso {taso!r}")
+    numeroita, jatke = LEHTIJAOT[taso]
+
     sarake = int((x - ORIGIN_X) // LEVEL1_W)
     rivi = int((y - ORIGIN_Y) // LEVEL1_H)
     if not 0 <= rivi < len(LETTERS):
@@ -83,7 +108,7 @@ def sheet_name(x, y, taso="dem"):
     bx = ORIGIN_X + sarake * LEVEL1_W
     by = ORIGIN_Y + rivi * LEVEL1_H
     w, h = LEVEL1_W, LEVEL1_H
-    for _ in range(3):                      # 1:100k -> 1:50k -> 1:25k
+    for _ in range(numeroita):              # 1:100k -> 1:50k -> 1:25k
         w, h = w / 2, h / 2
         i = 0 if x < bx + w else 1
         j = 0 if y < by + h else 1
@@ -91,17 +116,21 @@ def sheet_name(x, y, taso="dem"):
         bx += i * w
         by += j * h
 
-    if taso == "kartta":
+    if jatke is None:
+        return nimi
+    if jatke == "lr":
         return nimi + ("L" if x < bx + w / 2 else "R")
-    if taso != "dem":
-        raise ValueError(f"Tuntematon taso {taso!r}")
     sar = min(int((x - bx) // (w / 4)), 3)
     riv = min(int((y - by) // (h / 2)), 1)
     return nimi + QUADRANT_LETTERS[sar * 2 + riv]
 
 
-# Ruutukoot metreina tasoittain - kaytetaan alueen kayntiin lapi.
-STEP = {"dem": 6000.0, "kartta": 12000.0}
+# Askel alueen lapikayntiin. EI lehden leveys vaan sen PIENEMPI sivu:
+# tausta20k on 24 x 12 km ja tausta160k 192 x 96 km, joten leveydella
+# askeltaminen hyppaisi lehtien yli pystysuunnassa.
+STEP = {"dem": 6000.0, "kartta": 12000.0,
+        "tausta20k": 12000.0, "tausta40k": 48000.0,
+        "tausta80k": 96000.0, "tausta160k": 96000.0}
 
 
 def sheets_for_bbox(bbox, taso="dem"):
