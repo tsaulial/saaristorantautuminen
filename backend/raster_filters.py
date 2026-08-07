@@ -87,10 +87,44 @@ def map_window_geometry(png_path, bbox):
     return transform, (int(round(window.height)), int(round(window.width)))
 
 
+# --- PISTEYTYSKARTAN LAHDE ON LUKITTU ---
+#
+# Kallio ja suo tunnistetaan VAREISTA (ks. HSV-rajat ylla), jotka on
+# kalibroitu tuotteesta maastokartta_rasteri_10k_painovari. Mika tahansa muu
+# karttatuote - taustakartta, eri painovariversio, pienempi mittakaava -
+# tuottaisi eri varit ja siten VAARAT pistemaarat ILMAN VIRHEILMOITUSTA.
+#
+# Riski on konkreettinen: projektissa on nyt kolme muuta karttatuotetta
+# (taustakartta 10k/20k/80k) joita kaytetaan piirtoon. Ne ovat eri kansiossa
+# ja tama tarkistus pitaa ne siella. Ilman sita seuraava muutos voisi
+# vahingossa syottaa taustakartan pisteytykseen, ja vika nakyisi vasta
+# vaarina rantautumispaikkoina.
+#
+# Todennus siita etta VARIT ovat oikeat on erikseen: mml_lataus.todenna_kartta
+# lataa lehden rajapinnasta ja vertaa maskit pikselitasolla. Tama tarkistus
+# vastaa eri kysymykseen: onko lahde ylipaataan oikeasta aineistosta.
+PISTEYTYSKARTAN_KANSIO = "karttakuva-mll"
+
+
+def _varmista_pisteytyskartta(png_path):
+    """Kaatuu jos karttaa luetaan muualta kuin pisteytysaineistosta."""
+    p = Path(png_path).resolve()
+    if PISTEYTYSKARTAN_KANSIO not in p.parts:
+        raise ValueError(
+            f"Pisteytyskartta luettava kansiosta {PISTEYTYSKARTAN_KANSIO!r}, "
+            f"ei polusta {p}. Kallio- ja suomaskit on kalibroitu tuotteen "
+            "maastokartta_rasteri_10k_painovari vareihin; muu tuote antaisi "
+            "vaarat pistemaarat ilman virheilmoitusta."
+        )
+
+
 def load_map_window(png_path, bbox):
     """Lukee vain bbox:aa (minx,miny,maxx,maxy) vastaavan ikkunan karttakuvasta
     palettidatana ja purkaa sen BGR:ksi itse - valttaa koko 12000x12000-tiilen
-    lataamisen muistiin kun tarvitaan vain yhta DEM-tiilen kokoista aluetta."""
+    lataamisen muistiin kun tarvitaan vain yhta DEM-tiilen kokoista aluetta.
+
+    Lahde on lukittu pisteytysaineistoon (ks. _varmista_pisteytyskartta)."""
+    _varmista_pisteytyskartta(png_path)
     with rasterio.open(png_path) as ds:
         window = from_bounds(*bbox, transform=ds.transform).round_offsets().round_lengths()
         index = ds.read(1, window=window)
