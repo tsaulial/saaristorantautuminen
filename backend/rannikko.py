@@ -44,8 +44,36 @@ RANNIKKO_WGS84 = [
     ("Tornio", 24.14, 65.85),
 ]
 
-# Ahvenanmaa on oma haaransa: se ei ole mannerrannikon linjalla, mutta
-# kuuluu tavoitealueeseen. Ajetaan tarvittaessa erikseen omana bboxinaan.
+# --- AHVENANMAAN HAARA ---
+#
+# Ahvenanmaa ei ole mannerrannikon linjalla mutta kuuluu tavoitealueeseen.
+# Se ajettiin aiemmin erillisena suorakaiteena, ja niin syntyi 192 km
+# levea AUKKO: mitattuna aineistossa oli kaksi erillista saareketta,
+# Ahvenanmaa (x 98-176 km) ja Helsinki (x 368-404 km), eika mitaan valissa.
+# Koko Saaristomeri ja rannikko Hangosta Porkkalaan puuttuivat.
+#
+# Haara on OMA LISTANSA eika osa paalinjaa. Jos se liitettaisiin linjaan
+# Nauvon ja Uusikaupungin valiin, koko rannikon kaytava tekisi mutkan
+# lanteen Ahvenanmaalle ja takaisin itaan - pitkan ja kapean turhan
+# kaistaleen avomerta.
+#
+# Reitti seuraa saaristoa eika avomerta, samasta syysta kuin paalinja
+# seuraa rannikkokaupunkeja: kaytava on kapea, ja avomerella se hakisi
+# tyhjaa.
+AHVENANMAA_HAARA = [
+    ("Nauvo", 21.90, 60.19),          # sama piste kuin paalinjan lansipaa
+    ("Korppoo", 21.57, 60.17),
+    ("Houtskari", 21.37, 60.22),
+    ("Brando", 21.02, 60.40),
+    ("Kumlinge", 20.78, 60.26),
+    ("Sottunga", 20.67, 60.13),
+    ("Maarianhamina", 19.94, 60.10),
+    ("Eckero", 19.54, 60.22),
+]
+
+# SAILYTETAAN vertailun vuoksi: nain Ahvenanmaa haettiin ennen haaraa.
+# Suorakaide on 75 x 80 km ja vaatii 182 lehtea, joista suuri osa on
+# avomerta ja sisamaata - kaytava kattaa saman saariston vahemmalla.
 AHVENANMAA_BBOX = (100000.0, 6650000.0, 175000.0, 6730000.0)
 
 KAYTAVA_LEVEYS_M = 20000.0
@@ -57,10 +85,38 @@ def rannikkolinja():
     return [t.transform(lon, lat) for _nimi, lon, lat in RANNIKKO_WGS84]
 
 
+def ahvenanmaan_haara():
+    """Ahvenanmaan haaran linjaus EPSG:3067-metreina (ks. AHVENANMAA_HAARA)."""
+    t = Transformer.from_crs(4326, 3067, always_xy=True)
+    return [t.transform(lon, lat) for _nimi, lon, lat in AHVENANMAA_HAARA]
+
+
 def kaytava(leveys_m=KAYTAVA_LEVEYS_M):
     """Kaytava polygonina."""
     from shapely.geometry import LineString
     return LineString(rannikkolinja()).buffer(leveys_m / 2.0)
+
+
+def valilinja(alku_nimi, loppu_nimi):
+    """Rannikkolinjan osuus kahden REITTIPISTEEN valilta, nimilla.
+
+    `--osa i/n` jakaa linjan yhta pitkiin palasiin, mika sopii koko
+    rannikon ajamiseen erissa mutta ei alueen valitsemiseen: kayttaja
+    ajattelee paikkoina ("Helsingin ja Ahvenanmaan valilta") eika
+    murtolukuina. Nimet ovat RANNIKKO_WGS84:sta ja AHVENANMAA_HAARA:sta."""
+    # VAIN PAALINJA. Haara liitetaan erikseen (ahvenanmaa=True), koska
+    # listojen yhdistaminen tekisi niista yhden pitkan reitin: Helsinki ->
+    # Eckero olisi kulkenut Tornion kautta ja tuottanut 1 732 km linjan
+    # 277 km sijaan.
+    nimet = [n for n, _, _ in RANNIKKO_WGS84]
+    for nimi in (alku_nimi, loppu_nimi):
+        if nimi not in nimet:
+            raise ValueError(f"Tuntematon reittipiste {nimi!r}. Valitse: "
+                             + ", ".join(nimet))
+    i, j = sorted((nimet.index(alku_nimi), nimet.index(loppu_nimi)))
+    from pyproj import Transformer
+    t = Transformer.from_crs(4326, 3067, always_xy=True)
+    return [t.transform(x, y) for _n, x, y in RANNIKKO_WGS84[i:j + 1]]
 
 
 def _osalinja(osa=None):
@@ -78,17 +134,26 @@ def _osalinja(osa=None):
             (ls.interpolate(a + k * (b - a) / m) for k in range(m + 1))]
 
 
-def lehdet(leveys_m=KAYTAVA_LEVEYS_M, osa=None):
+def lehdet(leveys_m=KAYTAVA_LEVEYS_M, osa=None, ahvenanmaa=False, linja=None):
     """(dem_lehdet, karttalehdet) rannikolle tai sen osalle.
 
     osa=(i, n) ajaa vain i:nnen osan n:sta. Osittaminen tehdaan LINJALLE eika
     suorakaiteina: mitattuna kahdeksan suorakaidevaihetta hakisi 2 155 lehtea
     kun kaytava vaatii 867 - rannikko kaartaa, joten suorakaide hakee 2,5-
-    kertaisesti turhaa."""
+    kertaisesti turhaa.
+
+    ahvenanmaa=True lisaa Ahvenanmaan haaran (ks. AHVENANMAA_HAARA). Haara
+    lasketaan ERIKSEEN ja tulokset yhdistetaan, jottei paalinjan ja haaran
+    valiin syntyisi keinotekoista yhdyskaytavaa."""
     from . import karttalehti
-    p = _osalinja(osa)
-    return (karttalehti.sheets_for_corridor(p, leveys_m, "dem"),
-            karttalehti.sheets_for_corridor(p, leveys_m, "kartta"))
+    p = linja if linja is not None else _osalinja(osa)
+    dem = set(karttalehti.sheets_for_corridor(p, leveys_m, "dem"))
+    kartta = set(karttalehti.sheets_for_corridor(p, leveys_m, "kartta"))
+    if ahvenanmaa and not osa:
+        h = ahvenanmaan_haara()
+        dem |= set(karttalehti.sheets_for_corridor(h, leveys_m, "dem"))
+        kartta |= set(karttalehti.sheets_for_corridor(h, leveys_m, "kartta"))
+    return sorted(dem), sorted(kartta)
 
 
 # Kuinka pitkiin jaksoihin rannikko pilkotaan vektorihakuja varten.
@@ -104,15 +169,20 @@ def lehdet(leveys_m=KAYTAVA_LEVEYS_M, osa=None):
 VEKTORI_JAKSO_M = 30000.0
 
 
-def vektoripalat(leveys_m=KAYTAVA_LEVEYS_M, jakso_m=VEKTORI_JAKSO_M, osa=None):
+def vektoripalat(leveys_m=KAYTAVA_LEVEYS_M, jakso_m=VEKTORI_JAKSO_M, osa=None,
+                 ahvenanmaa=False, linja=None):
     """Kaytavan peittavat bbox-palat vektorihakuja varten (rakennukset,
     hydrografia). Palat seuraavat rannikkolinjaa - ks. VEKTORI_JAKSO_M."""
     from shapely.geometry import LineString, box
 
-    ls = LineString(_osalinja(osa))
-    n = max(int(ls.length / jakso_m) + 1, 1)
+    linjat = [linja if linja is not None else _osalinja(osa)]
+    if ahvenanmaa and not osa:
+        linjat.append(ahvenanmaan_haara())
     palat = []
-    for i in range(n):
+    for pisteet_linja in linjat:
+      ls = LineString(pisteet_linja)
+      n = max(int(ls.length / jakso_m) + 1, 1)
+      for i in range(n):
         alku, loppu = i * ls.length / n, (i + 1) * ls.length / n
         # Jakso poimitaan naytepisteina, jotta mutka ei jaa suoran sisaan.
         pisteet = [ls.interpolate(alku + k * (loppu - alku) / 8) for k in range(9)]

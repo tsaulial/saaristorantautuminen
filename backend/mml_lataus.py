@@ -418,6 +418,12 @@ def main():
                     help="Kaytavan leveys metreina (oletus 20000)")
     ap.add_argument("--osa", metavar="I/N",
                     help="Aja vain osa I kokonaisuudesta N, esim. 3/8")
+    ap.add_argument("--ahvenanmaa", action="store_true",
+                    help="Lisaa Ahvenanmaan haara (Nauvo-Eckero) rannikkoon")
+    ap.add_argument("--valilta", metavar="NIMI",
+                    help="Rajaa rannikko reittipisteesta, esim. Helsinki")
+    ap.add_argument("--asti", metavar="NIMI",
+                    help="...tahan reittipisteeseen, esim. Nauvo")
     ap.add_argument("--todenna-kartta", metavar="LEHTI", nargs="?", const="",
                     help="Vertaa rajapinnan karttalehti olemassa olevaan")
     ap.add_argument("--taustakartta", action="store_true",
@@ -473,9 +479,18 @@ def main():
             if not 1 <= i <= n:
                 ap.error(f"--osa {args.osa}: I:n oltava valilla 1..N")
             osa = (i, n)
-        dem, kartta = rannikko.lehdet(args.leveys, osa)
-        vektoribboxit = rannikko.vektoripalat(args.leveys, osa=osa)
+        vali = None
+        if args.valilta or args.asti:
+            if not (args.valilta and args.asti):
+                ap.error("--valilta ja --asti annetaan yhdessa")
+            vali = rannikko.valilinja(args.valilta, args.asti)
+        dem, kartta = rannikko.lehdet(args.leveys, osa, args.ahvenanmaa, vali)
+        vektoribboxit = rannikko.vektoripalat(args.leveys, osa=osa,
+                                              ahvenanmaa=args.ahvenanmaa,
+                                              linja=vali)
         print(f"RANNIKKO, kaytavan leveys {args.leveys/1000:.0f} km"
+              + (f", {args.valilta}-{args.asti}" if vali else "")
+              + (", Ahvenanmaan haara mukana" if args.ahvenanmaa else "")
               + (f", osa {args.osa}" if args.osa else ""))
     else:
         bbox = tuple(args.bbox)
