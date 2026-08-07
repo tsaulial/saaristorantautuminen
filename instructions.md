@@ -669,16 +669,30 @@ Datakuvan kanavat (`R` = luokka, `254` = maa, `255` = merta ilman
 havaintoa; `G` = ikä vrk; `B` = luotettavuus; **`A` = 255 aina**, koska
 esikerrottu alfa turmelisi RGB:n `getImageData`:ssa).
 
-Selaimessa nämä erotellaan toisistaan:
+Selaimessa piirretään **vain havaittu**:
 
 - **maa** — ei piirretä lainkaan
-- **näkemättä jäänyt** — vino **viirutus**, ei tasaväri
+- **näkemättä jäänyt** — ei piirretä lainkaan
 - **epävarma havainto** — värillinen mutta haalea
 
-Viirutus siksi, että tasaväri asettuisi samalle asteikolle värikoodattujen
-luokkien kanssa ja käyttäjä lukisi sen arvona ("harmaa = vähän levää").
-Ensimmäinen yritys oli harmaa tasaväri alfalla 0,20, ja se hukkui
-peruskartan sinisen alle kokonaan.
+**Näkemättömän alueen merkintä poistettiin (linjaus 2026-08-07).** Se
+merkittiin ensin harmaalla tasavärillä (hukkui peruskartan sinisen alle),
+sitten viirutuksella — kuvio eikä väri, jottei sitä lueta arvona. Viiru
+näkyi hyvin, mutta juuri siksi ongelma paljastui: kattavuus on rannan
+lähellä niin heikko, että viiru peitti suurimman osan saaristosta. **Kun
+merkintä kattaa lähes kaiken, se ei erottele mitään.**
+
+Erottelu ei silti katoa: havaittu puhdas vesi on **sininen** (luokka 0),
+näkemätön on **väritön**. Tieto kulkee läpinäkyvyytenä värin sijaan. Se on
+hienovaraisempi signaali, joten legendan teksti kantaa selityksen — ilman
+sitä katsoja lukisi värittömän meren puhtaaksi.
+
+Samasta syystä tietopallo **ei tuota riviä** näkemättömälle alueelle: rannan
+lähellä se olisi lähes joka pallossa.
+
+**Kuvan arvo 255 säilyy** (`backend/leva.py`): aineisto tietää yhä eron, vain
+esitys ei näytä sitä. Palauttaminen on yhden haaran muutos
+`levaVarita`-funktiossa.
 
 **Pisteet menevät `vektorit`-paneen, eivät `leva`-paneen.** Samassa panessa
 kuvakerros ja SVG jäisivät `leaflet.css`:n säännön

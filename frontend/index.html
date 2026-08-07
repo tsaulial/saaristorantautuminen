@@ -1044,20 +1044,16 @@ legend.onAdd = function () {
           '<span class="swatch" style="background:#FFDC28"></span>Levää todennäköisesti<br>' +
           '<span class="swatch" style="background:#CD3301"></span>Levää varmasti<br>' +
           '<span class="swatch" style="background:#2B7EA8"></span>Ei levää<br>' +
-          // Legendan naytepala on SAMA viirutus kuin kartalla, ei harmaa
-          // laatikko: kayttajan on tunnistettava kuvio kartalta.
-          '<span class="swatch" style="background:repeating-linear-gradient(' +
-          '45deg,#60626c,#60626c 3px,transparent 3px,transparent 8px)"></span>' +
-          'Ei havaintoa<br>' +
           // Kansalaishavainto on PISTE eika pinta, joten naytepalakin on
           // ympyra - muoto kertoo etta kyse on eri lajin tiedosta.
           '<span class="swatch" style="background:#FFDC28;border-radius:50%;' +
           'box-shadow:0 0 0 2px #fff inset"></span>Havainto rannalta<br>' +
           '<small class="impl-note">Haalea väri = havainto on vanha tai sen ' +
-          'jälkeen on tuullut. Viirutus = aluetta ei ole nähty — se ei ' +
-          'tarkoita että vesi olisi puhdasta. Satelliitti ei näe aivan rannan ' +
-          'tuntumaan, joten kerros kertoo vesistä joiden yli kuljet, ei siitä ' +
-          'onko saari levän ympäröimä.</small>' +
+          'jälkeen on tuullut. <b>Väritön vesi tarkoittaa, ettei aluetta ole ' +
+          'nähty</b> — ei että se olisi puhdas; havaittu puhdas vesi on ' +
+          'sininen. Satelliitti ei näe aivan rannan tuntumaan, joten kerros ' +
+          'kertoo vesistä joiden yli kuljet, ei siitä onko saari levän ' +
+          'ympäröimä.</small>' +
         '</div>' +
         '<small id="lahteet" class="impl-note"></small>' +
       '</div>' +
@@ -1462,11 +1458,11 @@ function bubbleHtml(cond, varoitus, tuuli, met, suojelu, leva) {
 
 function levaRivit(leva) {
   if (!leva) return '';
-  if (leva.nakematta) {
-    // Tama on tieto, ei sen puute: satelliitti ei nae rannan tuntumaan, ja
-    // kayttajan on tiedettava se ettei tulkitse harmaata puhtaaksi vedeksi.
-    return '<div class="pb-leva">levästä<br>ei havaintoa</div>';
-  }
+  // Nakematta jaanyt alue ei tuota palloon riviä. Sama peruste kuin
+  // kartalla: rannan lahella se olisi lahes joka pallossa, jolloin rivi ei
+  // erottelisi mitaan. Rivin puuttuminen on itsessaan sama signaali kuin
+  // varin puuttuminen kartalla, ja legenda selittaa sen kerran.
+  if (leva.nakematta) return '';
   const nimet = { 1: 'Levää mahdollisesti', 2: 'Levää todennäköisesti',
                   3: 'Levää varmasti' };
   const ika = leva.ika === 0 ? 'havainto tänään'
@@ -1506,7 +1502,7 @@ async function ensureWaterFor(latlng) {
 function bubbleKoko(varoitus, met, suojelu, leva) {
   // Levalohko on kolmirivinen: luokka, ika, tuulirivi. Nakemattomalle
   // alueelle riittaa kaksi.
-  const levaRivit = !leva ? 0 : (leva.nakematta ? 2 : (leva.luokka === 0 ? 2 : 3));
+  const levaRivit = (!leva || leva.nakematta) ? 0 : (leva.luokka === 0 ? 2 : 3);
   const rivit = (varoitus ? 2 : 0) + (met ? 3 : 0) + (suojelu ? 4 : 0) + levaRivit;
   const koot = [124, 158, 196, 232, 264];
   return koot[Math.min(Math.ceil(rivit / 2), koot.length - 1)];
@@ -2544,38 +2540,31 @@ function piirraPalvelut(data) {
 //   B = luotettavuus 0-255
 //   A = 255 aina (esikerrottu alfa turmelisi RGB:n getImageData:ssa)
 //
-// KOLME ERI SYYTA OLLA VARITTAMATTA, ja ne on erotettava toisistaan:
-//   maa              ei piirreta lainkaan
-//   nakematta jaanyt oma harmaa savynsa - tieto puuttuu
-//   epavarma havainto varillinen mutta haalea
+// VAIN HAVAITTU PIIRRETAAN. Maa (254) ja nakematta jaanyt meri (255)
+// jaavat molemmat lapinakyviksi.
 //
-// Ilman keskimmaista kayttaja lukisi nakemattoman meren "ei levaa" -tilaksi,
-// mika on tasan vaara suuntaan erehtyminen. Kattavuus on rannan lahella
-// heikko (mitattuna alle 500 m paassa noin 11 %), joten harmaata on paljon -
-// ja juuri siksi sen on nakyttava.
+// Nakematta jaanyt merkittiin aluksi viirutuksella, jotta se erottuisi
+// havaitusta puhtaasta vedesta. Se oli oikein periaatteessa mutta vaarin
+// kaytannossa: kattavuus on rannan lahella niin heikko (alle 500 m paassa
+// noin 11 %), etta viirutus peitti suurimman osan saaristosta. Kun
+// merkinta kattaa lahes kaiken, se ei erottele mitaan - se on vain kohinaa
+// jonka lapi varsinainen tieto pitaa etsia.
+//
+// EROTTELU EI KUITENKAAN KATOA: havaittu puhdas vesi on SININEN (luokka 0),
+// nakematta jaanyt on variton. Tieto kulkee siis lapinakyvyytena varin
+// sijaan. Se on hienovaraisempi signaali, joten legendan teksti kantaa
+// selityksen - ilman sita katsoja lukisi varittoman meren puhtaaksi.
+//
+// Kuvan arvo 255 SAILYY (ks. backend/leva.py): aineisto tietaa yha eron,
+// vain esitys ei nayta sita. Palauttaminen on yhden haaran muutos.
 const LEVA_VARIT = { 0: [43, 126, 168], 1: [255, 255, 201],
                      2: [255, 220, 40], 3: [205, 51, 1] };
-const LEVA_EI_HAVAINTOA = [96, 98, 108];
 // Alfan alaraja: erittain epavarma havainto ei saa kadota nakyvista, koska
-// katoaminen naytaisi samalta kuin "ei havaintoa" - se on eri asia.
+// katoaminen tarkoittaa nyt "ei havaintoa".
 // Ylaraja on korkea, koska peruskartan meri on kirkkaan sininen ja
 // vaalea keltainen (luokka 1) hukkuu sen alle pienemmalla peitolla.
 const LEVA_ALFA_MIN = 0.20;
 const LEVA_ALFA_MAX = 0.80;
-
-// EI HAVAINTOA PIIRRETAAN VIIRUTUKSENA, ei tasavarina.
-//
-// Tasavari olisi VAARIN riippumatta savysta: se asettuisi samalle
-// asteikolle varikoodattujen luokkien kanssa, ja kayttaja lukisi sen
-// arvona ("harmaa = vahan levaa"). Viirutus on vakiintunut tapa sanoa
-// "ei tietoa" juuri siksi, ettei se ole vari vaan kuvio - sita ei voi
-// sekoittaa mittaustulokseen.
-//
-// Tama on aineiston yleisin tila rannan lahella (mitattuna alle 500 m
-// paassa noin 89 % ilman havaintoa), joten sen on erotuttava selvasti.
-const LEVA_VIIRU_JAKSO = 8;      // px
-const LEVA_VIIRU_LEVEYS = 3;     // px
-const LEVA_ALFA_EI_HAVAINTOA = 0.42;
 
 let levaMeta = null;
 let levaLoading = null;
@@ -2584,26 +2573,13 @@ function levaVarita(img) {
   const { width, height, data } = img;
   const ulos = new ImageData(width, height);
   const d = ulos.data;
-  const viiruAlfa = Math.round(255 * LEVA_ALFA_EI_HAVAINTOA);
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const i = (y * width + x) * 4;
-      const luokka = data[i];
-      if (luokka === 254) continue;               // maa: lapinakyva
-      if (luokka === 255) {
-        // Vino viiru: kuvio, ei vari.
-        if ((x + y) % LEVA_VIIRU_JAKSO >= LEVA_VIIRU_LEVEYS) continue;
-        d[i] = LEVA_EI_HAVAINTOA[0]; d[i + 1] = LEVA_EI_HAVAINTOA[1];
-        d[i + 2] = LEVA_EI_HAVAINTOA[2]; d[i + 3] = viiruAlfa;
-        continue;
-      }
-      const vari = LEVA_VARIT[luokka];
-      if (!vari) continue;
-      const luot = data[i + 2] / 255;
-      d[i] = vari[0]; d[i + 1] = vari[1]; d[i + 2] = vari[2];
-      d[i + 3] = Math.round(255 * (LEVA_ALFA_MIN
-        + (LEVA_ALFA_MAX - LEVA_ALFA_MIN) * luot));
-    }
+  for (let i = 0; i < data.length; i += 4) {
+    const vari = LEVA_VARIT[data[i]];        // 254 ja 255 eivat osu tahan
+    if (!vari) continue;
+    const luot = data[i + 2] / 255;
+    d[i] = vari[0]; d[i + 1] = vari[1]; d[i + 2] = vari[2];
+    d[i + 3] = Math.round(255 * (LEVA_ALFA_MIN
+      + (LEVA_ALFA_MAX - LEVA_ALFA_MIN) * luot));
   }
   return ulos;
 }
@@ -2672,8 +2648,9 @@ async function piirraLeva() {
       .addTo(levaGroup);
     alue._img = img;      // pallo lukee arvot tasta, ei varitetysta
   }
-  // Pisteet PINNAN PAALLE: ne ovat tarkein tieto siella missa pinta on
-  // viirutettu eli nakematta.
+  // Pisteet PINNAN PAALLE. Ne ovat nyt entista tarkeampia: satelliitin
+  // nakematta jattama alue on variton, joten piste on rannan tuntumassa
+  // usein ainoa merkinta kartalla.
   piirraKansalaishavainnot(meta);
   (meta.lahteet || []).forEach((l) => vectorAttribution(
     { lahde: l.nimi, lisenssi: l.lisenssi }));

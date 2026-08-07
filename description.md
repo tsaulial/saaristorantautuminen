@@ -129,10 +129,16 @@ värittämättä pidetään erillään:
 
 | Merkintä | Tarkoittaa |
 |---|---|
-| Väri (sininen → keltainen → punainen) | havaittu tilanne |
+| Sininen | havaittu, ei levää |
+| Keltainen → punainen | havaittu levää, sitä enemmän mitä punaisempi |
 | Haalea väri | havainto on vanha **tai** sen jälkeen on tuullut |
-| Viirutus | aluetta **ei ole nähty** — ei että vesi olisi puhdasta |
+| **Väritön vesi** | aluetta **ei ole nähty** — ei että se olisi puhdas |
 | Ympyrä | havainto rannalta, tehty silmämääräisesti |
+
+Havaittu puhdas vesi ja näkemätön alue erotetaan siis toisistaan: edellinen on
+sininen, jälkimmäinen väritön. Näkemätön alue merkittiin aluksi viirutuksella,
+mutta koska kattavuus on rannan lähellä heikko, viiru peitti suurimman osan
+saaristosta eikä erotellut enää mitään.
 
 ### Miksi luotettavuus, eikä pelkkä tilanne
 
