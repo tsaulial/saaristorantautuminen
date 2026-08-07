@@ -219,6 +219,33 @@
     <p>Kuinka tiukka "parhaat rantautumispaikat" -näkymä on. 1 % näyttää vain aivan huippukohdat, 10 % selvästi laajemman joukon. Vertailu on aina koko alueen laajuinen, ei saarikohtainen — ja se ottaa huomioon juuri ne tekijät jotka on valittu.</p>
   </div>
 
+  <h3 class="sub">Vain rannan maanpuoleinen osuus arvioidaan</h3>
+  <p>
+    Rantautumiskelpoisuus lasketaan 5–15 metrin vyöhykkeelle rantaviivasta
+    <b>maalle päin</b>. Meri jää kokonaan arvion ulkopuolelle — muuten se näyttäisi
+    parhaalta mahdolliselta rannalta, koska se on tasaista eikä siellä kasva mitään.
+  </p>
+  <p>
+    Maan ja veden raja tulee Maastotietokannan merialueesta, ei korkeusmallin
+    nollatasosta. Ero on merkittävä: korkeusmallin puuttuva data avomerellä luetaan
+    positiivisena korkeutena, jolloin avovesi näyttäisi maalta.
+  </p>
+
+  <h3 class="sub">Miksi kartta näyttää samalta kaikilla zoom-tasoilla</h3>
+  <p>
+    Kaukaa katsottaessa yksi kartan ruutu edustaa satoja tarkkoja ruutuja. Sovellus
+    valitsee niistä <b>tyypillisen</b> — sen jonka arvo on lohkon mediaani — eikä
+    parasta. Se on tylsempi valinta mutta rehellinen: kartta näyttää samalta
+    zoomatessa, eikä vihreä muutu punaiseksi kun tulee lähemmäs.
+  </p>
+  <p>
+    Hinta on tietoinen. Kapea erinomainen kohta laajan keskinkertaisen rannan keskellä
+    ei erotu ennen kuin zoomaa lähemmäs — kolmenkymmenen metrin ruudussa ei voi
+    rehellisesti näyttää kahden metrin kohdetta. Valittu ruutu on aina <i>oikea
+    mittaustulos jostain kohtaa lohkoa</i>, ei keskiarvo eikä eri kohdista koottu
+    yhdistelmä; jälkimmäinen kertoisi paikasta jota ei ole olemassa.
+  </p>
+
 <h2>Entä tuuli ja aallokko?</h2>
   <p>
     Sama ranta on eri ranta eri tuulella. Kartta ottaa sään huomioon kahdella tavalla.
@@ -273,6 +300,14 @@
     näyttää sen <b>vain jos lähteet ovat eri mieltä</b>. Kun ne ovat samaa mieltä, toinen
     luku ei kerro mitään. Erimielisyys sen sijaan kertoo juuri sen, mitä on hyödyllistä
     tietää: että lukuun ei kannata luottaa liikaa.
+  </p>
+
+  <h3 class="sub">Palvelut harvenevat kun zoomaa kauemmas</h3>
+  <p>
+    Palveluita on tuhansia, ja kaikki kerralla piirrettynä ne peittäisivät kartan.
+    Uloimmalla tasolla näkyvät vain <b>satamat, kaupat ja veneluiskat</b> eli ne
+    joihin voi mennä. Katokset, nuotiopaikat ja käymälät ilmestyvät lähemmäs
+    zoomatessa, koska ne merkitsevät vasta kun kohde on jo valittu.
   </p>
 
   <h2>Entä sinilevä?</h2>

@@ -712,6 +712,169 @@ on projektissa jo kerran aiheuttanut piiloon jääneen elementin.
 
 ---
 
+## 5g. Zoom-tasot, maa/vesi-raja ja laskentaversio (2026-08-07)
+
+Työ alkoi hitaudesta ja päätyi kahteen oikeellisuusvirheeseen. Järjestys on
+opettava: **optimointi paljasti virheen jota ei olisi muuten löytynyt.**
+
+### Moniresoluutioinen analyysikerros
+
+Analyysikerros laskettiin aina 2 m/px riippumatta zoomista, vaikka
+peruskartalla on ollut neljä tasoa alusta asti. Mitattuna uloimmalla
+zoomilla tiili peittää 28×28 ruutupikseliä mutta siitä laskettiin
+3000×3000 — **11 585 kertaa liikaa**.
+
+| Tila | Ennen | Jälkeen |
+|---|---:|---:|
+| `score` | 1 938 ms | 35 ms |
+| `top` | 3 450 ms | 12 ms |
+| `prime` | 3 791 ms | 26 ms |
+| `paddle` | 30 ms | 30 ms |
+
+`paddle` oli jo nopea, koska se käytti 50 m vesiruudukkoa — se oli malli
+tälle työlle. Koko näkymä (38 tiiltä): 1,24 s aiemman ~74 s sijaan.
+
+`ANALYYSI_TASOT = {"detail": 1, "mid": 4, "overview": 16}`, kertoimena
+`NEW_PIXEL_FACTOR`:n päälle eli 2 / 8 / 32 m/px.
+
+### Tiivistys: edustava oikea pikseli, mediaanilla
+
+`_edustava_lohko` valitsee kustakin lohkosta **oikean pikselin** — ei
+keskiarvoa eikä synteettistä. Osatekijöiden tiivistäminen erikseen loisi
+pikselin jota ei ole olemassa.
+
+Ensin valittiin lohkon **paras** pikseli, perusteena ettei kapea hyvä ranta
+hukkuisi huonon ympäristön sekaan. Se peruste pätee **etsintään** ("onko
+täällä hyvä paikka") mutta ei **yleiskuvaan** ("millaista täällä on") — ja
+pistemääräkerros on jälkimmäinen. Kynnysarvot kompensoitiin tasokohtaisesti,
+mutta `score`-tila ei käytä kynnystä lainkaan, joten se jäi kompensoimatta.
+
+Käyttäjä huomasi sen kartalta: vihreä muuttui punaiseksi kun zoomasi lähelle.
+
+| Punaista (< 0,4) | detail | overview max | overview mediaani |
+|---|---:|---:|---:|
+| K4242F | 4,7 % | 0,6 % | 3,6 % |
+| L4131E | 8,8 % | 1,3 % | 6,4 % |
+
+Kynnysarvojen hajonta tasojen välillä putosi 6,0 %:sta 1,2 %:iin — sama
+asia mitattuna toisesta suunnasta.
+
+**Kynnysarvot lasketaan erikseen jokaiselle tasolle**, jotta "parhaat 7 %"
+tarkoittaa aina 7 % siitä mitä ruudulla näkyy.
+
+### Maa/vesi-raja: 44 % analysoidusta rannasta oli vedessä
+
+Maa oli määritelty `dem > 0.0`. **Korkeusmallin nodata avomerellä luetaan
+positiivisena korkeutena**, joten avovesi näyttää maalta:
+
+| Tiili | `land_mask` | Vektorimeri |
+|---|---:|---:|
+| K4244H | 100,0 % maata | 99,9 % merta |
+| K4242E | 75,0 % maata | 99,6 % merta |
+
+18 tiiltä 37:stä oli ristiriidassa. Puskurivyöhyke rajataan maahan, joten
+valemaalla se levisi **rantaviivan molemmin puolin** — kartta lupasi
+rantautumiskelpoista rantaa avovedessä. Mitattu koko aineistosta:
+23 464 399 → 13 166 324 puskuripikseliä, eli **43,9 % oli vedessä**.
+
+Maa on nyt `(dem > 0) & ~meri` (`maa_maski`). Sama peruste oli kirjattuna
+pyyhkäisymatkojen puolelle alusta asti — siellä vain toiseen suuntaan.
+
+**Vika oli olemassa koko ajan mutta näkymätön**, koska 2 m/px kaistale on
+uloimmalla zoomilla alle ruutupikselin. Moniresoluutiokerros paksunsi sen
+näkyväksi.
+
+### `LASKENTA_VERSIO`
+
+Sormenjälki kattoi lähdeaineiston mutta **ei algoritmia**, joten nämä
+korjaukset olisivat jääneet vanhan välimuistin varaan. Versio on nyt osa
+`lahde_sormenjalkea` ja kaikkien johdettujen globaalien välimuistien
+tiedostonimeä, joten versionnosto mitätöi ne itsestään.
+
+Aiemmin sama hoidettiin ad hoc -merkeillä: `get_or_compute_raw` tarkisti
+esiintyykö `"shoreline_mask"` avaimena, ja kynnystiedostoille tehtiin oma
+muototarkistus. **Nosta versiota aina kun `compute_tile` tai sen kutsuma
+laskenta muuttaa tuloksia.**
+
+    1  lähtötilanne
+    2  maa/vesi-raja vektorimerimaskista
+    3  karkeiden tasojen tiivistys mediaanilla
+
+### Taustakartta karkeille zoomeille
+
+Uloimmat zoomit piirrettiin 1:10 000 kartasta pienentämällä, mikä oli kaksi
+kertaa väärin. **Kartografisesti** 1:10k on suunniteltu metrien tarkkuudelle
+ja muuttuu pienennettynä kohinaksi. **Kooltaan** painettu kartta on 214 väriä,
+ja alinäytteistys keskiarvoistaa ne kymmeniksi tuhansiksi — juuri se litteys
+jonka varassa häviötön pakkaus toimii.
+
+| Sama tiili, 4 m/px | Värejä | WebP |
+|---|---:|---:|
+| maastokartta pienennettynä | 70 170 | 912 kt |
+| taustakartta natiivina | 220 | 220 kt |
+
+Overview-tasolla ero on 6,8×. Peruskartta on 73 % `docs/`-hakemistosta.
+
+**Resoluutio on mitattu, ei pääteltiin.** Oletin säännön
+`m/px = mittakaava / 10 000` (koska `maastokartta_rasteri_10k` on 1 m/px);
+taustakartalla jakaja onkin **5 000**. Lehtijako sen sijaan osui metrilleen
+ensimmäisellä yrityksellä. `--todenna-taustakartta` lataa yhden lehden per
+taso ja tarkistaa molemmat.
+
+    near      taustakartta_rasteri_10k   2 m/px   lehti 12×12 km
+    mid       taustakartta_rasteri_20k   4 m/px   lehti 24×12 km
+    overview  taustakartta_rasteri_80k  16 m/px   lehti 96×96 km
+
+Lataus: `python3 -m backend.mml_lataus --vain-taustakartta` johtaa lehdet
+tiilistöstä eikä koske muuhun aineistoon.
+
+### Pisteytyskartan lähde on lukittu
+
+Kallio ja suo tunnistetaan **väreistä**, jotka on kalibroitu tuotteesta
+`maastokartta_rasteri_10k_painovari`. Nyt projektissa on kolme muuta
+karttatuotetta samassa muodossa ja samalla lehtijaolla, ja väärän syöttäminen
+antaisi väärät pistemäärät ilman virheilmoitusta.
+
+`load_map_window` hylkää polun joka ei ole `karttakuva-mll`-kansiossa.
+Vertailu tehdään polun **osiin**, joten `karttakuva-mll-vanha` ei mene läpi.
+
+Tämä vastaa eri kysymykseen kuin `todenna_kartta`: se tarkistaa että
+**värit** ovat oikeat, tämä että **lähde** on oikeasta aineistosta.
+
+### Selainpuolen kolme korjausta
+
+- **Välimuistit olivat rajattomia.** Mitattuna 10 tiilen lataus nosti
+  JS-keon 118 MB:sta 736 MB:iin; 188 tiilellä se olisi 12,9 GB. Raja on
+  **tavuissa eikä kappaleissa**, koska detail-tiili on 69 MB ja
+  overview-tiili 0,14 MB.
+- **`Promise.all` ei ollut rinnakkainen.** Renderöinti on synkronista, joten
+  kaikki tiilet laskettiin yhdessä palassa ja selain lakkasi vastaamasta yli
+  45 sekunniksi. Nyt tapahtumasilmukka vapautuu tiilien välissä.
+- **Palvelupisteet harvenevat zoomin mukaan.** 5 049 pistettä peitti kartan
+  täysin. Backend antaa jokaiselle pisteelle tason jolla se ilmestyy (`z`),
+  ja selain suodattaa yhdellä lukuvertailulla: overview 55, mid 374,
+  detail 5 049. Merkittävyysjärjestys on veneilijän — satama ja kauppa ennen
+  katosta ja käymälää.
+
+**Mittaus kumosi kaksi suunniteltua työtä.** Geometrian yksinkertaistus
+säästää väylillä 1,05× ja suojelualueilla 1,00×, koska lähdeaineisto on jo
+karkeaa. Ja Leaflet piirtää vain näkymän sisällä olevat markerit, joten
+25 245 pistettä pannaa 59 fps eli yhtä nopeasti kuin 5 049 — pistemäärä ei
+ole nopeusongelma lainkaan, vain luettavuusongelma.
+
+### Robustisuuskorjaukset jotka löytyivät matkalla
+
+- **Viallinen välimuistitiedosto kaatoi ajon.** `np.load` heitti
+  `BadZipFile`n ennen sormenjäljen tarkistusta. Nyt viallinen käsitellään
+  puuttuvana. Keskeytetty ajo jättää juuri tällaisia tiedostoja.
+- **Puuttuva tasokuva olisi kaatanut koko kerroksen.** Nyt palataan
+  detail-tasoon: kartta on hitaampi mutta oikea.
+- **Aktivoimaton virtuaaliympäristö** näkyi `ModuleNotFoundError`ina kolmen
+  tiedoston syvyydessä. `backend/__init__.py` kertoo nyt suoraan mitä pitää
+  tehdä; `eraajo.sh` aktivoi ympäristön itse.
+
+---
+
 ## 6. Natiivisovellus (iOS/Android) — tuleva suunta, EI toteuteta vielä
 
 **Tilanne (kirjattu muistiin 2026-07-28)**: web-pohjaista sovellusta kehitetään edelleen ensisijaisesti, eikä natiivin kehitystä aloiteta lähiaikoina. Tämä kohta dokumentoi tehdyn arvioinnin, jotta web-kehityksen aikana tehtävät arkkitehtuuripäätökset voivat ottaa tulevan natiivitarpeen huomioon eivätkä vahingossa sulje sitä pois. **Ei aktiivinen tehtävälista — ei toteuteta ilman erillistä pyyntöä.**

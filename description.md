@@ -79,6 +79,33 @@ Asetussivulla on lisäksi kaksi liukusäädintä, jotka eivät vaikuta pisteytyk
 - **Rantaviivan korostuksen paksuus** (1–20 pikseliä, oletus 10) — kuinka leveänä rantakaista piirretään.
 - **Parhaat rannat** (1–10 %, oletus 7 %) — kuinka tiukka "parhaat rantautumispaikat" -näkymä on. 1 % näyttää vain aivan huippukohdat, 10 % selvästi laajemman joukon. Vertailu on aina **koko alueen** laajuinen, ei saarikohtainen — ja se ottaa huomioon juuri ne tekijät jotka on valittu.
 
+### Miksi kartta näyttää samalta kaikilla zoom-tasoilla
+
+Kaukaa katsottaessa yksi kartan ruutu edustaa satoja tarkkoja ruutuja.
+Sovellus valitsee niistä **tyypillisen** — sen jonka arvo on lohkon
+mediaani — eikä parasta. Se on tylsempi valinta mutta rehellinen: kartta
+näyttää samalta zoomatessa, eikä vihreä muutu punaiseksi kun tulee
+lähemmäs.
+
+Hinta on tietoinen. Kapea erinomainen kohta laajan keskinkertaisen rannan
+keskellä ei erotu ennen kuin zoomaa lähemmäs. Kolmenkymmenen metrin
+ruudussa ei voi rehellisesti näyttää kahden metrin kohdetta.
+
+Valittu ruutu on aina **oikea mittaustulos jostain kohtaa lohkoa** — ei
+keskiarvo eikä eri kohdista koottu yhdistelmä. Jälkimmäinen kertoisi
+paikasta jota ei ole olemassa.
+
+### Vain rannan maanpuoleinen osuus arvioidaan
+
+Rantautumiskelpoisuus lasketaan 5–15 metrin vyöhykkeelle rantaviivasta
+**maalle päin**. Meri jää kokonaan arvion ulkopuolelle — muuten se
+näyttäisi parhaalta mahdolliselta rannalta, koska se on tasaista eikä
+siellä kasva mitään.
+
+Maan ja veden raja tulee Maastotietokannan merialueesta, ei korkeusmallin
+nollatasosta. Ero on merkittävä: korkeusmallin puuttuva data avomerellä
+luetaan positiivisena korkeutena, jolloin avovesi näyttäisi maalta.
+
 ## Mitä muuta kartalla näkyy?
 
 Rantautumispisteytyksen lisäksi kartalle voi ottaa neljä lisätasoa:
@@ -87,6 +114,11 @@ Rantautumispisteytyksen lisäksi kartalle voi ottaa neljä lisätasoa:
 - **Suojelualueet** — Natura-alueet sekä valtion ja yksityisten suojelualueet. Taso kertoo **missä olet**, ei sitä saako siellä rantautua: maihinnousukieltoja ei ole olemassa paikkatietona, vaan ne ovat järjestyssäännöissä. Siksi kartta kehottaa aina tarkistamaan säännön.
 - **Palvelut** — kaupat, saunat, majoitus, laavut, nuotiopaikat, veneluiskat, satamat, juomavesi ja käymälät.
 - **Levätilanne** — sinilevä satelliittihavainnoista ja rannalta tehdyistä havainnoista. Ks. oma lukunsa alla.
+
+Palveluita on tuhansia, joten ne **harvenevat kun zoomaa kauemmas**: uloimmalla
+tasolla näkyvät vain satamat, kaupat ja veneluiskat eli ne joihin voi mennä.
+Katokset, nuotiopaikat ja käymälät ilmestyvät lähemmäs zoomatessa, koska ne
+merkitsevät vasta kun kohde on jo valittu.
 
 ## Entä tuuli ja aallokko?
 
