@@ -244,24 +244,58 @@ def lataa_hydrografia(bbox, key=None, dest=None):
     return [mml.download_to(item, dest, key) for item in tulokset]
 
 
+def _liita_taso(uusi, kohde, taso):
+    """Lisaa kehyksen GPKG-tasoon LUKEMATTA olemassa olevaa muistiin.
+
+    Tama funktio on olemassa muistinkulutuksen takia. Aiempi tapa oli lukea
+    vanha taso, pd.concat uuden kanssa ja kirjoittaa kaikki uudelleen. Se
+    piti kolmea kopiota muistissa yhtaikaa ja oli lisaksi NELIOLLINEN: 13
+    vektoripalaa tarkoitti etta viimeinen pala luki ja kirjoitti kaikki
+    aiemmat rakennukset uudelleen.
+
+    Mitattuna rakennus-taso vie 2 696 tavua/kohde muistissa, joten 600 000
+    rakennusta on 1,6 Gt YHTENA kopiona. Kolme kopiota + rakennusreunaviiva
+    ylitti WSL:n muistirajan ja kaatoi vuorokauden ajon vektorivaiheessa.
+    Lisaystilassa muistissa on vain uusi pala.
+
+    GPKG-lisays sietaa PUUTTUVAN sarakkeen (taytetaan NULL:lla) mutta ei
+    YLIMAARAISTA - se nostaa FieldError:n. Se on hyva niin: hiljainen
+    sarakkeen katoaminen olisi pahempi kuin virhe. Siihen on silti paluutie,
+    koska tuntien ajon ei pida kaatua skeeman muutokseen jonka vanha tapa
+    olisi sietanyt."""
+    import geopandas as gpd
+    import pandas as pd
+    import pyogrio
+
+    if kohde.exists() and taso in set(pyogrio.list_layers(kohde)[:, 0]):
+        try:
+            uusi.to_file(kohde, layer=taso, driver="GPKG", mode="a")
+        except Exception as e:
+            print(f"    (skeema eroaa: {type(e).__name__}, yhdistetaan lukemalla)")
+            vanha = gpd.read_file(kohde, layer=taso)
+            yhd = gpd.GeoDataFrame(pd.concat([vanha, uusi], ignore_index=True),
+                                   crs=vanha.crs or uusi.crs)
+            yhd.to_file(kohde, layer=taso, driver="GPKG")
+            return len(yhd)
+    else:
+        uusi.to_file(kohde, layer=taso, driver="GPKG")
+    # read_info lukee vain otsikon, ei geometrioita.
+    return pyogrio.read_info(kohde, layer=taso)["features"]
+
+
 def yhdista_hydrografia(uudet_gpkg, kohde=None):
     """Liittaa meri-tason olemassa olevaan hydrografia.gpkg:hen."""
     import geopandas as gpd
-    import pandas as pd
 
     kohde = Path(kohde or ROOT / "vesistot-mml" / "hydrografia.gpkg")
     kohde.parent.mkdir(parents=True, exist_ok=True)
-    palat = []
-    if kohde.exists():
-        palat.append(gpd.read_file(kohde, layer="meri"))
+    n = None
     for polku in uudet_gpkg:
-        palat.append(gpd.read_file(polku, layer="meri"))
-    palat = [g for g in palat if len(g)]
-    if not palat:
-        return
-    yhd = gpd.GeoDataFrame(pd.concat(palat, ignore_index=True), crs=palat[0].crs)
-    yhd.to_file(kohde, layer="meri", driver="GPKG")
-    print(f"  meri: {len(yhd)} polygonia, {yhd.area.sum() / 1e6:.0f} km2")
+        uusi = gpd.read_file(polku, layer="meri")
+        if len(uusi):
+            n = _liita_taso(uusi, kohde, "meri")
+    if n is not None:
+        print(f"  meri: {n} polygonia")
 
 
 def lataa_rakennukset(bbox, key=None, dest=None):
@@ -289,10 +323,9 @@ def yhdista_rakennukset(uudet_gpkg, kohde=BUILDINGS_PATH):
     yhdistetty tiedosto toimii sellaisenaan - alueiden ei tarvitse olla
     yhtenaisia."""
     import geopandas as gpd
-    import pandas as pd
     import pyogrio
 
-    olemassa = {t: None for t in pyogrio.list_layers(kohde)[:, 0]} if kohde.exists() else {}
+    kohde.parent.mkdir(parents=True, exist_ok=True)
     for polku in uudet_gpkg:
         for taso in pyogrio.list_layers(polku)[:, 0]:
             if taso == "layer_styles":
@@ -300,14 +333,10 @@ def yhdista_rakennukset(uudet_gpkg, kohde=BUILDINGS_PATH):
             uusi = gpd.read_file(polku, layer=taso)
             if not len(uusi):
                 continue
-            if taso in olemassa and kohde.exists():
-                vanha = gpd.read_file(kohde, layer=taso)
-                yhd = gpd.GeoDataFrame(pd.concat([vanha, uusi], ignore_index=True),
-                                       crs=vanha.crs or uusi.crs)
-            else:
-                yhd = uusi
-            yhd.to_file(kohde, layer=taso, driver="GPKG")
-            print(f"  {taso}: +{len(uusi)} -> {len(yhd)}")
+            lisatty = len(uusi)
+            n = _liita_taso(uusi, kohde, taso)
+            del uusi  # rakennus-taso on satoja megatavuja
+            print(f"  {taso}: +{lisatty} -> {n}", flush=True)
 
 
 # --- VALIMUISTIN MITATOINTI -------------------------------------------------
