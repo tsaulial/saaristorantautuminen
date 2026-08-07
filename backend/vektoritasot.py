@@ -405,10 +405,66 @@ def get_or_compute_palvelut(force=False):
                     "x": round(x), "y": round(y), "r": ryhma,
                     "n": t.get("name", ""),
                 }
-        print(f"    palvelut             {len(kohteet):5} kpl")
+        lista = list(kohteet.values())
+        harvenna_palvelut(lista)
+        print(f"    palvelut             {len(lista):5} kpl")
         return {"lahde": "OpenStreetMap", "lisenssi": "ODbL",
-                "kohteet": list(kohteet.values())}
+                "kohteet": lista}
     return _valimuisti("palvelut", rakenna, force)
+
+
+# --- PALVELUIDEN HARVENNUS ZOOMIN MUKAAN ---
+#
+# 5 049 pistetta peittaa kartan uloimmilla zoomeilla taysin - mitattuna
+# maastoa ei nay lainkaan, vain pistemassa. Rannikolla niita on noin 25 000.
+#
+# ONGELMA EI OLE NOPEUS. Se mitattiin ennen korjausta: Leaflet piirtaa vain
+# nakyman sisalla olevat markerit, joten 25 245 pistetta pannaa 59 fps eli
+# yhta nopeasti kuin 5 049. Suunniteltu geometrian yksinkertaistus olisi
+# ollut turhaa tyota - vaylilla se sailoi 1,05x ja suojelualueilla 1,00x,
+# koska lahdeaineisto on jo valmiiksi karkeaa.
+#
+# Kyse on siis PELKASTA LUETTAVUUDESTA, ja se ratkaistaan kevyimmalla
+# mahdollisella tavalla: jokainen piste saa tason jolla se ILMESTYY, ja
+# selain suodattaa yhdella lukuvertailulla. Ei klusterointia ajonaikana,
+# koska se maksaisi joka piirrolla.
+#
+# MERKITTAVYYSJARJESTYS on veneilijan nakokulma, ei OSM:n. Uloimmalla
+# zoomilla kiinnostaa MINNE VOI MENNA (satama, luiska, kauppa, polttoaine),
+# ei mita perilla on (katos, nuotio, kaymala) - jalkimmaisilla on merkitysta
+# vasta kun kohde on jo valittu.
+PALVELU_MERKITTAVYYS = [
+    "satama", "luiska", "kauppa", "polttoaine", "majoitus",
+    "leirinta", "vesi", "sauna", "katos", "nuotio", "kaymala",
+]
+
+# Ruudun koko tasoittain: uloimmalla yksi piste per 5 km, keskitasolla
+# per 1,5 km, tarkalla kaikki. Luvut on valittu niin etta pisteita on
+# ruudulla kymmenia eika tuhansia.
+PALVELU_RUUDUT = [5000.0, 1500.0]
+
+
+def harvenna_palvelut(kohteet):
+    """Antaa jokaiselle pisteelle tason jolla se ilmestyy (kentta "z").
+
+    z = 0 nakyy aina, 1 keskitasolta, 2 vasta tarkalla. Muokkaa listaa
+    paikallaan."""
+    arvo = {r: i for i, r in enumerate(PALVELU_MERKITTAVYYS)}
+    # Merkittavin ensin, jotta ruudun valinta osuu siihen.
+    jarjestys = sorted(kohteet, key=lambda k: arvo.get(k["r"], len(arvo)))
+    for k in kohteet:
+        k["z"] = len(PALVELU_RUUDUT)
+    for taso, ruutu in enumerate(PALVELU_RUUDUT):
+        varattu = set()
+        for k in jarjestys:
+            if k["z"] < taso:
+                continue                      # jo nakyvissa karkeammalla
+            solu = (int(k["x"] // ruutu), int(k["y"] // ruutu))
+            if solu in varattu:
+                continue
+            varattu.add(solu)
+            k["z"] = taso
+    return kohteet
 
 
 def _ryhma_arvosta(avain, arvo):

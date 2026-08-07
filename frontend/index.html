@@ -2402,6 +2402,7 @@ function refreshActive() {
   // mita kartalla varitetaan.
   updateInfoBubbles();
   refreshBase();
+  if (activeOverlays.has('palvelut')) paivitaPalvelut();
   refreshNew().catch((err) => console.error('Renderointi epaonnistui:', err));
 }
 
@@ -2655,9 +2656,36 @@ function piirraSuojelu(data) {
   });
 }
 
+// PALVELUT HARVENNETAAN ZOOMIN MUKAAN.
+//
+// 5 049 pistetta peitti kartan uloimmilla zoomeilla taysin: maastoa ei
+// nakynyt lainkaan, vain pistemassa. Rannikolla niita on noin 25 000.
+//
+// ONGELMA EI OLLUT NOPEUS, ja se mitattiin ennen korjausta: Leaflet
+// piirtaa vain nakyman sisalla olevat markerit, joten 25 245 pistetta
+// pannasi 59 fps eli yhta nopeasti kuin 5 049. Kyse on pelkasta
+// luettavuudesta.
+//
+// Backend antaa jokaiselle pisteelle tason jolla se ILMESTYY (kentta "z",
+// ks. vektoritasot.harvenna_palvelut), joten suodatus on yksi
+// lukuvertailu. Ei klusterointia ajonaikana - se maksaisi joka piirrolla.
+const PALVELU_TASOT = { overview: 0, mid: 1, near: 2, detail: 2 };
+
 function piirraPalvelut(data) {
+  vectorData.palvelut = data;
+  paivitaPalvelut();
+}
+
+function paivitaPalvelut() {
+  const data = vectorData.palvelut;
+  if (!data) return;
+  const raja = PALVELU_TASOT[analyysiTaso(map.getZoom()).name] ?? 2;
+  if (palveluGroup._piirrettyRaja === raja) return;   // sama taso, ei tyota
+  palveluGroup._piirrettyRaja = raja;
   palveluGroup.clearLayers();
   (data.kohteet || []).forEach((k) => {
+    // Vanha aineisto ilman z-kenttaa nakyy kaikilla tasoilla kuten ennen.
+    if ((k.z ?? 0) > raja) return;
     const [vari, nimi] = PALVELU_TYYLI[k.r] || ['#555', k.r];
     L.circleMarker([k.y, k.x], {
       pane: 'vektorit', radius: 5, color: '#fff', weight: 1.5,
