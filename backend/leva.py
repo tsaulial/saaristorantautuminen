@@ -1,14 +1,21 @@
 """Sinilevatilanne satelliittihavainnoista - ja arvio siita milloin siihen voi luottaa.
 
 Levan ymparoima saari ei ole houkutteleva rantautumiskohde, mutta kartta ei
-sanonut siita mitaan. Suomen ymparistokeskus tulkitsee Sentinel-3:n
-havainnoista paivittaisen pintalevaaineiston koko Itamerelle, ja se on
-avointa dataa.
+sanonut siita mitaan. Suomen ymparistokeskus tulkitsee satelliittihavainnoista
+pintalevaaineiston koko Itamerelle, ja se on avointa dataa.
 
-AINEISTON ONGELMA EI OLE SAATAVUUS VAAN TUOREUS. Pilvi peittaa satelliitin
-nakyman suurimman osan paivista, ja pintaleva liikkuu tuulessa tunneissa.
-Siksi tama moduuli tuottaa kaksi asiaa: levatilanteen JA arvion siita kuinka
-paljon siihen voi enaa luottaa.
+KAKSI ONGELMAA, JOTKA MOLEMMAT ON PAKKO KERTOA KAYTTAJALLE.
+
+1. TUOREUS. Pilvi peittaa satelliitin nakyman suurimman osan paivista, ja
+   pintaleva liikkuu tuulessa tunneissa. Siksi tama moduuli tuottaa kaksi
+   asiaa: levatilanteen JA arvion siita kuinka paljon siihen voi luottaa.
+
+2. KATTAVUUS RANNAN LAHELLA. Kumpikaan lahde ei nae varsinaista
+   rantavyohyketta: matalassa vedessa pohjan heijastus estaa tulkinnan.
+   Mitattuna alle 500 m paassa rannasta katetaan noin 11 % merialueesta,
+   yli 5 km paassa 56 %. Kerros vastaa siis kysymykseen "onko levaa
+   vesilla joiden yli kuljen", EI kysymykseen "onko tama saari levan
+   ymparoima". Sanamuotojen on kestettava tama ero.
 
 AJETAAN ERIKSEEN, EI OSANA BUILDIA. Taysi build kestaa tunteja ja koskee
 aineistoa joka muuttuu harvoin; leva muuttuu paivittain. Jos leva olisi osa
@@ -36,7 +43,9 @@ vastaavuus oli 100 % jokaisella luokalla, myos 2:lla ja 3:lla.
 ---------------------------------------------------------------------------
 
 LAHTEET
-    Levahavainnot  Suomen ymparistokeskus, Sentinel-3/OLCI (CC BY 4.0)
+    Levahavainnot  Suomen ymparistokeskus (CC BY 4.0)
+                     Sentinel-3/OLCI  300 m, paivittain
+                     Landsat 8        30 m, noin 16 vrk kierto
     Tuulihavainnot Ilmatieteen laitos (CC BY 4.0)
 
 Molemmat vaativat lahdemaininnan kartalla. Se on lisenssiehto, ei
@@ -62,12 +71,37 @@ ROOT = Path(__file__).resolve().parent.parent
 CACHE_DIR = ROOT / "output" / "cache"
 
 SYKE_WMS = "https://geoserver2.ymparisto.fi/geoserver/eo/ows"
-SYKE_LAYER = "EO_MR_OLCI_ALGAE"
 FMI_WFS = "https://opendata.fmi.fi/wfs"
 
-# Sentinel-3/OLCI:n natiivi tarkkuus. Tiheampi ruudukko olisi keksittya
-# tarkkuutta: WMS kylla piirtaisi sen, mutta havaintoa ei ole.
-LEVA_GRID_M = 300.0
+# KAKSI LAHDETTA, ja tarkin ensin.
+#
+# Pelkka Sentinel-3 ei riita. Mitattuna Helsingin edustalla se kattaa 27 %
+# merialueesta, ja ALLE KILOMETRIN paassa rannasta vain 10 % - eli juuri
+# sen vyohykkeen jossa rantaudutaan se jattaa nakematta. Syy ei ole pilvi
+# vaan tuotteen oma vesimaski: matalassa vedessa pohjan heijastus estaa
+# tulkinnan. Todennettu silla, etta eri paivien datalliset ruudut ovat
+# aina saman joukon OSAJOUKKOJA (Jaccard 1,000) - pilvi vain poistaa
+# ruutuja, ei koskaan lisaa. Siksi ikkunan pidentaminen 7:sta 21
+# vuorokauteen ei lisannyt kattavuutta lainkaan.
+#
+# Landsat 8 kattaa samalla alueella 56 % ja alle kilometrin paassa 27 %.
+# Se ei kuitenkaan korvaa Sentinel-3:a: kiertoaika on noin 16 vrk, joten
+# useimpina paivina siita ei ole havaintoa lainkaan. Yhdessa ne taydentavat
+# toisiaan - tarkkuus saaristossa ja tuoreus avomerella.
+#
+# Molemmilla on TASAN SAMA luokka-asteikko. Todennettu erikseen kummallekin
+# hakemalla sama rajaus seka GeoTIFFina etta PNG:na.
+LEVA_KERROKSET = (
+    ("LC8", "EO_HR_WQ_LC8_ALGAE", 30.0),
+    ("OLCI", "EO_MR_OLCI_ALGAE", 300.0),
+)
+
+# Ruudukko seuraa TARKINTA lahdetta, ei karkeinta. 60 m on Landsatin 30 m
+# rehellinen alinaytteistys; Sentinel-3:n 300 m ruudut vain toistuvat
+# useammassa ruudussa, mika ei keksi tarkkuutta vaan esittaa saman
+# havainnon tiheammalla ruudukolla. Karkeampi yhteinen ruudukko heittaisi
+# Landsatin tarkkuuden pois, mika oli koko syy ottaa se mukaan.
+LEVA_GRID_M = 60.0
 
 # Kuinka monelta vuorokaudelta havainnot kootaan. Paivakuva on joko lahes
 # taysi tai kokonaan tyhja - mitattuna 14 vuorokaudesta neljana oli
@@ -123,26 +157,32 @@ def _pyyda(url, timeout=90):
 # --- LEVAHAVAINNOT ---
 
 def saatavilla_olevat_paivat():
-    """Kerroksen aikaulottuvuus uusimmasta vanhimpaan (ISO-paivamaarina).
+    """{kerros: [paiva, ...]} uusimmasta vanhimpaan, kaikille lahteille.
 
     Luetaan rajapinnalta eika paatella kalenterista: aineistossa on aukkoja,
     ja olemattoman paivan hakeminen palauttaisi tyhjan kuvan jota ei erota
-    pilvisesta paivasta."""
+    pilvisesta paivasta. Landsatilla aukkoja on paljon (16 vrk kierto),
+    joten talla saastyy suurin osa turhista hauista."""
     q = {"service": "WMS", "version": "1.3.0", "request": "GetCapabilities"}
     x = _pyyda(f"{SYKE_WMS}?{urllib.parse.urlencode(q)}").decode("utf-8", "replace")
     juuri = ET.fromstring(x)
     ns = {"w": "http://www.opengis.net/wms"}
+    halutut = {taso for _n, taso, _m in LEVA_KERROKSET}
+    ulos = {}
     for taso in juuri.iter():
         if not taso.tag.endswith("Layer"):
             continue
         nimi = taso.find("w:Name", ns)
-        if nimi is None or nimi.text != SYKE_LAYER:
+        if nimi is None or nimi.text not in halutut:
             continue
         for d in taso.findall("w:Dimension", ns):
             if d.get("name") == "time" and d.text:
                 paivat = [a.strip()[:10] for a in d.text.split(",") if a.strip()]
-                return sorted(set(paivat), reverse=True)
-    raise RuntimeError(f"Kerrosta {SYKE_LAYER} tai sen aikaulottuvuutta ei loytynyt")
+                ulos[nimi.text] = sorted(set(paivat), reverse=True)
+    puuttuu = halutut - set(ulos)
+    if puuttuu:
+        raise RuntimeError(f"Kerroksen aikaulottuvuutta ei loytynyt: {puuttuu}")
+    return ulos
 
 
 def _ruudukko(bbox):
@@ -152,7 +192,7 @@ def _ruudukko(bbox):
     return w, h
 
 
-def hae_paiva(bbox, paiva):
+def hae_paiva(bbox, paiva, layer):
     """Yhden vuorokauden luokkakuva (uint8) tai None jos haku epaonnistui.
 
     GeoTIFF eika PNG: saadaan raa'at luokka-arvot valmiiksi EPSG:3067:ssa,
@@ -161,7 +201,7 @@ def hae_paiva(bbox, paiva):
     3067:aan pyydettaessa."""
     w, h = _ruudukko(bbox)
     q = {"service": "WMS", "version": "1.1.1", "request": "GetMap",
-         "layers": SYKE_LAYER, "srs": "EPSG:3067",
+         "layers": layer, "srs": "EPSG:3067",
          "bbox": ",".join(f"{v:.1f}" for v in bbox),
          "width": w, "height": h, "format": "image/geotiff", "time": paiva}
     try:
@@ -189,30 +229,41 @@ def kokoa_ikkuna(bbox, paivat, on_meri=None):
     suhteutettu luku olisi harhaanjohtava, koska maa on satelliittituotteessa
     pysyvasti nodataa - se nayttaisi pilvisyydelta vaikka on mannerta.
 
-    paivat: uusimmasta vanhimpaan. Palauttaa (luokka, ika_vrk, kaytetyt)."""
+    TUOREUS RATKAISEE ENSIN, tarkkuus vasta sen jalkeen. Paivat kaydaan
+    uusimmasta vanhimpaan, ja saman paivan sisalla tarkin lahde ensin.
+    Vuorokauden vanha Sentinel-3-havainto voittaa siis kahden vuorokauden
+    ikaisen Landsatin, koska ika on luotettavuuden paatekija.
+
+    paivat: {kerros: [paiva, ...]}. Palauttaa (luokka, ika_vrk, kaytetyt)."""
     w, h = _ruudukko(bbox)
     luokka = np.full((h, w), EI_DATAA, dtype=np.uint8)
     ika = np.zeros((h, w), dtype=np.int16)
     tanaan = dt.date.today()
     kaytetyt = []
     nimittaja = int(on_meri.sum()) if on_meri is not None else w * h
-    for p in paivat:
+    kaikki_paivat = sorted({p for lista in paivat.values() for p in lista},
+                           reverse=True)
+    for p in kaikki_paivat:
         puuttuu = luokka == EI_DATAA
         if on_meri is not None:
             puuttuu &= on_meri
         if not puuttuu.any():
             break                      # koko meri jo katettu
-        a = hae_paiva(bbox, p)
-        if a is None:
-            continue
-        uusi = puuttuu & (a != EI_DATAA)
-        n = int(uusi.sum())
-        if n:
-            luokka[uusi] = a[uusi]
-            ika[uusi] = (tanaan - dt.date.fromisoformat(p)).days
-            kaytetyt.append({"paiva": p, "pikselit": n})
-        print(f"    {p}: {n} uutta ruutua "
-              f"({100.0*n/max(nimittaja,1):.0f} % merialueesta)", flush=True)
+        for nimi, taso, _natiivi in LEVA_KERROKSET:
+            if p not in paivat.get(taso, ()):
+                continue               # talla lahteella ei ole tata paivaa
+            a = hae_paiva(bbox, p, taso)
+            if a is None:
+                continue
+            uusi = puuttuu & (a != EI_DATAA)
+            n = int(uusi.sum())
+            if n:
+                luokka[uusi] = a[uusi]
+                ika[uusi] = (tanaan - dt.date.fromisoformat(p)).days
+                kaytetyt.append({"paiva": p, "lahde": nimi, "ruutuja": n})
+                puuttuu &= ~uusi
+            print(f"    {p} {nimi:5s}: {n:6d} uutta ruutua "
+                  f"({100.0*n/max(nimittaja,1):4.1f} % merialueesta)", flush=True)
     return luokka, ika, kaytetyt
 
 
@@ -378,8 +429,14 @@ def paivita(ulos=None, paivia=LEVA_IKKUNA_VRK):
     print(f"Levatilanne: {len(bboxit)} aluetta, {paivia} vrk ikkuna", flush=True)
 
     saatavilla = saatavilla_olevat_paivat()
-    print(f"  aineistossa {len(saatavilla)} paivaa, tuorein {saatavilla[0]}", flush=True)
-    paivat = saatavilla[:paivia]
+    raja = (dt.date.today() - dt.timedelta(days=paivia)).isoformat()
+    paivat = {taso: [p for p in lista if p >= raja]
+              for taso, lista in saatavilla.items()}
+    for _nimi, taso, natiivi in LEVA_KERROKSET:
+        print(f"  {taso}: {len(saatavilla[taso])} paivaa yhteensa, "
+              f"{len(paivat[taso])} ikkunassa, tuorein "
+              f"{saatavilla[taso][0] if saatavilla[taso] else '-'} "
+              f"({natiivi:.0f} m)", flush=True)
 
     tulokset = []
     for i, bbox in enumerate(bboxit, 1):
@@ -426,13 +483,16 @@ def paivita(ulos=None, paivia=LEVA_IKKUNA_VRK):
         "ikkuna_vrk": paivia,
         "luokat": {str(k): {"nimi": v, "vari": LUOKKA_VARIT[k]}
                    for k, v in LUOKKA_NIMET.items()},
+        "grid_m": LEVA_GRID_M,
+        "kerrokset": [{"nimi": n, "taso": t, "natiivi_m": m}
+                      for n, t, m in LEVA_KERROKSET],
         "malli": {"tuuli_kynnys_ms": LEVA_TUULI_KYNNYS_MS,
                   "sekoitus_tau": LEVA_SEKOITUS_TAU,
                   "ika_tau_vrk": LEVA_IKA_TAU_VRK,
                   "huom": "Vakiot ovat arvioita, ei julkaistu standardi. "
                           "Mallia ei ole kalibroitu mittausaineistoa vastaan."},
         "lahteet": [
-            {"nimi": "Suomen ymparistokeskus, Sentinel-3/OLCI",
+            {"nimi": "Suomen ymparistokeskus (Sentinel-3/OLCI, Landsat 8)",
              "lisenssi": "CC BY 4.0"},
             {"nimi": "Ilmatieteen laitos", "lisenssi": "CC BY 4.0"},
         ],
