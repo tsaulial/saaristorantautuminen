@@ -105,6 +105,13 @@
     margin-top: 2px; padding-top: 2px; border-top: 1px solid #d8dade;
     color: #1b5e20; font-size: 10.5px; line-height: 1.25;
   }
+  /* Leva: NEUTRAALI ruskehtava. Ei punainen - punainen on varattu
+     varoitukselle, ja leva on olosuhde jonka kayttaja punnitsee itse, ei
+     turvallisuusvaroitus. Kontrasti valkoisella 6,1:1. */
+  .paddle-bubble .pb-leva {
+    margin-top: 2px; padding-top: 2px; border-top: 1px solid #d8dade;
+    color: #6d4c1b; font-size: 10.5px; line-height: 1.25;
+  }
   /* MET-rivi on NEUTRAALI eika punainen: se kertoo epavarmuudesta, ei
      vaarasta. Punainen on varattu varoitukselle, jotta se erottuu. */
   .paddle-bubble .pb-met {
@@ -363,9 +370,15 @@ let currentDisplay = 'score'; // 'score' | 'top'
 map.createPane('vektorit');
 map.getPane('vektorit').style.zIndex = 450;
 
+// Leva on aluetaytto, ei viiva: se kuuluu rasterin ylle mutta vaylaviivojen
+// ALLE, jotta vaistettava vayla ei jaa levan peittoon.
+map.createPane('leva');
+map.getPane('leva').style.zIndex = 440;
+
 const vaylaGroup = L.layerGroup();
 const suojeluGroup = L.layerGroup();
 const palveluGroup = L.layerGroup();
+const levaGroup = L.layerGroup();
 
 // Tasot ovat PAALLE/POIS eivatka nakymia. currentDisplay on toisensa
 // poissulkeva rasterinakyma, mutta rahtivayla on yhta tarkea
@@ -374,6 +387,7 @@ const OVERLAYS = {
   vaylat: { group: vaylaGroup, label: 'Väylät' },
   suojelu: { group: suojeluGroup, label: 'Suojelualueet' },
   palvelut: { group: palveluGroup, label: 'Palvelut' },
+  leva: { group: levaGroup, label: 'Levätilanne' },
 };
 let activeOverlays = new Set();
 let vectorData = {};        // avain -> haettu JSON
@@ -1021,8 +1035,26 @@ legend.onAdd = function () {
         '<span class="swatch-line" style="background:#c62828"></span> kauppamerenkulku</label>' +
         '<label><input type="checkbox" name="overlay" value="suojelu"> Suojelualueet</label>' +
         '<label><input type="checkbox" name="overlay" value="palvelut"> Palvelut</label>' +
+        '<label><input type="checkbox" name="overlay" value="leva"> Levätilanne</label>' +
         '<small class="impl-note">Suojelualue kertoo missä olet, ei sitä saako ' +
         'rantautua — tarkista alueen järjestyssääntö.</small>' +
+        // Levalegenda nakyy vasta kun taso on ladattu (piirraLeva).
+        '<div id="leva-legenda" style="display:none;margin-top:6px">' +
+          '<span class="swatch" style="background:#FFFFC9"></span>Levää mahdollisesti<br>' +
+          '<span class="swatch" style="background:#FFDC28"></span>Levää todennäköisesti<br>' +
+          '<span class="swatch" style="background:#CD3301"></span>Levää varmasti<br>' +
+          '<span class="swatch" style="background:#2B7EA8"></span>Ei levää<br>' +
+          // Legendan naytepala on SAMA viirutus kuin kartalla, ei harmaa
+          // laatikko: kayttajan on tunnistettava kuvio kartalta.
+          '<span class="swatch" style="background:repeating-linear-gradient(' +
+          '45deg,#60626c,#60626c 3px,transparent 3px,transparent 8px)"></span>' +
+          'Ei havaintoa<br>' +
+          '<small class="impl-note">Haalea väri = havainto on vanha tai sen ' +
+          'jälkeen on tuullut. Viirutus = aluetta ei ole nähty — se ei ' +
+          'tarkoita että vesi olisi puhdasta. Satelliitti ei näe aivan rannan ' +
+          'tuntumaan, joten kerros kertoo vesistä joiden yli kuljet, ei siitä ' +
+          'onko saari levän ympäröimä.</small>' +
+        '</div>' +
         '<small id="lahteet" class="impl-note"></small>' +
       '</div>' +
       '</div>' +
@@ -1323,7 +1355,7 @@ function lyhenna(teksti, maks) {
   return teksti.length > maks ? teksti.slice(0, maks - 1).trimEnd() + '…' : teksti;
 }
 
-function bubbleHtml(cond, varoitus, tuuli, met, suojelu) {
+function bubbleHtml(cond, varoitus, tuuli, met, suojelu, leva) {
   const deg = tuuli.direction;
   const name = COMPASS_8[Math.round(((deg % 360) + 360) % 360 / 45) % 8];
   // Vaikeusasteen vari on taysin kylläinen (HSV s=v=1), eika sellaisenaan
@@ -1362,7 +1394,7 @@ function bubbleHtml(cond, varoitus, tuuli, met, suojelu) {
   const wave = cond
     ? `<div class="pb-wave">aalto ${Math.round(cond.hs * 100)} cm</div>`
     : '<div class="pb-sub">maalla</div>';
-  const koko = bubbleKoko(varoitus, met, suojelu);
+  const koko = bubbleKoko(varoitus, met, suojelu, leva);
   const luokka = { 158: ' iso', 196: ' jattilainen', 232: ' valtava', 264: ' jattivaltava' }[koko] || '';
   const piste = ringPointAt(deg, cond ? cond.hs : 0, koko);
   return `<div class="paddle-bubble${luokka}">`
@@ -1407,7 +1439,40 @@ function bubbleHtml(cond, varoitus, tuuli, met, suojelu) {
         ? `<div class="pb-suojelu">&#127795; ${lyhenna(suojelu.nimi, 26)}`
           + '<br>tarkista<br>järjestyssääntö</div>'
         : '')
+    // LEVA: kolme riventa - mita nahtiin, milloin, ja onko sen jalkeen
+    // ehtinyt tapahtua.
+    //
+    // Luokka 0 ("ei levaa") ei saa omaa nimirivia: muuten jokainen pallo
+    // puhuisi levasta, ja tavallisin tilanne tayttaisi tilaa kertomatta
+    // mitaan. Kartalla luokka 0 nakyy silti sinisena, jotta havaittu puhdas
+    // vesi erottuu alueesta jota ei ole nahty.
+    //
+    // Kolmas rivi purkaa auki sen, MIKSI vari on haalea. Haalistus yhdistaa
+    // kaksi eri syyta samaan signaaliin - vanha havainto tai sen jalkeinen
+    // tuuli - eika kayttaja erota niita varista. Sanamuoto ei vaita
+    // tietavansa MIHIN SUUNTAAN tilanne muuttui, koska malli ei sita tieda:
+    // tuuli mitatoi havainnon molempiin suuntiin (ks. backend/leva.py).
+    + levaRivit(leva)
     + '</div></div>';
+}
+
+function levaRivit(leva) {
+  if (!leva) return '';
+  if (leva.nakematta) {
+    // Tama on tieto, ei sen puute: satelliitti ei nae rannan tuntumaan, ja
+    // kayttajan on tiedettava se ettei tulkitse harmaata puhtaaksi vedeksi.
+    return '<div class="pb-leva">levästä<br>ei havaintoa</div>';
+  }
+  const nimet = { 1: 'Levää mahdollisesti', 2: 'Levää todennäköisesti',
+                  3: 'Levää varmasti' };
+  const ika = leva.ika === 0 ? 'havainto tänään'
+    : `havainto ${leva.ika} vrk vanha`;
+  // Raja 0,45 vastaa suunnilleen kolmen vuorokauden tyynta havaintoa: sita
+  // heikommassa tuuli on ehtinyt tehda havainnosta epaluotettavan.
+  const tuulirivi = leva.luotettavuus < 0.45
+    ? '<br>tuulista sen jälkeen' : '';
+  return `<div class="pb-leva">${nimet[leva.luokka] ? nimet[leva.luokka] + '<br>' : ''}`
+    + `${ika}${tuulirivi}</div>`;
 }
 
 // Vesiruudukko ladataan tarvittaessa: melottavuustilassa se on jo muistissa,
@@ -1434,16 +1499,19 @@ async function ensureWaterFor(latlng) {
 // kaksi ja molemmat kaksirivisia. Suojelualuelohko on nelirivinen (nimi voi
 // kietoutua kahdelle riville, minka lisaksi kehotus on kahdella), ja se valui
 // ympyran alareunan yli.
-function bubbleKoko(varoitus, met, suojelu) {
-  const rivit = (varoitus ? 2 : 0) + (met ? 3 : 0) + (suojelu ? 4 : 0);
+function bubbleKoko(varoitus, met, suojelu, leva) {
+  // Levalohko on kolmirivinen: luokka, ika, tuulirivi. Nakemattomalle
+  // alueelle riittaa kaksi.
+  const levaRivit = !leva ? 0 : (leva.nakematta ? 2 : (leva.luokka === 0 ? 2 : 3));
+  const rivit = (varoitus ? 2 : 0) + (met ? 3 : 0) + (suojelu ? 4 : 0) + levaRivit;
   const koot = [124, 158, 196, 232, 264];
   return koot[Math.min(Math.ceil(rivit / 2), koot.length - 1)];
 }
 
-function bubbleIcon(cond, varoitus, tuuli, met, suojelu) {
-  const koko = bubbleKoko(varoitus, met, suojelu);
+function bubbleIcon(cond, varoitus, tuuli, met, suojelu, leva) {
+  const koko = bubbleKoko(varoitus, met, suojelu, leva);
   return L.divIcon({
-    className: '', html: bubbleHtml(cond, varoitus, tuuli, met, suojelu),
+    className: '', html: bubbleHtml(cond, varoitus, tuuli, met, suojelu, leva),
     iconSize: [koko, koko], iconAnchor: [koko / 2, koko / 2],
   });
 }
@@ -1453,7 +1521,7 @@ function bubbleIcon(cond, varoitus, tuuli, met, suojelu) {
 function updateInfoBubbles() {
   infoBubbles.forEach((b) => b.marker.setIcon(bubbleIcon(
     waterConditionsAt(b.latlng), deteriorationWarning(b.latlng), windAt(b.latlng),
-    metDisagreement(b.latlng), suojeluOsuma(b.latlng))));
+    metDisagreement(b.latlng), suojeluOsuma(b.latlng), levaOsuma(b.latlng))));
 }
 
 function removeInfoBubble(bubble) {
@@ -1469,7 +1537,8 @@ function clearInfoBubbles() {
 
 async function addInfoBubble(latlng) {
   const marker = L.marker(latlng, {
-    icon: bubbleIcon(null, null, windAt(latlng), null, suojeluOsuma(latlng)), interactive: true,
+    icon: bubbleIcon(null, null, windAt(latlng), null, suojeluOsuma(latlng),
+                     levaOsuma(latlng)), interactive: true,
   }).addTo(map);
   const bubble = { latlng, marker };
   marker.on('click', (e) => { L.DomEvent.stop(e); removeInfoBubble(bubble); });
@@ -1478,7 +1547,8 @@ async function addInfoBubble(latlng) {
   await ensureWaterFor(latlng);
   if (infoBubbles.includes(bubble)) {
     marker.setIcon(bubbleIcon(waterConditionsAt(latlng), deteriorationWarning(latlng),
-                              windAt(latlng), metDisagreement(latlng), suojeluOsuma(latlng)));
+                              windAt(latlng), metDisagreement(latlng), suojeluOsuma(latlng),
+                              levaOsuma(latlng)));
   }
   // MET haetaan vasta tassa: pallo ilmestyy heti eika jaa odottamaan toista
   // rajapintaa, ja vertailurivi taydentyy kun vastaus saapuu. Haku vain kun
@@ -1490,7 +1560,7 @@ async function addInfoBubble(latlng) {
       if (infoBubbles.includes(bubble)) {
         marker.setIcon(bubbleIcon(waterConditionsAt(latlng), deteriorationWarning(latlng),
                                   windAt(latlng), metDisagreement(latlng),
-                                  suojeluOsuma(latlng)));
+                                  suojeluOsuma(latlng), levaOsuma(latlng)));
       }
     }
   }
@@ -2462,6 +2532,121 @@ function piirraPalvelut(data) {
   });
 }
 
+// --- LEVATILANNE ---
+//
+// Datakuvan kanavat (ks. backend/leva.py: _kirjoita_png):
+//   R = luokka 0-3, 254 = maa, 255 = merta jota ei ole nahty
+//   G = havainnon ika vuorokausina
+//   B = luotettavuus 0-255
+//   A = 255 aina (esikerrottu alfa turmelisi RGB:n getImageData:ssa)
+//
+// KOLME ERI SYYTA OLLA VARITTAMATTA, ja ne on erotettava toisistaan:
+//   maa              ei piirreta lainkaan
+//   nakematta jaanyt oma harmaa savynsa - tieto puuttuu
+//   epavarma havainto varillinen mutta haalea
+//
+// Ilman keskimmaista kayttaja lukisi nakemattoman meren "ei levaa" -tilaksi,
+// mika on tasan vaara suuntaan erehtyminen. Kattavuus on rannan lahella
+// heikko (mitattuna alle 500 m paassa noin 11 %), joten harmaata on paljon -
+// ja juuri siksi sen on nakyttava.
+const LEVA_VARIT = { 0: [43, 126, 168], 1: [255, 255, 201],
+                     2: [255, 220, 40], 3: [205, 51, 1] };
+const LEVA_EI_HAVAINTOA = [96, 98, 108];
+// Alfan alaraja: erittain epavarma havainto ei saa kadota nakyvista, koska
+// katoaminen naytaisi samalta kuin "ei havaintoa" - se on eri asia.
+// Ylaraja on korkea, koska peruskartan meri on kirkkaan sininen ja
+// vaalea keltainen (luokka 1) hukkuu sen alle pienemmalla peitolla.
+const LEVA_ALFA_MIN = 0.20;
+const LEVA_ALFA_MAX = 0.80;
+
+// EI HAVAINTOA PIIRRETAAN VIIRUTUKSENA, ei tasavarina.
+//
+// Tasavari olisi VAARIN riippumatta savysta: se asettuisi samalle
+// asteikolle varikoodattujen luokkien kanssa, ja kayttaja lukisi sen
+// arvona ("harmaa = vahan levaa"). Viirutus on vakiintunut tapa sanoa
+// "ei tietoa" juuri siksi, ettei se ole vari vaan kuvio - sita ei voi
+// sekoittaa mittaustulokseen.
+//
+// Tama on aineiston yleisin tila rannan lahella (mitattuna alle 500 m
+// paassa noin 89 % ilman havaintoa), joten sen on erotuttava selvasti.
+const LEVA_VIIRU_JAKSO = 8;      // px
+const LEVA_VIIRU_LEVEYS = 3;     // px
+const LEVA_ALFA_EI_HAVAINTOA = 0.42;
+
+let levaMeta = null;
+let levaLoading = null;
+
+function levaVarita(img) {
+  const { width, height, data } = img;
+  const ulos = new ImageData(width, height);
+  const d = ulos.data;
+  const viiruAlfa = Math.round(255 * LEVA_ALFA_EI_HAVAINTOA);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      const luokka = data[i];
+      if (luokka === 254) continue;               // maa: lapinakyva
+      if (luokka === 255) {
+        // Vino viiru: kuvio, ei vari.
+        if ((x + y) % LEVA_VIIRU_JAKSO >= LEVA_VIIRU_LEVEYS) continue;
+        d[i] = LEVA_EI_HAVAINTOA[0]; d[i + 1] = LEVA_EI_HAVAINTOA[1];
+        d[i + 2] = LEVA_EI_HAVAINTOA[2]; d[i + 3] = viiruAlfa;
+        continue;
+      }
+      const vari = LEVA_VARIT[luokka];
+      if (!vari) continue;
+      const luot = data[i + 2] / 255;
+      d[i] = vari[0]; d[i + 1] = vari[1]; d[i + 2] = vari[2];
+      d[i + 3] = Math.round(255 * (LEVA_ALFA_MIN
+        + (LEVA_ALFA_MAX - LEVA_ALFA_MIN) * luot));
+    }
+  }
+  return ulos;
+}
+
+async function piirraLeva() {
+  const meta = await (await fetch('leva.json')).json();
+  levaMeta = meta;
+  levaGroup.clearLayers();
+  for (const alue of meta.alueet) {
+    const img = await loadImageData(alue.tiedosto, `leva ${alue.tiedosto}`);
+    const canvas = document.createElement('canvas');
+    canvas.width = img.width; canvas.height = img.height;
+    canvas.getContext('2d').putImageData(levaVarita(img), 0, 0);
+    const b = alue.bounds_epsg3067;
+    L.imageOverlay(canvas.toDataURL('image/png'),
+                   [[b.miny, b.minx], [b.maxy, b.maxx]],
+                   { pane: 'leva', opacity: 1, interactive: false })
+      .addTo(levaGroup);
+    alue._img = img;      // pallo lukee arvot tasta, ei varitetysta
+  }
+  (meta.lahteet || []).forEach((l) => vectorAttribution(
+    { lahde: l.nimi, lisenssi: l.lisenssi }));
+  const el = document.getElementById('leva-legenda');
+  if (el) el.style.display = '';
+}
+
+// Levahavainto pisteessa, tai null. Palauttaa raa'at arvot - sanamuoto
+// paatetaan pallossa.
+function levaOsuma(latlng) {
+  if (!levaMeta) return null;
+  for (const alue of levaMeta.alueet) {
+    const b = alue.bounds_epsg3067;
+    if (latlng.lng < b.minx || latlng.lng >= b.maxx
+        || latlng.lat < b.miny || latlng.lat >= b.maxy) continue;
+    const img = alue._img;
+    if (!img) continue;
+    const col = Math.floor((latlng.lng - b.minx) / (b.maxx - b.minx) * img.width);
+    const row = Math.floor((b.maxy - latlng.lat) / (b.maxy - b.miny) * img.height);
+    const i = (row * img.width + col) * 4;
+    const luokka = img.data[i];
+    if (luokka === 254) return null;              // maa
+    if (luokka === 255) return { nakematta: true };
+    return { luokka, ika: img.data[i + 1], luotettavuus: img.data[i + 2] / 255 };
+  }
+  return null;
+}
+
 const VECTOR_SOURCES = {
   vaylat: ['/api/vaylat', piirraVaylat],
   suojelu: ['/api/suojelualueet', piirraSuojelu],
@@ -2471,6 +2656,14 @@ const VECTOR_SOURCES = {
 // Ladataan VASTA kun taso otetaan kayttoon: kartan ensilataus ei saa hidastua
 // aineistosta jota kayttaja ei ehka katso lainkaan.
 async function ensureVectorLayer(avain) {
+  // Leva ei ole vektoritaso vaan datakuva, mutta sen elinkaari on sama:
+  // ladataan vasta kun taso otetaan kayttoon, ja virhe kaataa vain tason.
+  if (avain === 'leva') {
+    if (!levaLoading) levaLoading = piirraLeva().catch((e) => {
+      levaLoading = null; throw e;
+    });
+    return levaLoading;
+  }
   if (vectorData[avain]) return vectorData[avain];
   if (!vectorLoading[avain]) {
     const [url, piirra] = VECTOR_SOURCES[avain];

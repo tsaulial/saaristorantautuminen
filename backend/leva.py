@@ -492,7 +492,7 @@ def paivita(ulos=None, paivia=LEVA_IKKUNA_VRK):
                   "huom": "Vakiot ovat arvioita, ei julkaistu standardi. "
                           "Mallia ei ole kalibroitu mittausaineistoa vastaan."},
         "lahteet": [
-            {"nimi": "Suomen ymparistokeskus (Sentinel-3/OLCI, Landsat 8)",
+            {"nimi": "Suomen ympäristökeskus (Sentinel-3/OLCI, Landsat 8)",
              "lisenssi": "CC BY 4.0"},
             {"nimi": "Ilmatieteen laitos", "lisenssi": "CC BY 4.0"},
         ],
