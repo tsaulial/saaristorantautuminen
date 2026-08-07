@@ -438,7 +438,10 @@ def _tiedoston_sormenjalki(polku):
 #   1  lahtotilanne
 #   2  maa/vesi-raja vektorimerimaskista, ei pelkasta dem > 0
 #      (ks. maa_maski - 18 tiilta 37:sta oli ristiriidassa)
-LASKENTA_VERSIO = 2
+#   3  karkeiden tasojen tiivistys mediaanilla, ei maksimilla
+#      (ks. _edustava_lohko - kartta oli liian vihrea ja muuttui
+#      punaisemmaksi zoomatessa)
+LASKENTA_VERSIO = 3
 
 
 def lahde_sormenjalki(tile, buildings_path):
@@ -899,19 +902,35 @@ ANALYYSI_SUFFIKSIT = {"detail": "", "mid": "_mid", "overview": "_overview"}
 
 def _edustava_lohko(jarjestys, taulukot, buffer, k):
     """Tiivistaa lohkoiksi k x k valitsemalla kustakin lohkosta EDUSTAVAN
-    PIKSELIN: sen jolla on suurin `jarjestys`-arvo puskurivyohykkeella.
+    PIKSELIN: sen jonka `jarjestys`-arvo on lohkon MEDIAANI.
 
-    EI KESKIARVOA EIKA SYNTEETTISTA PIKSELIA. Keskiarvo hukuttaisi kapean
-    hyvan rannan huonon ympariston sekaan - juuri se kapea kohta on se mita
-    kayttaja etsii. Osatekijoiden tiivistaminen erikseen taas loisi pikselin
-    jota ei ole olemassa ("tassa on loiva rinne ja tassa on etaisyytta
-    rakennuksiin", mutta ei valttamatta samassa kohdassa), mika olisi
-    keksittya tietoa. Edustava pikseli on aina oikea mittaustulos jostain
-    lohkon kohdasta.
+    EI KESKIARVOA EIKA SYNTEETTISTA PIKSELIA. Osatekijoiden tiivistaminen
+    erikseen loisi pikselin jota ei ole olemassa ("tassa on loiva rinne ja
+    tassa on etaisyytta rakennuksiin", mutta ei valttamatta samassa
+    kohdassa), mika olisi keksittya tietoa. Edustava pikseli on aina oikea
+    mittaustulos jostain lohkon kohdasta, ja KAIKKI sen osatekijat tulevat
+    samasta kohdasta.
+
+    MEDIAANI EIKA MAKSIMI. Ensin valittiin lohkon paras pikseli, perusteena
+    ettei kapea hyva ranta hukkuisi huonon ympariston sekaan. Se peruste
+    patee ETSINTAAN ("onko taalla hyva paikka") mutta ei YLEISKUVAAN
+    ("millaista taalla on") - ja pistemaarakerros on jalkimmainen. Tulos oli
+    etta kartta valehteli johdonmukaisesti liian vihreaksi ja muuttui
+    punaisemmaksi kun kayttaja zoomasi lahemmas. Mitattuna punaisen
+    (pistemaara alle 0,4) osuus:
+
+        tiili     detail   overview max   overview mediaani
+        K4242F     4,7 %       0,6 %            3,6 %
+        L4131E     8,8 %       1,3 %            6,4 %
+
+    Mediaani osuu lahes tasmalleen tarkan tason jakaumaan. Hinta on se, etta
+    kapea erinomainen kohta laajan keskinkertaisen rannan keskella ei erotu
+    ennen kuin zoomaa lahemmas - tietoinen valinta, koska 32 m ruudussa ei
+    voi rehellisesti nayttaa 2 m kohdetta.
 
     RAJOITE: edustava valitaan KAIKKIEN tekijoiden pistemaaralla, koska
     kayttajan tekijavalinta ei ole tiedossa laskenta-aikana. Jos kayttaja on
-    kytkenyt tekijoita pois, lohkon edustaja ei ole *sen* valinnan paras.
+    kytkenyt tekijoita pois, lohkon edustaja ei ole *sen* valinnan mediaani.
     Karkealla zoomilla se on hyvaksyttava approksimaatio; tarkalla zoomilla
     kaytetaan detail-tasoa jossa approksimaatiota ei ole.
 
@@ -925,13 +944,21 @@ def _edustava_lohko(jarjestys, taulukot, buffer, k):
         return a.reshape(H // k, k, W // k, k).transpose(0, 2, 1, 3).reshape(
             H // k, W // k, k * k)
 
-    # Puskurin ulkopuoliset eivat saa tulla valituiksi: annetaan niille
-    # jarjestysarvo joka havioaa aina oikealle pikselille.
-    j = np.where(buffer, jarjestys.astype(np.float32), -np.inf)
-    jl = lohkoiksi(j, -np.inf)
+    # Puskurin ulkopuoliset saavat +inf ja painuvat lajittelussa loppuun,
+    # jolloin kelvolliset ovat alussa jarjestyksessa ja n:s pienin loytyy
+    # suoraan indeksista. Taytepikselit kasitellaan samoin.
+    j = np.where(buffer, jarjestys.astype(np.float32), np.inf)
+    jl = lohkoiksi(j, np.inf)
     bl = lohkoiksi(buffer, False)
-    idx = np.argmax(jl, axis=2)
-    uusi_buffer = bl.any(axis=2)
+
+    lajiteltu = np.argsort(jl, axis=2, kind="stable")
+    n = bl.sum(axis=2)                       # kelvollisia lohkossa
+    # Parillisella maaralla otetaan ALEMPI keskimmainen: se on oikea pikseli,
+    # kun taas kahden keskiarvo olisi synteettinen. Tyhjalle lohkolle indeksi
+    # 0 on merkityksetön, koska uusi_buffer on siella False.
+    keski = np.clip((n - 1) // 2, 0, k * k - 1)
+    idx = np.take_along_axis(lajiteltu, keski[:, :, None], axis=2)[:, :, 0]
+    uusi_buffer = n > 0
 
     ulos = {}
     for nimi, arr in taulukot.items():
