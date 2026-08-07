@@ -1143,13 +1143,12 @@ def compute_factor_thresholds(buildings_path, force=False):
     cache_path.write_text(json.dumps(kynnykset_tasoittain, indent=2))
     return kynnykset_tasoittain
 
-def _taustakartta_ikkuna(tile, level):
-    """Tiilen ikkuna taustakarttalehdelta, tai None jos sita ei ole ladattu.
+def _taustakartta_lehti(tile, level):
+    """(polku, lehden_rajat, m/px) jos taustakarttalehti on ladattu, muuten
+    None. HALPA: katsoo vain tiedoston olemassaolon, ei lue kuvaa.
 
-    Palautuminen maastokarttaan on TAHALLISTA eika virhe: taustakartta on
-    esityksen parannus, ei laskennan edellytys. Ilman sita kartta on
-    sotkuisempi ja isompi mutta oikea, ja koko putki toimii kuten ennen.
-    Latauksen puuttuminen ei siis saa kaataa buildia."""
+    Erotettu lukemisesta koska valimuistin nimi riippuu lahteesta, ja nimi
+    on paatettava ennen kuin tiedetaan tarvitaanko kuvaa lainkaan."""
     from . import mml_lataus
     if level not in mml_lataus.TAUSTAKARTAT:
         return None
@@ -1163,7 +1162,21 @@ def _taustakartta_ikkuna(tile, level):
     polku = mml_lataus.tausta_kansio(level) / f"{lehti}.png"
     if not polku.exists():
         return None
-    lb = karttalehti.sheet_bounds(lehti)
+    return polku, karttalehti.sheet_bounds(lehti), mpp
+
+
+def _taustakartta_ikkuna(tile, level):
+    """Tiilen ikkuna taustakarttalehdelta, tai None jos sita ei ole ladattu.
+
+    Palautuminen maastokarttaan on TAHALLISTA eika virhe: taustakartta on
+    esityksen parannus, ei laskennan edellytys. Ilman sita kartta on
+    sotkuisempi ja isompi mutta oikea, ja koko putki toimii kuten ennen.
+    Latauksen puuttuminen ei siis saa kaataa buildia."""
+    tieto = _taustakartta_lehti(tile, level)
+    if tieto is None:
+        return None
+    polku, lb, mpp = tieto
+    lehti = polku.stem
     im = cv2.imread(str(polku), cv2.IMREAD_COLOR)
     if im is None:
         print(f"  {lehti}: taustakarttaa ei voitu lukea, kaytetaan maastokarttaa",
@@ -1188,15 +1201,26 @@ def get_or_compute_basemap(tile_id, level="detail", force=False):
     kevyita downsamplattuja yleisnakymia nopeaa alkulatausta varten."""
     suffix = LEVEL_SUFFIXES[level]
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    png_path = CACHE_DIR / f"{tile_id}_base{suffix}.png"
-
-    if not force and png_path.exists():
-        return png_path.read_bytes()
 
     registry = tiles.get_registry()
     if tile_id not in registry:
         raise KeyError(f"Tuntematon tile_id: {tile_id}")
     tile = registry[tile_id]
+
+    # VALIMUISTIN NIMI KERTOO LAHTEEN, muuten lahteen vaihtuminen jaa
+    # huomaamatta. Nain kavi: taustakartta otettiin kayttoon, mutta vanhat
+    # maastokartasta tehdyt kuvat kelpasivat edelleen eika ladattuja
+    # taustakarttalehtia katsottu kertaakaan - 188 tiilen ajo tuotti
+    # tasmalleen saman peruskartan kuin ennen.
+    #
+    # LASKENTA_VERSIO ei auta tahan: se kattaa LASKENNAN, ja peruskartta on
+    # ESITYSTA. Raja on oikea, mutta se tarkoittaa etta esityksen lahde
+    # tarvitsee oman tunnisteensa.
+    lahdemerkki = "_tk" if _taustakartta_lehti(tile, level) else ""
+    png_path = CACHE_DIR / f"{tile_id}_base{suffix}{lahdemerkki}.png"
+
+    if not force and png_path.exists():
+        return png_path.read_bytes()
 
     # TAUSTAKARTTA KARKEILLE TASOILLE, jos se on ladattu.
     #
@@ -1213,7 +1237,7 @@ def get_or_compute_basemap(tile_id, level="detail", force=False):
     # Detail-taso pysyy maastokarttana: siita luetaan kallio ja suo
     # (raster_filters), joten sen VARIT ovat osa pisteytysta eivatka vain
     # esitysta. Taustakartta on pelkka tausta.
-    lahde = _taustakartta_ikkuna(tile, level)
+    lahde = _taustakartta_ikkuna(tile, level) if lahdemerkki else None
     if lahde is not None:
         map_bgr = lahde
     else:
