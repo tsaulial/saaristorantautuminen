@@ -764,9 +764,41 @@ def _masked_downsample(arr, buffer_native_f, native_shape, weight_small):
     """Peittopainotettu aluekeskiarvo (ks. moduulin "outo punainen reunus"
     -kommentti): ruudun arvo lasketaan VAIN puskurivyohykkeella olevista
     natiivipikseleista. weight_small on _resize_new_grid(buffer_native_f)
-    kertaalleen laskettuna (sama jokaiselle kanavalle)."""
-    masked = _resize_new_grid(arr.astype(np.float32) * buffer_native_f, native_shape, NEW_PIXEL_FACTOR)
-    return masked / np.maximum(weight_small, 1e-6)
+    kertaalleen laskettuna (sama jokaiselle kanavalle).
+
+    NODATA ON NaN, EIKA NaN * 0 OLE 0. score_engine.compute_slope_score
+    merkitsee DEM:n nodata-pikselit tarkoituksella NaN:iksi. Kertolasku
+    arr * buffer_native_f antaa niille NaN:in VAIKKA ne olisivat puskurin
+    ulkopuolella, ja aluekeskiarvo levittaa sen naapuriruutuun. Ruutu
+    paatyy NaN:ina castiin np.uint8 -> 0, mika tarkoittaa jyrkinta
+    rinnetta eli PUNAISTA.
+
+    Osuma ei ole satunnainen: nodata alkaa siita mihin DEM loppuu, eli
+    puskurivyohykkeen MEREN PUOLEISELTA REUNALTA. Vika maalasi siis
+    punaista raitaa tasan rantaviivalle - sama oire kuin moduulin "outo
+    punainen reunus" -kommentissa, eri syysta. Lisaksi pilaantuneet nollat
+    paatyivat slope_b:n kautta compute_factor_thresholds-populaatioon ja
+    vaaristivat globaaleja kynnysarvoja.
+
+    Korjaus: NaN-pikseli ei osallistu osoittajaan eika nimittajaan, jolloin
+    ruudun arvo lasketaan sen kelvollisista pikseleista. NOPEA POLKU ON
+    TAYSIN ENNALLAAN kun NaN:ia ei ole, joten tiilet joilla on ehjä DEM
+    tuottavat tavulleen saman tuloksen kuin ennen.
+
+    JAA JALJELLE: jos ruudun KAIKKI puskuripikselit ovat NaN:ia, arvoksi
+    tulee 0 ja buffer (weight_small > 0) sanoo silti True. Ruudulla ei ole
+    yhtaan kelvollista mittausta, joten mitaan oikeaa arvoa ei ole
+    tarjolla; tapaus vaatisi bufferin laskemisen kanavakohtaisesti."""
+    a = np.asarray(arr, dtype=np.float32)
+    kelpo = np.isfinite(a)
+    if kelpo.all():
+        masked = _resize_new_grid(a * buffer_native_f, native_shape, NEW_PIXEL_FACTOR)
+        return masked / np.maximum(weight_small, 1e-6)
+
+    paino = buffer_native_f * kelpo
+    masked = _resize_new_grid(np.where(kelpo, a, 0.0) * paino, native_shape, NEW_PIXEL_FACTOR)
+    kelpo_paino = _resize_new_grid(paino, native_shape, NEW_PIXEL_FACTOR)
+    return masked / np.maximum(kelpo_paino, 1e-6)
 
 
 # Yhden tiilen muisti. Sama tiili kysytaan nyt kolmesti perakkain (kolme
