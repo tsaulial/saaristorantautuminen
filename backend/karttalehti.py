@@ -159,22 +159,52 @@ def sheets_for_corridor(pisteet, leveys_m, taso="dem"):
 
     pisteet: [(x, y), ...] EPSG:3067. Kaytetaan laajennettaessa aluetta
     rannikkoreittia pitkin, jolloin suorakaide hukkaisi valtaosan lehdista
-    avomereen ja sisamaahan."""
+    avomereen ja sisamaahan.
+
+    LEHTIRUUDUKKO EI ALA NOLLASTA. DEM-lehti alkaa esimerkiksi kohdasta
+    x = 284 000, joka ei ole 6 000:n monikerta, ja karttalehti on 8 000 m
+    siirroksessa 12 000:n ruudukkoon nahden. Aiempi toteutus kavi ruudukkoa
+    lapi askelen monikerroista ja testasi laatikkoa box(x, y, x+askel,
+    y+askel), joka osui oikeaan karttalehteen vain 17-prosenttisesti - 83 %
+    lehdesta jai testaamatta, ja kaytavan reunalla olevat lehdet jaivat
+    hakematta. Seuraus nakyi vasta buildissa:
+
+        VAROITUS: DEM-tiilelle L3333G.tif ei loytynyt peittavaa karttakuvaa
+
+    DEM ja kartta luetellaan erikseen ja niiden siirrokset ovat eri suuret,
+    joten listat menivat myos KESKENAAN ristiin: 23 DEM-lehtea pyydettiin
+    ilman niiden karttalehtea.
+
+    Nyt ruudukkoa ei arvata vaan luetaan: naytepisteet ovat lehden kokoisin
+    valein, joten JOKAINEN lehti sisaltaa tasan yhden naytepisteen sen
+    siirroksesta riippumatta. sheet_name kertoo mika lehti pisteessa on, ja
+    ehdokas hyvaksytaan vasta kun sen OMAT rajat leikkaavat kaytavan. Alue
+    laajennetaan yhdella lehdella joka suuntaan, jotta reunalehdet osuvat
+    naytteeseen."""
     from shapely.geometry import LineString, box
 
     kaytava = LineString(pisteet).buffer(leveys_m / 2.0)
     x0, y0, x1, y1 = kaytava.bounds
     askel = STEP[taso]
-    ulos = []
-    x = (x0 // askel) * askel
-    while x < x1:
-        y = (y0 // askel) * askel
-        while y < y1:
-            if kaytava.intersects(box(x, y, x + askel, y + askel)):
-                ulos.append(sheet_name(x + 1.0, y + 1.0, taso))
+
+    ehdokkaat = set()
+    x = x0 - askel
+    while x <= x1 + askel:
+        y = y0 - askel
+        while y <= y1 + askel:
+            try:
+                ehdokkaat.add(sheet_name(x, y, taso))
+            except Exception:
+                pass  # lehtijaon ulkopuolella
             y += askel
         x += askel
-    return sorted(set(ulos))
+
+    ulos = []
+    for nimi in ehdokkaat:
+        sx0, sy0, sx1, sy1 = sheet_bounds(nimi)
+        if kaytava.intersects(box(sx0, sy0, sx1, sy1)):
+            ulos.append(nimi)
+    return sorted(ulos)
 
 
 def _todenna():
