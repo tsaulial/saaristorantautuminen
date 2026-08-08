@@ -390,17 +390,30 @@ POISTETTAVAT_KUVIOT = (
 
 def mitatoi(kuiva=False):
     """Poistaa mosaiikkiin sidotut valimuistit. Palauttaa poistettujen maaran."""
-    poistetut = []
+    # KUVIOT SAAVAT MENNA PAALLEKKAIN, joten sama tiedosto voi loytya
+    # monta kertaa. Niin kavikin: _global_threshold_p93_v2.json osuu seka
+    # kuvioon "_global_threshold_p*_v*.json" etta vanhojen nimien kuvioon
+    # "_global_threshold_p[0-9]*.json", jossa [0-9]* nappaa myos loppuosan
+    # "3_v2". Toisella kerralla unlink kaatui FileNotFoundError:iin ja vei
+    # mukanaan koko eraajon - vaikka mitatointi oli jo tehty loppuun.
+    #
+    # Kaksoiskappaleet karsitaan dictilla (sailyttaa jarjestyksen), jotta
+    # myos raportoitu lukumaara on oikein. missing_ok on lisaksi varalla:
+    # kuvioiden paallekkaisyys on tarkoituksellista - vanhoja nimia
+    # siivotaan levealla haravalla - eika seuraava paallekkaisyys saa
+    # kaataa tuntien ajoa.
+    poistetut = {}
     for nimi in POISTETTAVAT_TIEDOSTOT:
         p = CACHE_DIR / nimi
         if p.exists():
-            poistetut.append(p)
+            poistetut[p] = None
     for kuvio in POISTETTAVAT_KUVIOT:
-        poistetut += sorted(CACHE_DIR.glob(kuvio))
+        for p in sorted(CACHE_DIR.glob(kuvio)):
+            poistetut[p] = None
     for p in poistetut:
         print(f"  poistetaan {p.name}")
         if not kuiva:
-            p.unlink()
+            p.unlink(missing_ok=True)
     sailyy = len(list(CACHE_DIR.glob("*_raw.npz"))) + len(list(CACHE_DIR.glob("*_lidar.npz")))
     print(f"{'(kuiva) ' if kuiva else ''}poistettu {len(poistetut)}, "
           f"sailytetty {sailyy} per-tiili valimuistia")
