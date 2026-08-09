@@ -244,6 +244,51 @@ def lataa_hydrografia(bbox, key=None, dest=None):
     return [mml.download_to(item, dest, key) for item in tulokset]
 
 
+def _levenna_kokonaisluvut(kehys):
+    """Nostaa 32-bittiset kokonaislukusarakkeet 64-bittisiksi.
+
+    KENTTATYYPPI LUKITAAN ENSIMMAISESTA PALASTA. mtk_id on MTK:ssa yli
+    kahden miljardin (esim. 2 283 104 921) eika mahdu 32-bittiseen. Jos
+    ensimmaisessa palassa sattuu olemaan vain pienia arvoja, GDAL luo
+    kentan 32-bittisena ja myohemmat arvot YLIVUOTAVAT:
+
+        RuntimeWarning: Field ilmarata.mtk_id: integer overflow occurred
+        when trying to set 2283104921 as 32 bit integer
+
+    Se on VAROITUS eika poikkeus, joten arvo tallentuu vaarin hiljaa.
+    Vanha lue-concat-kirjoita paatteli tyypin joka kerta koko aineistosta
+    ja leveni itsestaan; lisaystila ei voi, joten leveys valitaan tassa."""
+    import numpy as np
+    muutokset = {s: "int64" for s in kehys.columns
+                 if s != kehys.geometry.name
+                 and np.issubdtype(kehys[s].dtype, np.integer)
+                 and kehys[s].dtype.itemsize < 8}
+    return kehys.astype(muutokset) if muutokset else kehys
+
+
+def _liian_kapea_kentta(kohde, taso, uusi):
+    """True jos olemassa olevan tason kentta ei riita uusille arvoille.
+
+    Koskee tiedostoja jotka on luotu ennen _levenna_kokonaisluvut-korjausta:
+    niissa kentta on jo 32-bittinen, eika sita voi levittaa lisaamalla."""
+    import numpy as np
+    import pyogrio
+    try:
+        info = pyogrio.read_info(kohde, layer=taso)
+    except Exception:
+        return False
+    for nimi, tyyppi in zip(info["fields"], info["dtypes"]):
+        if tyyppi != "int32" or nimi not in uusi.columns:
+            continue
+        arvot = uusi[nimi].dropna()
+        if not len(arvot) or not np.issubdtype(arvot.dtype, np.number):
+            continue
+        if arvot.max() > 2**31 - 1 or arvot.min() < -(2**31):
+            print(f"    ({taso}.{nimi} ei mahdu 32 bittiin, kirjoitetaan taso uusiksi)")
+            return True
+    return False
+
+
 def _liita_taso(uusi, kohde, taso):
     """Lisaa kehyksen GPKG-tasoon LUKEMATTA olemassa olevaa muistiin.
 
@@ -267,7 +312,17 @@ def _liita_taso(uusi, kohde, taso):
     import pandas as pd
     import pyogrio
 
+    uusi = _levenna_kokonaisluvut(uusi)
     if kohde.exists() and taso in set(pyogrio.list_layers(kohde)[:, 0]):
+        if _liian_kapea_kentta(kohde, taso, uusi):
+            # Kirjoitetaan taso uusiksi, jolloin kenttatyyppi paatellaan
+            # koko aineistosta. Sama paluutie kuin skeeman erotessa.
+            vanha = gpd.read_file(kohde, layer=taso)
+            yhd = gpd.GeoDataFrame(pd.concat([vanha, uusi], ignore_index=True),
+                                   crs=vanha.crs or uusi.crs)
+            yhd = _levenna_kokonaisluvut(yhd)
+            yhd.to_file(kohde, layer=taso, driver="GPKG")
+            return len(yhd)
         try:
             uusi.to_file(kohde, layer=taso, driver="GPKG", mode="a")
         except Exception as e:
