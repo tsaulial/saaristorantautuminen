@@ -20,7 +20,9 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
+import sys
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
@@ -186,13 +188,62 @@ def wind_grid_points(tile_entries):
     return pisteet
 
 
-def build():
+# Kuinka paljon tiilisto saa kutistua ilman erillista lupaa.
+#
+# Tiilia voi perustellusti kadota muutama: karttalehti saattaa puuttua MML:n
+# aineistosta, jolloin tiili tippuu rekisterista. Murto-osaan kutistuminen
+# tarkoittaa kaytannossa aina jotain muuta.
+#
+# TAMA SUOJA ON OLEMASSA KOSKA NAIN KAVI. Komennot ajettiin vahingossa
+# vaaralla koneella: rekisterissa oli 38 tiilta, docs/-hakemistossa 493, ja
+# build pyyhki juuri siirretyn 2,5 Gt aineiston ja rakensi tilalle 13 Mt.
+# Mikaan ei kaatunut eika varoittanut - lopputulos oli taysin kelvollinen
+# build, vain vaarasta aineistosta.
+KUTISTUMISRAJA = 0.8
+
+
+def _docsin_tiilet():
+    """Montako ERI tiilta docs/cache sisaltaa.
+
+    Luetaan tiedostonimista eika tiles.json:sta, koska nimet ovat olemassa
+    silloinkin kun json puuttuu tai on kesken jaaneesta ajosta."""
+    if not DOCS_CACHE_DIR.exists():
+        return 0
+    tiilet = set()
+    for p in DOCS_CACHE_DIR.iterdir():
+        if p.suffix not in (".png", ".webp"):
+            continue
+        m = re.match(r"^([A-Za-z]\d+[A-Za-z]?)_", p.name)
+        if m:
+            tiilet.add(m.group(1))
+    return len(tiilet)
+
+
+def _varmista_ettei_kutistu(uusia, korvaa):
+    """Keskeyttaa jos docs/ sisaltaa selvasti enemman tiilia kuin rekisteri."""
+    vanhoja = _docsin_tiilet()
+    if korvaa or not vanhoja or uusia >= vanhoja * KUTISTUMISRAJA:
+        return
+    raise SystemExit(
+        f"\nKESKEYTETTY: docs/ sisaltaa {vanhoja} tiilta mutta rekisterissa on "
+        f"{uusia}.\n"
+        f"Build tyhjentaa docs/-hakemiston, joten {vanhoja - uusia} tiilta "
+        f"katoaisi.\n\n"
+        f"Yleisin syy on VAARA KONE: lahdeaineisto ja docs/ ovat eri koneilta.\n"
+        f"Tarkista etta olet silla koneella jolla aineisto on laskettu.\n\n"
+        f"Jos kutistuminen on tarkoitettu (esim. kapeampi kaytava), aja:\n"
+        f"    python3 build_static.py --korvaa\n"
+    )
+
+
+def build(korvaa=False):
+    registry = tiles.get_registry()
+    print(f"{len(registry)} tiilta rekisterissa")
+    _varmista_ettei_kutistu(len(registry), korvaa)
+
     if DOCS_DIR.exists():
         shutil.rmtree(DOCS_DIR)
     DOCS_CACHE_DIR.mkdir(parents=True)
-
-    registry = tiles.get_registry()
-    print(f"{len(registry)} tiilta rekisterissa")
 
     # Tiilistosta riippuvat valimuistit (kynnykset, globaali jarjestysluku,
     # vektoritasot) on mitatoitava ENNEN laskentaa jos tiilisto on muuttunut -
@@ -367,4 +418,4 @@ def write_static_index_html():
 
 
 if __name__ == "__main__":
-    build()
+    build(korvaa="--korvaa" in sys.argv[1:])
