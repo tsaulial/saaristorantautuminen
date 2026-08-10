@@ -1745,7 +1745,16 @@ let tileListCache = [];
 const LEVELS = [
   { name: 'overview', suffix: '_overview', maxZoom: -3 },
   { name: 'mid', suffix: '_mid', maxZoom: -1.5 },
-  { name: 'near', suffix: '_near', maxZoom: -0.5 },
+  // NEAR->DETAIL EI OLE PUOLIVALISSA vaan askelen aikaisemmin (-0,5 -> -1).
+  // Muut kynnykset erottavat SAMAA tuotetta eri resoluutioilla, mutta tama
+  // erottaa ERI TUOTTEET: near on taustakartta 1:10 000 (yleistetty, vahan
+  // nimistoa) ja detail on peruskartta (taysi nimisto ja symbolit). Kayttaja
+  // odottaa peruskarttaa heti kun zoomaa lahelle, eika resoluutio ole se
+  // mita han katsoo. Puolivalisaanto olisi oikea jos kyse olisi vain
+  // pikseleista.
+  // Hinta on mitattu: peruskarttakuva on 1 817 kt ja taustakartta 360 kt,
+  // joten nakymassa siirtyy 3,6 Mt aiemman 0,7 Mt sijaan.
+  { name: 'near', suffix: '_near', maxZoom: -1 },
   { name: 'detail', suffix: '', maxZoom: Infinity },
 ];
 
