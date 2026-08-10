@@ -1745,16 +1745,24 @@ let tileListCache = [];
 const LEVELS = [
   { name: 'overview', suffix: '_overview', maxZoom: -3 },
   { name: 'mid', suffix: '_mid', maxZoom: -1.5 },
-  // NEAR->DETAIL EI OLE PUOLIVALISSA vaan askelen aikaisemmin (-0,5 -> -1).
-  // Muut kynnykset erottavat SAMAA tuotetta eri resoluutioilla, mutta tama
-  // erottaa ERI TUOTTEET: near on taustakartta 1:10 000 (yleistetty, vahan
-  // nimistoa) ja detail on peruskartta (taysi nimisto ja symbolit). Kayttaja
-  // odottaa peruskarttaa heti kun zoomaa lahelle, eika resoluutio ole se
-  // mita han katsoo. Puolivalisaanto olisi oikea jos kyse olisi vain
-  // pikseleista.
-  // Hinta on mitattu: peruskarttakuva on 1 817 kt ja taustakartta 360 kt,
-  // joten nakymassa siirtyy 3,6 Mt aiemman 0,7 Mt sijaan.
-  { name: 'near', suffix: '_near', maxZoom: -1 },
+  // DETAIL ALKAA HETI MID:N JALKEEN, eika puolivalisaannon mukaisesti
+  // vasta -0,5:sta. Muut kynnykset erottavat SAMAA tuotetta eri
+  // resoluutioilla, mutta tama erottaa ERI TUOTTEET: taustakartta on
+  // yleistetty ja vahanimistoinen, peruskartassa on taysi nimisto ja
+  // symbolit. Kayttaja katsoo sisaltoa eika pikselitiheytta, joten
+  // puolivalisaanto optimoi vaaraa suuretta.
+  //
+  // _near-tasoa (taustakartta 2 m/px) EI ENAA KAYTETA. Se on jatetty
+  // taulukkoon pois, ei nollattuna kynnyksena, jottei jaisi kuollutta
+  // konfiguraatiota. Kuvat syntyvat yha buildissa (173 Mt) - jos taso ei
+  // palaa kayttoon, niiden tuottamisen voi lopettaa erikseen.
+  //
+  // TAHAN RAJA PYSAHTYY. Peruskartta on 1 m/px, joten -1,5:lla se
+  // pienennetaan jo 2,8-kertaisesti; -2:lla pienennys olisi 4x ja teksti
+  // muuttuisi puuroksi. Se on tasan se "pieneksi puristettu peruskartta"
+  // jota vastaan taustakarttatasot alun perin tehtiin.
+  //
+  // Hinta mitattu: nakymassa siirtyy 3,5 Mt aiemman 0,7 Mt sijaan.
   { name: 'detail', suffix: '', maxZoom: Infinity },
 ];
 
