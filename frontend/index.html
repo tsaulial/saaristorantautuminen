@@ -344,6 +344,16 @@
 // proj4-riippuvuutta, silti pikselintarkka ja saumaton lopputulos.
 const map = L.map('map', { crs: L.CRS.Simple, zoomSnap: 0.25, minZoom: -10, maxZoom: 6 });
 
+// Mittakaavajana. Leafletin oma kontrolli KELPAA TASSA SELLAISENAAN, mika ei
+// ole itsestaan selvaa: se laskee matkan map.distance():lla, joka
+// L.CRS.Simple:lla on euklidinen etaisyys KARTTAYKSIKOISSA. Yleensa se
+// tuottaisi mielivaltaisia lukuja, mutta talla kartalla yksikko ON metri
+// (EPSG:3067, ks. yllä), joten tulos on suoraan oikea - ei omaa laskentaa
+// eika kalibrointia. Jos projektio joskus vaihtuu, TAMA MENEE RIKKI HILJAA:
+// jana nayttaisi yha uskottavia lukuja mutta vaaria.
+// imperial: false - aineisto on metrista eika jalkoja kannata tarjota.
+L.control.scale({ position: 'bottomleft', imperial: false, maxWidth: 180 }).addTo(map);
+
 const baseLayerGroup = L.layerGroup().addTo(map);
 
 // Kaksi VANHAN toteutuksen kerrosryhmaa (esilasketut kuvat, ks. alla) ja
