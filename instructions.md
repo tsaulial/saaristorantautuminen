@@ -875,6 +875,183 @@ ole nopeusongelma lainkaan, vain luettavuusongelma.
 
 ---
 
+## 5h. Laajennus Ahvenanmaalle ja viisi hiljaista vikaa (2026-08-08…11)
+
+Helsingin ja Ahvenanmaan väliin jäi lähes 200 km kattamatonta rannikkoa.
+Käytävä yhdistettiin 40 km leveänä, ja tiilistö kasvoi **38 → 493**; koko
+rannikon ajon jälkeen **1078**.
+
+Laajennus paljasti viisi vikaa. **Vain yksi kaatoi ohjelman, ja se oli
+halvin.** Neljä muuta tuottivat kelvollisen näköisen tuloksen väärästä
+aineistosta.
+
+### Puuttuva karttalehti kaatoi koko erän
+
+MML:llä ei ole 1:10 000 karttalehteä ruudulle jossa on pelkkää avomerta.
+149 lehden haku hylättiin kolmen puuttuvan takia (`K3344L`, `K4231L`,
+`K4234L`), eikä mitään ehtinyt latautua.
+
+**Puuttuva lehti ei ole virhe vaan tieto:** siellä ei ole karttaa koska
+siellä ei ole kartoitettavaa. Tiili jää pois rekisteristä, mikä on oikein —
+`tiles.build_registry` vaatii sekä DEM:n että kartan.
+
+`LataustyoVirhe.puuttuvat_lehdet()` poimii nimet virheviestistä ja
+`_aja_era` yrittää uudelleen ilman niitä. Ohitetut kerrotaan lokissa
+nimeltä.
+
+### Vektoritasojen yhdistäminen: muisti ja neliöllisyys
+
+Ajo kaatoi koko koneen vektorivaiheessa. `yhdista_rakennukset` luki vanhan
+tason, liitti uuden ja kirjoitti kaiken uudelleen — **kolme kopiota
+muistissa** — ja teki sen jokaiselle 13 palalle, eli neliöllisesti.
+
+Mitattu: rakennus vie geopandas-kehyksenä **2 696 tavua**. Käytävässä niitä
+oli 1 318 385, joten viimeinen pala olisi tarvinnut ~7,4 Gt pelkkään
+`rakennus`-tasoon, päälle `rakennusreunaviiva`. WSL sai oletuksena 12 Gt.
+
+Korjaus on GPKG:n lisäystila (`mode="a"`). Mitattu 8 palan erällä:
+
+| | Huippu-RSS | Kesto |
+|---|---:|---:|
+| vanha | 287 Mt | 5,1 s |
+| uusi | **167 Mt** | **1,3 s** |
+
+Tulkki ja kirjastot vievät 129 Mt, joten datan osuus putosi 158 → 38 Mt.
+Todennettu ettei aineisto muutu: sama rivimäärä, sarakkeet, geometria (WKB)
+ja attribuutit.
+
+**Lisäystilan hinta:** kenttätyyppi lukitaan ensimmäisestä palasta. `mtk_id`
+ylitti 32 bittiä myöhemmässä palassa ja tallentui väärin *varoituksena*.
+`_levenna_kokonaisluvut` kirjoittaa kokonaisluvut 64-bittisinä (GPKG on
+SQLite → **ei kasvata tiedostoa lainkaan**, mitattu 0,0 %), ja
+`_liian_kapea_kentta` kirjoittaa vanhan tason uusiksi jos se on jo kapea.
+
+Geometriatyyppivaroitukset (`POLYGON` → `MULTIPOLYGON`-tasoon) ovat
+vaarattomia: todennettu että WKB säilyy tavulleen samana kaikkiin suuntiin.
+
+### Mitätöinnin päällekkäiset kuviot
+
+`mitatoi` kaatui viimeiseen tiedostoon: `_global_threshold_p93_v2.json` osuu
+sekä kuvioon `_global_threshold_p*_v*.json` että vanhojen nimien kuvioon
+`_global_threshold_p[0-9]*.json`, jossa `[0-9]*` nappaa myös `3_v2`.
+
+Päällekkäisyys on **tarkoituksellista** — vanhoja nimiä siivotaan leveällä
+haravalla — joten korjaus on listan karsiminen (dict) eikä kuvion
+kaventaminen. `missing_ok=True` varalle.
+
+### Lehtiluettelo ei ollut kohdistettu ruudukkoon
+
+Build valitti 14 kertaa `ei loytynyt peittavaa karttakuvaa`. Syy ei ollut
+puuttuva lehti vaan **luettelointi**.
+
+`sheets_for_corridor` käveli ruudukkoa askelen monikerroista, mutta
+lehtiruudukko ei ala nollasta:
+
+| Taso | Askel | `x0 mod askel` | `y0 mod askel` |
+|---|---:|---:|---:|
+| `dem` | 6 000 | 2 000 | 0 |
+| `kartta` | 12 000 | 8 000 | 6 000 |
+
+Testattu laatikko osui oikeaan karttalehteen **17-prosenttisesti** — 83 %
+lehdestä jäi testaamatta. Koska DEM:n ja kartan siirrokset ovat eri suuret,
+listat menivät myös keskenään ristiin: 23 DEM-lehteä pyydettiin ilman
+karttalehteä.
+
+Vika oli molempiin suuntiin ja koski **myös aiempia ajoja**:
+
+| Ajo | Taso | Jäi hakematta | Turhaan haettu |
+|---|---|---:|---:|
+| 40 km Helsinki–Ahvenanmaa | dem | 21 | 14 |
+| | kartta | 18 | 16 |
+| 20 km koko rannikko | dem | **71** | 102 |
+| | kartta | 25 | 37 |
+
+Ruudukkoa ei enää arvata vaan luetaan: näytepisteet ovat lehden mittaisin
+välein, jolloin jokainen lehti sisältää tasan yhden pisteen siirroksesta
+riippumatta, ja ehdokas hyväksytään vasta kun sen **omat rajat** leikkaavat
+käytävän. Todennettu riippumattomalla neljäsosa-askelen haravoinnilla: sama
+joukko, 0 puuttuvaa ja 0 ylimääräistä. Ristiriita 23 → 0.
+
+### Nodata-NaN maalasi punaista rantaviivalle
+
+`compute_slope_score` merkitsee nodata-pikselit NaN:iksi tarkoituksella.
+`_masked_downsample` kertoi `arr * buffer_native_f`, ja **`NaN * 0` ei ole
+0** — nodata myrkytti tuloksen vaikka olisi puskurin ulkopuolella, ja
+aluekeskiarvo levitti sen naapuriruutuun. `NaN → uint8` antaa **0**, mikä
+`slope_b`:ssä tarkoittaa jyrkintä rinnettä eli punaista.
+
+Osuma ei ollut satunnainen: nodata alkaa siitä mihin DEM loppuu, eli
+puskurin **meren puoleiselta reunalta**. Mitattu 5 000 puskuriruudun
+testissä: 200 punaista ruutua eli koko reunan mitalta yksi ruutu.
+
+Pilaantuneet nollat menivät myös `slope_b`:n kautta
+`compute_factor_thresholds`-populaatioon, joten vaikutus ei rajoittunut
+reunaan.
+
+Korjaus: NaN ei osallistu osoittajaan eikä nimittäjään. **Nopea polku on
+bittitarkasti ennallaan** kun NaN:ia ei ole (`np.array_equal` = True), joten
+ehjät tiilet eivät muutu. Jäljelle jää tahallaan tapaus jossa ruudun kaikki
+puskuripikselit ovat NaN:ia — silloin kelvollista mittausta ei ole.
+
+### Taustakartan täydennys
+
+Sama luettelointivika oli osunut taustakarttoihin, ja siellä pahemmin koska
+lehdet ovat isoja: uloimmalta tasolta puuttui **7 lehteä 20:stä**.
+
+`--vain-taustakartta` johtaa lehdet **tiilistöstä eikä käytävästä**, joten se
+korjaa tilanteen riippumatta luettelointivirheestä. Lehtiä 61/38/6 → 147/80/10.
+
+Vaikutus mitattiin kuvista: tiilet joilta taustakartta puuttui olivat
+**134 kt ja reunatiheys 4408**, ehjät **23 kt ja 817** — puristettu
+peruskartta. Korjauksen jälkeen 0/493 tiiltä yli 70 kt. `docs/` 2,5 → 2,0 Gt.
+
+**Muista aina `--vain-taustakartta` uusien tiilien jälkeen** — `--rannikko`
+ei sisällä sitä.
+
+### `build_static.py`: suoja väärää konetta vastaan
+
+Korjauskomennot ajettiin vahingossa kehityskoneella. Rekisterissä oli 38
+tiiltä, `docs/`-hakemistossa juuri siirretyt 493. Build tyhjensi hakemiston
+ja rakensi 13 Mt 2,5 Gt:n tilalle. **Mikään ei varoittanut** — lopputulos oli
+kelvollinen build väärästä aineistosta.
+
+`_varmista_ettei_kutistu` laskee `docs/cache`:n tiilet **ennen** `rmtree`:tä ja
+keskeyttää jos rekisteri on alle 80 % siitä. Raja ei ole nolla, koska tiiliä
+voi perustellusti kadota muutama. `--korvaa` ohittaa. Virheilmoitus nimeää
+todennäköisimmän syyn (väärä kone) eikä vain kerro lukuja.
+
+### Selainpuoli
+
+**Peruskartta aiemmin näkyviin.** `LEVELS`-kynnykset olivat perättäisten
+tasojen natiiviresoluutioiden puolivälissä. Sääntö on oikea kun tasot ovat
+samaa tuotetta eri tarkkuuksilla, mutta `near` (taustakartta 1:10 000,
+yleistetty) ja `detail` (peruskartta, täysi nimistö) ovat **eri tuotteita** —
+käyttäjä katsoo sisältöä, ei pikselitiheyttä. `near` poistettiin taulukosta
+ja `detail` alkaa suoraan `mid`:n jälkeen (−1,5). Hinta mitattu: 1 817 kt/kuva
+vs 360 kt, näkymässä 3,5 Mt aiemman 0,7 Mt sijaan.
+
+Rajaa ei pidä siirtää pidemmälle: −2:lla pienennys on 4× ja teksti muuttuu
+puuroksi — tasan se mitä vastaan taustakartat tehtiin.
+
+**Mittakaavajana.** `L.control.scale` kelpaa sellaisenaan, mikä ei ole
+itsestään selvää: se laskee matkan `map.distance()`:lla, joka `L.CRS.Simple`:llä
+on euklidinen etäisyys karttayksiköissä — ja täällä yksikkö on metri.
+Todennettu 10 zoom-tasolla riippumatonta m/px-mittaa vasten, virhe ≤ 0,16 %
+(pyöristys siistiin lukuun). **Rikkoutuu hiljaa jos projektio vaihtuu.**
+
+### Toistuva vikaluokka
+
+Kolmesta kaatumisesta ja viidestä korjauksesta sama rakenne: **jokin
+päätettiin ensimmäisestä palasta tai jätettiin merkitsemättä vanhentuneeksi.**
+Geometriatyyppi, kenttäleveys, välimuistin tunniste, lehtiruudukon origo.
+
+Käytännön sääntö: kun muutat *mitä* lasketaan, tarkista aina erikseen mikä
+merkitsee vanhan tuloksen vanhentuneeksi. `LASKENTA_VERSIO`,
+`POISTETTAVAT_KUVIOT`, välimuistiavaimet ja tiedostonimien lähdemerkinnät
+ovat kaikki tätä varten — ja ne on päivitettävä käsin.
+
+---
+
 ## 6. Natiivisovellus (iOS/Android) — tuleva suunta, EI toteuteta vielä
 
 **Tilanne (kirjattu muistiin 2026-07-28)**: web-pohjaista sovellusta kehitetään edelleen ensisijaisesti, eikä natiivin kehitystä aloiteta lähiaikoina. Tämä kohta dokumentoi tehdyn arvioinnin, jotta web-kehityksen aikana tehtävät arkkitehtuuripäätökset voivat ottaa tulevan natiivitarpeen huomioon eivätkä vahingossa sulje sitä pois. **Ei aktiivinen tehtävälista — ei toteuteta ilman erillistä pyyntöä.**
