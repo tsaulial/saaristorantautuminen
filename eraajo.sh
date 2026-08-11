@@ -131,7 +131,57 @@ if [ ! -f "$HOME/.mml-api-key" ]; then
     exit 1
 fi
 echo "  API-avain loytyy"
-echo "  levytilaa vapaana: $(df -h . | tail -1 | awk '{print $4}')"
+
+# LEVYTILA: WSL:SSA df VALEHTELEE.
+#
+# WSL2:n juuri on virtuaalilevy (ext4.vhdx) jonka enimmaiskoko on oletuksena
+# noin teratavu. df nayttaa SEN vapaan tilan riippumatta siita paljonko
+# Windowsin levylla oikeasti on. Tama harhautti kerran taydellisesti: skripti
+# ilmoitti "843G vapaana" samalla kun C-asema tayttyi, ja koko WSL-kone kaatui
+# kuuden tunnin ajon jalkeen - Windows itse jai pystyyn.
+#
+# Isantalevy nakyy /mnt/c:n kautta. Se tarkistetaan erikseen kun sellainen on,
+# ja PIENEMPI luvuista ratkaisee.
+vapaa_gt() { df -BG "$1" 2>/dev/null | tail -1 | awk '{gsub(/G/,"",$4); print $4}'; }
+
+VAPAA=$(vapaa_gt .)
+echo "  levytilaa vapaana: ${VAPAA}G (virtuaalilevy)"
+if [ -d /mnt/c ]; then
+    ISANTA=$(vapaa_gt /mnt/c)
+    echo "  Windows-levylla vapaana: ${ISANTA}G"
+    if [ -n "$ISANTA" ] && [ "$ISANTA" -lt "${VAPAA:-0}" ]; then
+        VAPAA=$ISANTA
+    fi
+fi
+
+# Vaatimus mitoitetaan TYON MUKAAN, jottei pieni ajo keskeydy turhaan.
+# Mitattu: koko rannikko on lahdeaineistoa n. 18 Gt, per-tiili valimuisteja
+# n. 31 Gt (1078 tiilta a 29 Mt) ja docs/ n. 3 Gt, plus tyotilaa.
+case "$ALUE" in
+    *--rannikko*) TARVE=60 ;;
+    *--bbox*)     TARVE=20 ;;
+    *)            TARVE=10 ;;   # pelkka build nykyisesta aineistosta
+esac
+
+if [ -n "$VAPAA" ] && [ "$VAPAA" -lt "$TARVE" ]; then
+    echo
+    echo "  KESKEYTETTY: vapaata levytilaa ${VAPAA}G, tarve noin ${TARVE}G."
+    echo "  Ajo ehtisi edeta tunteja ennen kuin se kaatuu levytilaan."
+    if [ -d /mnt/c ]; then
+        echo
+        echo "  HUOM: WSL:n virtuaalilevy EI KUTISTU itsestaan kun tiedostoja"
+        echo "  poistetaan. Tilan saa takaisin Windowsin puolelta:"
+        echo "      wsl --shutdown"
+        echo "      Optimize-VHD -Path <ext4.vhdx> -Mode Full"
+    fi
+    echo
+    echo "  Ohita tarkistus tarvittaessa: OHITA_LEVYTARKISTUS=1 ./eraajo.sh ..."
+    # KESKEYTETAAN EIKA KYSYTA. Ajo kaynnistetaan nohupilla ilman paatetta,
+    # joten kysymykseen ei voisi vastata - ja hiljainen jatkaminen on tasan
+    # se mika maksoi kuusi tuntia.
+    [ "${OHITA_LEVYTARKISTUS:-0}" = "1" ] || exit 1
+    echo "  OHITA_LEVYTARKISTUS=1 asetettu, jatketaan"
+fi
 
 if [ -n "$ALUE" ]; then
     vaihe "1/4  Lahtoaineiston lataus: $ALUE"

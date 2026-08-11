@@ -652,13 +652,25 @@ def main():
     if args.taustakartta:
         for taso, lehdet in tausta.items():
             lataa_taustakartta(lehdet, taso, key=key)
+    # PALA POISTETAAN HETI YHDISTAMISEN JALKEEN. Sisalto on silloin jo
+    # paaaineistossa, joten pala on pelkka kaksoiskappale. Koko rannikolla
+    # paloja on 37, ja ne jaivat aiemmin levylle pysyvasti - mitattuna se on
+    # gigatavuja tarpeetonta kopiota. WSL-koneen levy tayttyi tasta muun
+    # ohella ja kaatoi kuuden tunnin ajon.
+    #
+    # Poisto tehdaan VASTA yhdistamisen jalkeen: jos yhdistaminen kaatuu,
+    # pala jaa levylle ja lataus voidaan toistaa ilman uutta hakua.
     for i, bb in enumerate(vektoribboxit, 1):
         print(f"vektoripala {i}/{len(vektoribboxit)}")
-        uudet_h = lataa_hydrografia(bb, key=key, dest=ROOT / "vesistot-mml" / f"_pala{i}")
+        pala_h = ROOT / "vesistot-mml" / f"_pala{i}"
+        uudet_h = lataa_hydrografia(bb, key=key, dest=pala_h)
         yhdista_hydrografia([p for p in uudet_h if p.suffix.lower() == ".gpkg"])
+        shutil.rmtree(pala_h, ignore_errors=True)
         if not args.ei_rakennuksia:
-            uudet = lataa_rakennukset(bb, key=key, dest=BUILDINGS_DIR / f"_pala{i}")
+            pala_r = BUILDINGS_DIR / f"_pala{i}"
+            uudet = lataa_rakennukset(bb, key=key, dest=pala_r)
             yhdista_rakennukset([p for p in uudet if p.suffix.lower() == ".gpkg"])
+            shutil.rmtree(pala_r, ignore_errors=True)
     print("Lataus valmis. Aja seuraavaksi:  python3 -m backend.mml_lataus --mitatoi")
     return 0
 
