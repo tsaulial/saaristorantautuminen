@@ -1,0 +1,137 @@
+PALVELUN SIIRTO UBUNTULLE
+=========================
+
+Tavoite: kartta tarjoillaan Ubuntu-koneelta Tailscale-verkkoon, jolloin
+kaikki tailnetin laitteet paasevat siihen eika lappari tarvitse olla auki.
+
+JARJESTYS ON OLENNAINEN. Vaiheet 0-2 tehdaan kerran; ne ovat edellytyksia
+sille etta palvelu pysyy pystyssa ja etta paikannus toimii lainkaan.
+
+
+VAIHE 0 - Koodi Ubuntulle
+--------------------------
+Muutokset on jo commitoitu Macilla (0da6228, 2aea23f). Enaa push:
+
+    git push
+
+ALA KAYTA "git add -A". tarina.html, tarina-kuvat/ ja .psd-tiedosto ovat
+seurannan ulkopuolella eivatka kuulu versionhallintaan; -A lakaisisi ne
+mukaan. Lisaa tiedostot nimelta.
+
+Ubuntulla:
+
+    cd ~/saaristorantautuminen-0826/saaristorantautuminen
+    git pull
+
+
+VAIHE 1 - "Aina paalla" on tehtava todeksi (Ubuntu + Windows)
+--------------------------------------------------------------
+Tama EI ole vielä totta: WSL kaatui, Tailscale katosi ja openssh-server jai
+puolitiehen kun levy tayttyi. WSL2-vieras ei myoskaan kaynnisty Windowsin
+mukana.
+
+Ubuntu-shellissa:
+
+    sudo tee /etc/wsl.conf <<'WSLEOF'
+    [boot]
+    systemd=true
+    WSLEOF
+
+    sudo dpkg --configure openssh-server
+    sudo dpkg --audit
+
+Windows PowerShellissa:
+
+    wsl --shutdown
+
+Sitten takaisin Ubuntuun (systemd on nyt kaytossa):
+
+    sudo systemctl enable --now tailscaled
+    sudo systemctl enable --now ssh
+    systemctl is-enabled tailscaled ssh
+
+Windowsin ajastettu tehtava kaynnistykseen (Task Scheduler, "Run whether
+user is logged on or not", trigger: At startup):
+
+    Ohjelma:    wsl.exe
+    Argumentit: -d Ubuntu -u root /bin/true
+
+Windowsin virransaasto: ei lepotilaa. Nukkuva kone ei palvele.
+
+
+VAIHE 2 - HTTPS paalle tailnetiin (selaimessa)
+-----------------------------------------------
+PAIKANNUS EI TOIMI ILMAN TATA. navigator.geolocation vaatii turvallisen
+kontekstin: http://kone:8000 on estetty, localhost on ainoa poikkeus.
+
+Tailscalen hallintapaneeli -> DNS:
+  - MagicDNS                      paalle
+  - HTTPS Certificates            paalle
+
+Tarkista Ubuntulla etta nimi on tiedossa:
+
+    tailscale status --json | grep -i dnsname
+
+
+VAIHE 3 - Paijanteen aineisto (Ubuntu)
+---------------------------------------
+Ubuntun hydrografia.gpkg:ssa ei ole jarvi-tasoa eika Paijanteen
+korkeusmallia lainkaan.
+
+    python3 -m backend.mml_lataus --bbox 400000 6786000 434000 6834000 --taustakartta
+    python3 -m backend.mml_lataus --mitatoi
+
+Levytilaa kuluu n. 2 Gt. Uudella D-asemalla se ei ole ongelma.
+
+
+VAIHE 4 - Yksi ajo (Ubuntu)
+----------------------------
+    ./eraajo.sh
+
+Kestaa n. 9 tuntia: hydrografian sormenjalki muuttuu, joten KAIKKI tiilet
+lasketaan uudelleen. Laserkeilaus (_lidar.npz) sailyy.
+
+Seuraa lokista:
+  - "3 laskenta-aluetta" (ei 4) - rykelmajako toimii
+  - "rantaviiva: N tiilta -> X km" - mitattu pituus, ei enaa 700 km vakio
+  - ei OOM-tappoja: dmesg | grep -i "out of memory"
+
+
+VAIHE 5 - Palvelin (Ubuntu)
+----------------------------
+tailscale serve paattaa HTTPS:n oikealla sertifikaatilla ja nakyy VAIN
+tailnetissa - ei julkiseen verkkoon.
+
+    cd ~/saaristorantautuminen-0826/saaristorantautuminen
+    tailscale serve --bg docs
+
+    tailscale serve status
+
+Osoite on muotoa  https://<kone>.<tailnet>.ts.net
+
+Asetus sailyy uudelleenkaynnistysten yli (--bg kirjoittaa sen tailscaled:n
+tilaan), joten tata ei tarvitse toistaa.
+
+Lopettaminen jos tarvitsee:
+
+    tailscale serve --https=443 off
+
+
+VAIHE 6 - Todentaminen
+-----------------------
+Toiselta laitteelta tailnetissa:
+
+  1. https://<kone>.ts.net avautuu ja kartalla nakyy SEKA Saaristomeri
+     ETTA Paijanne
+  2. paikannuspainike oikeassa ylalaidassa toimii (vaatii vaiheen 2)
+  3. asetussivun rantapituus on tuhansia kilometreja, ei 700 km
+  4. Windows uudelleen kayntiin -> osoite vastaa ilman kasin kaynnistysta
+
+Selaimen valimuisti on tassa projektissa johtanut harhaan kolmesti. Jos
+sivu nayttaa vanhalta rakentamisen jalkeen, tarkista kovalla latauksella
+(cmd/ctrl + shift + R) ennen kuin epailet buildia.
+
+
+MITA EI TEHDA
+=============
+Railwaylle tai GitHub Pagesiin ei viedä mitaan. Tailnet on suljettu verkko.
