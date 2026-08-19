@@ -88,6 +88,36 @@
   .wind-row input[type="range"] { width: 100%; vertical-align: middle; }
   .wind-source label { display: block; font-weight: normal; cursor: pointer; margin: 1px 0; }
   #forecast-row.hidden { display: none; }
+  /* Palvelupisteen popup. Leafletin oletus on valkoinen laatikko omalla
+     kirjasimellaan; tama sovittaa sen muuhun kayttoliittymaan. */
+  /* Oikea marginaali on ISO, koska sulkunappi istuu sen paalla.
+     Leafletin oletus varaa tilan 24 px:lla; kun marginaali korvattiin
+     tasakoolla, nappi alkoi peittaa tekstia. */
+  .leaflet-popup-content {
+    margin: var(--space-3) 34px var(--space-3) var(--space-3);
+    font-size: 14px; line-height: 1.4; min-width: 90px;
+  }
+  .leaflet-popup-content-wrapper { border-radius: 4px; }
+  .palvelu-tyyppi { color: var(--color-neutral-700); font-size: 13px; }
+  /* SULKUNAPPI ON KOSKETUSKOHDE. Leafletin oletus on 14x14 px, mika on
+     sormelle liian pieni juuri siina tilanteessa jota varten popup
+     ylipaataan otettiin kayttoon. Kasvatetaan osumapinta ilman etta
+     ruksi itse muuttuu isommaksi. */
+  .leaflet-container a.leaflet-popup-close-button {
+    width: 34px; height: 34px; font-size: 20px; line-height: 32px;
+    padding: 0; right: 0; top: 0;
+  }
+  .palvelu-rivi { display: flex; align-items: baseline; gap: 6px; margin: 2px 0; }
+  .palvelu-pallo {
+    flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%;
+    border: 1.5px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.25);
+    transform: translateY(1px);
+  }
+  @media (hover: none) {
+    /* Kosketuslaitteella popup saa olla hieman isompi: se on ainoa tapa
+       lukea kohteen nimi, kun leijuntaa ei ole. */
+    .leaflet-popup-content { font-size: 15px; }
+  }
   /* Paikannuspainike. Leafletin .leaflet-bar antaa reunat ja varjon, joten
      tama maarittelee vain sisallon - painike nayttaa silloin samalta kuin
      zoom-napit eika irrallisen lisatyn olen. */
@@ -2936,6 +2966,20 @@ function piirraPalvelut(data) {
   paivitaPalvelut();
 }
 
+// Onko laitteessa osoitin joka voi LEIJUA kohteen paalla.
+//
+// matchMedia eika kosketuksen tunnistus: kosketusnaytollisessa lapparissa
+// on molemmat, ja silloin hover-vihje on hyodyllinen LISA eika haitta.
+// "pointer: fine" erottaa hiiren sormesta, "hover: hover" varmistaa ettei
+// kyse ole emuloidusta leijunnasta.
+const HIENO_OSOITIN = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+
+// Kosketuskohteen sade karttapikseleina. Merkki on 5-7 px, mutta sormen
+// osumatarkkuus on luokkaa 10 mm - noin 40 px. Nain iso NAKYVA merkki
+// peittaisi kartan, joten osumapinta erotetaan esityksesta: nakymaton
+// ympyra merkin paalla ottaa napautuksen vastaan.
+const PALVELU_KOSKETUSSADE = 16;
+
 function paivitaPalvelut() {
   const data = vectorData.palvelut;
   if (!data) return;
@@ -2947,12 +2991,71 @@ function paivitaPalvelut() {
     // Vanha aineisto ilman z-kenttaa nakyy kaikilla tasoilla kuten ennen.
     if ((k.z ?? 0) > raja) return;
     const [vari, nimi] = PALVELU_TYYLI[k.r] || ['#555', k.r];
+    const sisalto = k.n
+      ? `<b>${k.n}</b><br><span class="palvelu-tyyppi">${nimi}</span>`
+      : `<b>${nimi}</b>`;
+
     L.circleMarker([k.y, k.x], {
-      pane: 'vektorit', radius: 5, color: '#fff', weight: 1.5,
-      fillColor: vari, fillOpacity: 0.95,
-    }).addTo(palveluGroup)
-      .bindTooltip(k.n ? `${k.n}<br><small>${nimi}</small>` : nimi, { sticky: true });
+      pane: 'vektorit', radius: HIENO_OSOITIN ? 5 : 7, color: '#fff',
+      weight: 1.5, fillColor: vari, fillOpacity: 0.95,
+      // Merkki itse ei ota tapahtumia vastaan: osumapinta on erillinen
+      // isompi ympyra. Kaksi paallekkaista kuuntelijaa avaisi ja sulkisi
+      // popupin samasta napautuksesta.
+      interactive: false,
+    }).addTo(palveluGroup);
+
+    // POPUP EIKA TOOLTIP. Tooltip aukeaa leijunnasta ja sulkeutuu kun
+    // osoitin lahtee pois - kosketusnaytolla jalkimmaista ei tapahdu
+    // koskaan, joten vihje jai auki eika sita saanut pois. Popupissa on
+    // sulkunappi, se sulkeutuu kartan napautuksesta, ja se asettuu merkin
+    // ylapuolelle eika sormen alle (sticky-tooltip asettui juuri siihen
+    // kohtaan jonka sormi peitti).
+    const kohde = L.circleMarker([k.y, k.x], {
+      pane: 'vektorit', radius: PALVELU_KOSKETUSSADE, weight: 0,
+      // EI NOLLA vaan 0,01: SVG:ssa taysin lapinakyva tayttö ei ole
+      // "painted" eika ota osoitintapahtumia vastaan. Silmalle ero ei nay.
+      fillOpacity: 0.01, fillColor: vari,
+    }).addTo(palveluGroup);
+    kohde._palvelu = { k, nimi, vari };
+    kohde.bindPopup(() => palveluSisalto(kohde),
+                    { closeButton: true, autoPan: true, offset: [0, -4] });
+    if (HIENO_OSOITIN) {
+      kohde.bindTooltip(() => palveluSisalto(kohde), { direction: 'top', offset: [0, -6] });
+    }
   });
+}
+
+// Kaikki napautuskohdan lahella olevat palvelut yhteen popupiin.
+//
+// OSUMAPINNAN KASVATTAMINEN LOI UUDEN ONGELMAN: palvelut ryhmittyvat
+// metrien paahan toisistaan - leirintapaikalla on kaymala ja nuotiopaikka -
+// joten 16 px osumapinnat menevat paallekkain ja PAALLIMMAINEN vie kaikki
+// napautukset. Osa pisteista oli siis muuttunut saavuttamattomiksi:
+// leirintapaikan kohdalta aukesi "Kaymala" eika leirintapaikkaa.
+//
+// Ratkaisu ei ole pienentaa osumapintaa takaisin - se palauttaisi
+// alkuperaisen vian. Ryhmittyneet palvelut ovat kayttajalle YKSI paikka,
+// joten ne kuuluvat samaan vastaukseen: yksi napautus, kaikki lahella
+// olevat listattuna. Etaisyys lasketaan naytolla eika maastossa, koska
+// juuri naytolla ne menevat paallekkain.
+function palveluSisalto(kohde) {
+  const keskus = map.latLngToLayerPoint(kohde.getLatLng());
+  const lahella = [];
+  palveluGroup.eachLayer((l) => {
+    if (!l._palvelu) return;
+    if (map.latLngToLayerPoint(l.getLatLng()).distanceTo(keskus) <= PALVELU_KOSKETUSSADE) {
+      lahella.push(l._palvelu);
+    }
+  });
+  // Napautettu ensin, muut sen jalkeen: kayttaja osoitti juuri sita.
+  lahella.sort((a, b) => (a === kohde._palvelu ? -1 : b === kohde._palvelu ? 1 : 0));
+  return lahella.map(({ k, nimi, vari }) => {
+    const pallo = `<span class="palvelu-pallo" style="background:${vari}"></span>`;
+    return k.n
+      ? `<div class="palvelu-rivi">${pallo}<b>${k.n}</b>`
+        + `<span class="palvelu-tyyppi"> · ${nimi}</span></div>`
+      : `<div class="palvelu-rivi">${pallo}<b>${nimi}</b></div>`;
+  }).join('');
 }
 
 // --- LEVATILANNE ---
