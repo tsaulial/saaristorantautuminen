@@ -458,8 +458,6 @@ function renderChart() {
   // pylvaan sisalla on valtavasti tasapisteita, ja "parhaat X %" ratkaistaan
   // niiden kesken tasapelinpurulla (ks. backend/pipeline.py: TIEBREAK_EPSILON).
   const inTopBin = rawMarker >= edges[edges.length - 2];
-  const low = (shorelineStats.length_m_low / 1000).toFixed(0);
-  const high = (shorelineStats.length_m_high / 1000).toFixed(0);
   document.getElementById('caveat').innerHTML =
     (shelterOn
       ? '<b>Huom:</b> kuvaaja on laskettu <b>ilman suojaisuutta</b>, koska se riippuu ' +
@@ -472,11 +470,12 @@ function renderChart() {
         'tarkemmilla mittausarvoilla (loivempi ranta ja kauempana rakennuksista voittaa), ' +
         'joten korostettu alue on suppeampi kuin koko pylväs. '
       : '') +
-    'Metriasteikko perustuu arvioon, että rantaviivaa on kaikkiaan noin ' +
-    (shorelineStats.length_m / 1000).toFixed(0) + ' km (haarukka ' + low + '–' + high + ' km): ' +
-    'lähde on peruskartan rasteroitu rantaviiva, ei vektorigeometriaa, joten pituus riippuu ' +
-    'mittatarkkuudesta. Jakauman muoto ja prosenttiosuudet ovat sen sijaan tarkkoja — ' +
-    'ne ovat suoria pikselilaskentoja ' + shorelineStats.buffer_km2 +
+    'Metriasteikko perustuu Maastotietokannan vesialueiden reunan mitattuun ' +
+    'pituuteen: ' + (shorelineStats.length_m / 1000).toFixed(0) +
+    ' km rantaviivaa. Luku riippuu aineiston yleistystasosta — rannikkoviiva on ' +
+    'sitä pidempi mitä tarkemmin se on piirretty — mutta se on mitattu samasta ' +
+    'geometriasta josta vesialueetkin, ei arvioitu. Jakauman muoto ja ' +
+    'prosenttiosuudet ovat suoria pikselilaskentoja ' + shorelineStats.buffer_km2 +
     ' km²:n puskurivyöhykkeeltä.';
 }
 

@@ -123,12 +123,38 @@ LOW_SCORE_EMPHASIS_PX = 6
 # Moniresoluutioiset "tasot" ulompia zoomauksia varten: jokainen taso on
 # kokonaislukukerroin peruskartan natiivista 1m/px-ruudukosta, jolloin
 # downsamplaus on halpa lohkokeskiarvo (cv2.INTER_AREA) ilman geodeettista
-# resamplausta. "detail" (kerroin 1) on peruskartan natiivi resoluutio ja
-# sailyttaa aiemman tiedostonimikaytannon (ei suffiksia); "near"/"mid"/
-# "overview" ovat kevyempia yleisnakymia joita frontend nayttaa ulompana
-# zoomattuna nopean alkulatauksen vuoksi.
-LEVEL_FACTORS = {"detail": 1, "near": 2, "mid": 4, "overview": 16}
-LEVEL_SUFFIXES = {"detail": "", "near": "_near", "mid": "_mid", "overview": "_overview"}
+# resamplausta. "detail" (kerroin 1) sailyttaa aiemman
+# tiedostonimikaytannon (ei suffiksia); "mid"/"overview" ovat kevyempia
+# yleisnakymia joita frontend nayttaa ulompana zoomattuna nopean
+# alkulatauksen vuoksi.
+#
+# "near" (2 m/px) POISTETTU. Frontendin LEVELS lakkasi kayttamasta sita
+# commitissa 75a0299, mutta kuvat syntyivat yha - 181 Mt kuollutta
+# tuotetta docs-hakemistossa. Sen lahde (taustakartta_rasteri_10k) on
+# poistettu myos mml_lataus.TAUSTAKARTAT-taulukosta: kun detail
+# tallennetaan 2 m/px:na, near olisi tasan sama resoluutio mutta
+# yleistetylla, vahanimistoisella sisallolla.
+LEVEL_FACTORS = {"detail": 1, "mid": 4, "overview": 16}
+LEVEL_SUFFIXES = {"detail": "", "mid": "_mid", "overview": "_overview"}
+
+# PERUSKARTTA TALLENNETAAN 2 m/px:na, ei karttalehden natiivilla 1 m/px:lla.
+# Se on 45 % koko docs-hakemistosta, ja Railwaylle ei voi ostaa satoja
+# gigatavuja.
+#
+# PIENENNYS ON NEAREST, EI INTER_AREA. Peruskartta on 237 litteaa varia, ja
+# keskiarvoistava pienennys luo niiden valiin tuhansia sanvyja - juuri sen
+# rakenteen jonka varassa havioton pakkaus toimii. MITATTU (L4131F,
+# tekstirikas kaupunkitiili, havioton WebP):
+#
+#   maastokartta 1 m/px  6000x6000  237 varia  5637 kt   <- nykyinen
+#   NEAREST      2 m/px  3000x3000  236 varia  2037 kt   <- 2,77x pienempi
+#   INTER_AREA / haviollinen pakkaus tuottivat ISOMMAN tiedoston.
+#
+# Hinta on ohuissa korkeuskayrissa ja pikkusymboleissa; nimisto sailyy
+# luettavana. Detail-taso alkaa zoomilla -1,5, jossa selain pienentaa
+# nykyisenkin kuvan 2,8-kertaisesti - taydesta 1 m/px:sta on hyotya vasta
+# zoomilla > 0, joka on jo 1:10 000 -tuotteen oman tarkkuuden ulkopuolella.
+PERUSKARTTA_PIENENNYS = 2
 
 
 def parse_tile_key(tile_key):
@@ -345,9 +371,10 @@ def compute_tile(tile, buildings_path):
     # jarvista - ks. backend/vesisto.py. Kallio ja suo luetaan edelleen
     # rasterista, koska niille ei ole tassa vastaavaa ongelmaa.
     shoreline_mask = vesisto.rantaviiva_maski(tile.bounds, map_transform, map_shape)
-    # Merialue SAMALTA ruudukolta: maa/vesi-raja ei saa jaada korkeusmallin
-    # nodatan varaan (ks. maa_maski).
-    meri_mask = vesisto.meri_maski(tile.bounds, map_transform, map_shape)
+    # Vesialue SAMALTA ruudukolta: maa/vesi-raja ei saa jaada korkeusmallin
+    # nodatan varaan (ks. maa_maski). MERI JA JARVI, ks. vesisto.VESI_TASOT -
+    # sisavesi kasitellaan tasan samoin kuin meri.
+    meri_mask = vesisto.vesi_maski(tile.bounds, map_transform, map_shape)
 
     slope_score = resample_to_grid(v1["slope_score"], v1["transform"], map_transform, map_shape)
     dist_score = resample_to_grid(v1["dist_score"], v1["transform"], map_transform, map_shape)
@@ -474,6 +501,11 @@ REKISTERISTA_RIIPPUVAT = (
     "_global_tiebreak_sorted_v*.npy",
     "_factor_thresholds_v*.json", "_prime_thresholds_v*.json",
     "_shelter_thresholds_v*.json", "_shoreline_stats_v*.json",
+    # Rantaviivan pituus mitataan tiilien peittamalta alueelta, joten se
+    # muuttuu tiiliston mukana. Ilman tata rivia 48 tiilen aineisto sai
+    # 86 tiilen pituuden, ja puskurin leveydeksi tuli 4,2 m vaikka vyohyke
+    # on 5-15 m - luku oli mahdoton mutta mikaan ei kaatunut.
+    "_shoreline_length_v*.json",
     "_vaylat.json", "_suojelualueet.json", "_palvelut.json",
     # Naiden kuvien arvot on kvantisoitu globaalia jakaumaa vasten.
     # JOKERI SUFFIKSIN KOHDALLA: analyysikerroksella on nyt kolme
@@ -514,10 +546,21 @@ def varmista_rekisteri():
         # heittaminen pois maksaisi tunteja ilman syyta - kirjataan vain.
         print(f"  tiilisto kirjattu ({len(tiles.get_registry())} tiilta)", flush=True)
     else:
+        # DICT EIKA LISTA: kuviot menevat paallekkain. Esimerkiksi
+        # "_global_threshold_p93_v3.json" osuu seka kuvioon
+        # "_global_threshold_p*_v*.json" etta vanhojen nimien siivouskuvioon
+        # "_global_threshold_p[0-9]*.json", jolloin sama tiedosto yritettiin
+        # poistaa kahdesti ja toinen kerta kaatui FileNotFoundErroriin.
+        #
+        # SAMA VIKA KORJATTIIN JO mml_lataus.mitatoi():hin, mutta ei tanne -
+        # kaksi paikkaa tekee samaa tyota, ja korjaus osui vain toiseen.
+        loydetyt = {}
         for kuvio in REKISTERISTA_RIIPPUVAT:
-            poistetut += sorted(CACHE_DIR.glob(kuvio))
+            for polku in CACHE_DIR.glob(kuvio):
+                loydetyt[polku] = True
+        poistetut = sorted(loydetyt)
         for p in poistetut:
-            p.unlink()
+            p.unlink(missing_ok=True)
         print(f"  TIILISTO MUUTTUNUT: mitatoitiin {len(poistetut)} tiilistosta "
               f"riippuvaa valimuistia", flush=True)
     polku.write_text(json.dumps({"sormenjalki": nyt,
@@ -1249,7 +1292,13 @@ def get_or_compute_basemap(tile_id, level="detail", force=False):
     # ESITYSTA. Raja on oikea, mutta se tarkoittaa etta esityksen lahde
     # tarvitsee oman tunnisteensa.
     lahdemerkki = "_tk" if _taustakartta_lehti(tile, level) else ""
-    png_path = CACHE_DIR / f"{tile_id}_base{suffix}{lahdemerkki}.png"
+    # RESOLUUTIO ON OSA NIMEA samasta syysta kuin lahde: ilman sita vanhat
+    # 6000x6000 kuvat kelpaisivat edelleen eika muutos nakyisi mitenkaan.
+    # Tama on taman projektin toistuva vikaluokka - jokin paatettiin kerran
+    # eika merkitty vanhentuneeksi.
+    pienennys = PERUSKARTTA_PIENENNYS if level == "detail" else 1
+    tarkkuusmerkki = f"_r{pienennys}" if pienennys > 1 else ""
+    png_path = CACHE_DIR / f"{tile_id}_base{suffix}{lahdemerkki}{tarkkuusmerkki}.png"
 
     if not force and png_path.exists():
         return png_path.read_bytes()
@@ -1277,6 +1326,14 @@ def get_or_compute_basemap(tile_id, level="detail", force=False):
             str(tile.map_path), tile.bounds)
         map_bgr = downsample_image(map_bgr, LEVEL_FACTORS[level])
 
+    # Pienennys koskee VAIN detail-tasoa. Karkeat tasot tulevat
+    # taustakartasta omalla natiiviresoluutiollaan (4 ja 16 m/px), eika
+    # niita saa pienentaa uudestaan.
+    if pienennys > 1:
+        h, w = map_bgr.shape[:2]
+        map_bgr = cv2.resize(map_bgr, (w // pienennys, h // pienennys),
+                             interpolation=cv2.INTER_NEAREST)
+
     ok, encoded = cv2.imencode(".png", map_bgr)
     if not ok:
         raise RuntimeError("PNG-enkoodaus epaonnistui")
@@ -1301,30 +1358,68 @@ def get_tile_bounds(tile):
 # kartta nayttaa.
 SHORELINE_HIST_BINS = 25
 
-# Rantaviivan kokonaispituus metreina. **Tama on ARVIO, ei mitattu tarkka
-# arvo.** Puskurivyohykkeen PINTA-ALA tiedetaan tarkalleen (pikselilaskenta,
-# 1 px = 1 m2), mutta pituus ei: lahde on peruskartan RASTEROITU rantaviiva,
-# ei vektorigeometriaa, joten pituus riippuu seka maskin kohinasta etta
-# mittakaavasta (rantaviivaparadoksi - 1 m tarkkuudella saaristo tuottaa
-# aina pidemman luvun kuin 10 m tarkkuudella).
+# Rantaviivan kokonaispituus MITATAAN VEKTORIGEOMETRIASTA, ei arvata.
 #
-# Mitattu kolmella tavalla, joiden systemaattiset vinoumat osoittavat
-# vastakkaisiin suuntiin:
-#   - puskurin ala / mitattu leveys (10,2 m):   601 km  (ALIARVIO: kapeilla
-#     kannaksilla vastarantojen vyohykkeet sulautuvat, ala ei kasva pituuden
-#     mukana)
-#   - rantaviivamaskin aariviiva / 2:           899 km  (YLIARVIO: rasterin
-#     porrastus ja HSV-kynnyksen rosoinen reuna kasvattavat piiria)
-#   - Zhang-Suen-ohennus, ketjukoodipituus:    1405 km  (selva yliarvio:
-#     porrasaskeleet lasketaan taysmittaisina, ohennus tuottaa haaroja)
-# Kaksi ensimmaista rajaavat totuuden valiinsa -> ~700 km, haarukka 600-900.
+# Tassa oli aiemmin kovakoodattu SHORELINE_LENGTH_M = 700 000, joka oli
+# kalibroitu rannikolle kolmella rasteripohjaisella mittauksella (601 km /
+# 899 km / 1 405 km, joiden vinoumat osoittivat eri suuntiin). Vakio piti
+# summan 700 kilometrissa RIIPPUMATTA AINEISTOSTA: kun Paijanne laskettiin
+# omanaan, sekin sai 700 km, vaikka sen puskurivyohyke on 18,7 km2 ja
+# rannikon 196 km2 - kymmenkertainen ero. Yhdistetyssa aineistossa vakio
+# olisi vaara molemmille.
 #
-# HUOM kuvaajan tulkinnassa: jakauman MUOTO ja suhteelliset osuudet ovat
-# tarkkoja (suoria pikselilaskentoja), vain metriasteikon absoluuttinen taso
-# kantaa tata epavarmuutta.
-SHORELINE_LENGTH_M = 700_000
-SHORELINE_LENGTH_M_LOW = 600_000
-SHORELINE_LENGTH_M_HIGH = 900_000
+# Rasterin ongelmat - maskin kohina, porrastus ja ohennuksen haarat - eivat
+# koske vektoria lainkaan: pituus luetaan samasta Maastotietokannan
+# geometriasta josta vesialueetkin (ks. backend/vesisto.py).
+#
+# RANTAVIIVAPARADOKSI EI KATOA, mutta se muuttuu maariteltavaksi: tulos on
+# "pituus Maastotietokannan yleistystasolla", ei "pituus jollain
+# tuntemattomalla tarkkuudella". Se on toistettava luku eika arvio, joten
+# haarukkaa (_LOW/_HIGH) ei enaa ole.
+
+
+def compute_shoreline_length_m(force=False):
+    """Vesialueiden reunan pituus metreina tiilirekisterin peittamalla
+    alueella.
+
+    LEIKATAAN TIILIEN PEITTOON, ei tiili kerrallaan. Hydrografiahaku palauttaa
+    polygonit jotka ulottuvat tiilirajojen yli, joten tiileittain summaaminen
+    laskisi rajanylitykset moneen kertaan. Peitto muodostetaan kerran ja
+    jokainen reuna leikataan siihen.
+
+    Rykelmittain (tiles.tiilirykelmat) muistin takia: koko rannikon polygonit
+    kerralla olisi tarpeeton kuorma, ja rykelmat ovat erillisia joten
+    summaaminen niiden yli on tarkkaa."""
+    from shapely.geometry import box
+    from shapely.ops import unary_union
+
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_path = CACHE_DIR / f"_shoreline_length_v{LASKENTA_VERSIO}.json"
+    if not force and cache_path.exists():
+        return json.loads(cache_path.read_text())["length_m"]
+
+    registry = tiles.get_registry()
+    yhteensa = 0.0
+    for ryhma in tiles.tiilirykelmat(registry):
+        rajat = [registry[t].bounds for t in ryhma]
+        bbox = (min(b[0] for b in rajat), min(b[1] for b in rajat),
+                max(b[2] for b in rajat), max(b[3] for b in rajat))
+        geoms = vesisto._polygonit(bbox, vesisto.VESI_TASOT)
+        if not len(geoms):
+            continue
+        peitto = unary_union([box(*b) for b in rajat])
+        # Polygonit eivat mene paallekkain, joten reunoja ei tarvitse
+        # yhdistaa - summaus riittaa eika unary_union maksa.
+        osa = 0.0
+        for g in geoms:
+            if g is None or g.is_empty:
+                continue
+            osa += g.boundary.intersection(peitto).length
+        print(f"  rantaviiva: {len(ryhma)} tiilta -> {osa / 1000:.1f} km", flush=True)
+        yhteensa += osa
+
+    cache_path.write_text(json.dumps({"length_m": round(yhteensa, 1)}))
+    return round(yhteensa, 1)
 
 
 def compute_shoreline_stats(buildings_path, force=False):
@@ -1384,7 +1479,8 @@ def compute_shoreline_stats(buildings_path, force=False):
                 (score + TIEBREAK_EPSILON * (tiebreak_b / 255.0))[::step].astype(np.float32)
             )
 
-    metres_per_px = SHORELINE_LENGTH_M / total_px if total_px else 0.0
+    pituus_m = compute_shoreline_length_m(force=force)
+    metres_per_px = pituus_m / total_px if total_px else 0.0
 
     histograms = {}
     prime_histograms = {}
@@ -1402,9 +1498,7 @@ def compute_shoreline_stats(buildings_path, force=False):
         "top_markers": top_markers,
         "buffer_px": total_px,
         "buffer_km2": round(total_px / 1e6, 3),
-        "length_m": SHORELINE_LENGTH_M,
-        "length_m_low": SHORELINE_LENGTH_M_LOW,
-        "length_m_high": SHORELINE_LENGTH_M_HIGH,
+        "length_m": pituus_m,
     }
     cache_path.write_text(json.dumps(stats))
     return stats
@@ -1825,6 +1919,55 @@ def _sea_mosaic_geometry(bounds_lista=None):
 
 
 
+def _konteksti(ydin, kaikki, registry):
+    """Ytimen lisaksi kaikki tiilet alle MAX_FETCH_M paassa siita.
+
+    KONTEKSTI HAETAAN KOKO REKISTERISTA, ei ytimen rykelmasta. Rykelmat
+    erottaa toisistaan yksi tyhja ruutu eli 6 km, mutta pyyhkaisysade yltaa
+    15 km - naapurirykelman maa siis vaikuttaa ja on oltava mukana. Rajaus
+    rykelman sisaan tuottaisi liian pitkia sateita rykelmien valissa, eika
+    mikaan kaatuisi."""
+    yb = [registry[t].bounds for t in ydin]
+    kx0 = min(b[0] for b in yb) - MAX_FETCH_M
+    kx1 = max(b[2] for b in yb) + MAX_FETCH_M
+    ky0 = min(b[1] for b in yb) - MAX_FETCH_M
+    ky1 = max(b[3] for b in yb) + MAX_FETCH_M
+    return [t for t, b in kaikki
+            if b.bounds[2] > kx0 and b.bounds[0] < kx1
+            and b.bounds[3] > ky0 and b.bounds[1] < ky1]
+
+
+def _jaa_kaistoihin(ryhma, registry):
+    """Yksi rykelma yhdeksi tai useammaksi ytimeksi muistin mukaan.
+
+    Jaetaan ita-lansi-suunnassa: yhtenainen rykelma on Suomen rannikolla
+    pitka ja kapea, joten yksi jakosuunta riittaa sen sisalla."""
+    rajat = [registry[t].bounds for t in ryhma]
+    _o, (h, w) = _sea_mosaic_geometry(rajat)
+    if h * w <= MAX_MOSAIC_CELLS or len(ryhma) < 2:
+        return [list(ryhma)]
+
+    ryhma = sorted(ryhma, key=lambda t: registry[t].bounds[0])
+    leveys = max(b[2] for b in rajat) - min(b[0] for b in rajat)
+    korkeus = max(b[3] for b in rajat) - min(b[1] for b in rajat)
+    # Kuinka leveaan kaistaan mahtuu MAX_MOSAIC_CELLS kun korkeus on annettu
+    kaista_m = MAX_MOSAIC_CELLS * FETCH_GRID_M ** 2 / max(korkeus + 2 * MOSAIC_PAD_M, 1.0)
+    kaista_m = max(kaista_m - 2 * MOSAIC_PAD_M, 6000.0)
+    n = max(int(np.ceil(leveys / kaista_m)), 1)
+
+    x0 = min(b[0] for b in rajat)
+    ulos = []
+    for i in range(n):
+        raja0 = x0 + i * leveys / n
+        raja1 = x0 + (i + 1) * leveys / n
+        ydin = [t for t in ryhma
+                if raja0 <= registry[t].bounds[0] < raja1
+                or (i == n - 1 and registry[t].bounds[0] >= raja1)]
+        if ydin:
+            ulos.append(ydin)
+    return ulos
+
+
 def _laskenta_alueet():
     """Jakaa tiilet alueisiin joiden mosaiikki mahtuu muistiin.
 
@@ -1832,42 +1975,32 @@ def _laskenta_alueet():
     ruudut lasketaan tassa alueessa; konteksti sisaltaa lisaksi kaikki alle
     MAX_FETCH_M paassa olevat tiilet, jotta reunan sateet nakevat oikean maan.
 
-    Yhdella alueella (tavallinen tapaus) palautetaan koko tiilijoukko, jolloin
-    kaytos on tasan sama kuin ennen alueellistamista."""
+    JAKO ON RYKELMITTAIN, ei suoraan ita-lansi-kaistoihin. Kaistajako oletti
+    etta aineisto on yhtenainen ja kapea ("Suomen rannikko"), ja sisamaa
+    rikkoi oletuksen: Paijanne on 54 km rannikosta pohjoiseen, joten yksi
+    kaista venyi 204 km korkeaksi ja oli enimmakseen tyhjaa maata niiden
+    valissa.
+
+    MITATTU yhdistetylla aineistolla (493 + 48 tiilta):
+
+        kaistajako   4 aluetta, suurin 306 M solua, YHTEENSA 842 M
+        rykelmajako  3 aluetta, suurin 293 M solua, YHTEENSA 584 M
+
+    HUIPPUMUISTI EI JUURI MUUTU (1,23 -> 1,17 Gt): rannikko on yhtenainen
+    rykelma ja yha niin iso etta se jakautuu kahteen kaistaan. Hyoty on
+    kokonaistyossa, -31 %, ja siina etta Paijanne lasketaan omanaan
+    51 M solussa sen sijaan etta se roikkuisi 204 km korkeassa kaistassa.
+
+    Yhdella yhtenaisella alueella tulos on tasan sama kuin ennen."""
     registry = tiles.get_registry()
     kaikki = list(registry.items())
-    _o, (h, w) = _sea_mosaic_geometry()
-    if h * w <= MAX_MOSAIC_CELLS or len(kaikki) < 2:
+    if len(kaikki) < 2:
         return [([t for t, _ in kaikki], [t for t, _ in kaikki])]
 
-    # Jaetaan ita-lansi-suunnassa: Suomen rannikko on pitka ja kapea, joten
-    # yksi jakosuunta riittaa eika ruudukkoa tarvita.
-    kaikki.sort(key=lambda kv: kv[1].bounds[0])
-    leveys = max(b.bounds[2] for _, b in kaikki) - min(b.bounds[0] for _, b in kaikki)
-    korkeus = max(b.bounds[3] for _, b in kaikki) - min(b.bounds[1] for _, b in kaikki)
-    # Kuinka leveaan kaistaan mahtuu MAX_MOSAIC_CELLS kun korkeus on annettu
-    kaista_m = MAX_MOSAIC_CELLS * FETCH_GRID_M ** 2 / max(korkeus + 2 * MOSAIC_PAD_M, 1.0)
-    kaista_m = max(kaista_m - 2 * MOSAIC_PAD_M, 6000.0)
-    n = max(int(np.ceil(leveys / kaista_m)), 1)
-
-    x0 = min(b.bounds[0] for _, b in kaikki)
     alueet = []
-    for i in range(n):
-        raja0 = x0 + i * leveys / n
-        raja1 = x0 + (i + 1) * leveys / n
-        ydin = [t for t, b in kaikki if raja0 <= b.bounds[0] < raja1 or
-                (i == n - 1 and b.bounds[0] >= raja1)]
-        if not ydin:
-            continue
-        yb = [registry[t].bounds for t in ydin]
-        kx0 = min(b[0] for b in yb) - MAX_FETCH_M
-        kx1 = max(b[2] for b in yb) + MAX_FETCH_M
-        ky0 = min(b[1] for b in yb) - MAX_FETCH_M
-        ky1 = max(b[3] for b in yb) + MAX_FETCH_M
-        konteksti = [t for t, b in kaikki
-                     if b.bounds[2] > kx0 and b.bounds[0] < kx1
-                     and b.bounds[3] > ky0 and b.bounds[1] < ky1]
-        alueet.append((ydin, konteksti))
+    for ryhma in tiles.tiilirykelmat(registry):
+        for ydin in _jaa_kaistoihin(ryhma, registry):
+            alueet.append((ydin, _konteksti(ydin, kaikki, registry)))
     return alueet
 
 
@@ -1884,7 +2017,7 @@ def _alueen_mosaiikit(tile_ids, buildings_path):
         n = int(round((tile.bounds[2] - tile.bounds[0]) / FETCH_GRID_M))
         m = int(round((tile.bounds[3] - tile.bounds[1]) / FETCH_GRID_M))
         tr = from_origin(tile.bounds[0], tile.bounds[3], FETCH_GRID_M, FETCH_GRID_M)
-        small = vesisto.meri_maski(tile.bounds, tr, (m, n))
+        small = vesisto.vesi_maski(tile.bounds, tr, (m, n))
         col = int(round((tile.bounds[0] - ox) / FETCH_GRID_M))
         row = int(round((oy - tile.bounds[3]) / FETCH_GRID_M))
         sea[row:row + small.shape[0], col:col + small.shape[1]] = small
@@ -1930,7 +2063,7 @@ def get_or_compute_sea_mosaic(force=False):
         # alinaytteistysta eika enemmistosaantoa, joten kapeat salmet
         # sailyvat sellaisina kuin ne aineistossa ovat.
         tr = from_origin(tile.bounds[0], tile.bounds[3], FETCH_GRID_M, FETCH_GRID_M)
-        small = vesisto.meri_maski(tile.bounds, tr, (m, n))
+        small = vesisto.vesi_maski(tile.bounds, tr, (m, n))
 
         col = int(round((tile.bounds[0] - ox) / FETCH_GRID_M))
         row = int(round((oy - tile.bounds[3]) / FETCH_GRID_M))
@@ -2976,7 +3109,7 @@ def _tile_water_mask(tile):
     aineisto on, mika on edellytys rannikon mittaiselle alueelle."""
     n = int(round((tile.bounds[2] - tile.bounds[0]) / WATER_GRID_M))
     tr = from_origin(tile.bounds[0], tile.bounds[3], WATER_GRID_M, WATER_GRID_M)
-    return vesisto.meri_maski(tile.bounds, tr, (n, n)), n
+    return vesisto.vesi_maski(tile.bounds, tr, (n, n)), n
 
 
 def _tile_water_gids(tile):

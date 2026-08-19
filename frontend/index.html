@@ -88,6 +88,29 @@
   .wind-row input[type="range"] { width: 100%; vertical-align: middle; }
   .wind-source label { display: block; font-weight: normal; cursor: pointer; margin: 1px 0; }
   #forecast-row.hidden { display: none; }
+  /* Paikannuspainike. Leafletin .leaflet-bar antaa reunat ja varjon, joten
+     tama maarittelee vain sisallon - painike nayttaa silloin samalta kuin
+     zoom-napit eika irrallisen lisatyn olen. */
+  .paikannus .paikannus-nappi {
+    display: flex; align-items: center; justify-content: center;
+    width: 30px; height: 30px; color: var(--color-text);
+  }
+  .paikannus .paikannus-nappi.hakee { color: var(--color-neutral-700); }
+  .paikannus .paikannus-nappi.hakee svg { animation: paikannus-pyorii 1.1s linear infinite; }
+  @keyframes paikannus-pyorii { to { transform: rotate(360deg); } }
+  /* Viesti irrotetaan .leaflet-bar:n reunuksesta omaksi laatikokseen: se on
+     leveampi kuin painike eika saa venyttaa sita. */
+  .paikannus .paikannus-viesti {
+    position: absolute; top: 34px; right: 0; width: max-content; max-width: 240px;
+    padding: var(--space-2) var(--space-3); border-radius: 4px;
+    background: var(--color-surface); color: var(--color-text);
+    border: 1px solid var(--color-neutral-300);
+    font-size: 13px; line-height: 1.35; white-space: normal;
+  }
+  .paikannus .paikannus-viesti.virhe { border-color: var(--color-accent); }
+  @media (prefers-reduced-motion: reduce) {
+    .paikannus .paikannus-nappi.hakee svg { animation: none; opacity: 0.5; }
+  }
   /* Melottavuusnakyman tietopallo: klikkaamalla karttaa saa esiin
      paikkakohtaiset olosuhteet, klikkaamalla palloa se menee piiloon. */
   .paddle-bubble { width: 124px; height: 124px; position: relative; cursor: pointer; }
@@ -354,6 +377,170 @@ const map = L.map('map', { crs: L.CRS.Simple, zoomSnap: 0.25, minZoom: -10, maxZ
 // imperial: false - aineisto on metrista eika jalkoja kannata tarjota.
 L.control.scale({ position: 'bottomleft', imperial: false, maxWidth: 180 }).addTo(map);
 
+// --- WGS84 -> EPSG:3067 (ETRS-TM35FIN) ---
+//
+// Selain saa paikannuksesta WGS84-asteita, mutta kartta on L.CRS.Simple
+// jossa yksikko on EPSG:3067-metri. Muunnos kirjoitetaan itse: proj4js
+// olisi satoja kilotavuja riippuvuutta yhta kaavaa varten, ja sivun
+// riippumattomuus ulkoisista kirjastoista on tassa projektissa tietoinen
+// valinta (ks. wind_grid.json:n kommentti build_static.py:ssa).
+//
+// Krugerin sarjakehitelma, GRS80. Tarkkuus on millimetriluokkaa koko
+// Suomen alueella - kertaluokkia parempi kuin paikannuksen oma tarkkuus,
+// joka on parhaimmillaankin muutamia metreja.
+const TM35_A = 6378137.0;              // GRS80 isoakselin puolikas
+const TM35_F = 1 / 298.257222101;      // GRS80 litistyneisyys
+const TM35_K0 = 0.9996;                // mittakaavakerroin keskimeridiaanilla
+const TM35_LON0 = 27 * Math.PI / 180;  // keskimeridiaani
+const TM35_FE = 500000.0;              // itaan siirto
+
+const _n = TM35_F / (2 - TM35_F);
+const _A = TM35_A / (1 + _n) * (1 + _n * _n / 4 + _n ** 4 / 64);
+// Sarjan kertoimet a1..a3; a4 jaa pois koska sen osuus on alle millimetrin.
+const _a = [
+  _n / 2 - 2 * _n ** 2 / 3 + 5 * _n ** 3 / 16,
+  13 * _n ** 2 / 48 - 3 * _n ** 3 / 5,
+  61 * _n ** 3 / 240,
+];
+const _e = Math.sqrt(TM35_F * (2 - TM35_F));
+
+function wgs84To3067(lat, lon) {
+  const phi = lat * Math.PI / 180;
+  const dLam = lon * Math.PI / 180 - TM35_LON0;
+  const sinPhi = Math.sin(phi);
+  // Konformi leveysaste isometrisen kautta.
+  const t = Math.sinh(Math.atanh(sinPhi) - _e * Math.atanh(_e * sinPhi));
+  const xi = Math.atan2(t, Math.cos(dLam));
+  // NIMITTAJA ON hypot(t, cos dLam) EIKA sqrt(1+t^2). Ne ovat samat vain
+  // keskimeridiaanilla, joten vaara muoto nayttaa oikealta lahella 27
+  // astetta ja ajautuu sivuun sita kauempana - mitattuna 912 m
+  // Ahvenanmaalla (lon 19,4).
+  const eta = Math.asinh(Math.sin(dLam) / Math.hypot(t, Math.cos(dLam)));
+  let x = eta, y = xi;
+  for (let j = 1; j <= 3; j++) {
+    x += _a[j - 1] * Math.cos(2 * j * xi) * Math.sinh(2 * j * eta);
+    y += _a[j - 1] * Math.sin(2 * j * xi) * Math.cosh(2 * j * eta);
+  }
+  return { x: TM35_FE + TM35_K0 * _A * x, y: TM35_K0 * _A * y };
+}
+
+// --- PAIKANNUS ---
+//
+// Selain kysyy luvan VASTA painikkeesta, ei sivun latautuessa. Lupakysely
+// avautumassa olevan kartan paalle olisi hyokkaava, ja useimmat vastaisivat
+// siihen kieltavasti - jolloin ominaisuus olisi poissa kaytosta pysyvasti.
+//
+// SIJAINTI EI POISTU SELAIMESTA. Sita ei kirjata, tallenneta eika laheteta
+// millekaan rajapinnalle; se kaytetaan vain kartan keskittamiseen.
+const paikannusRyhma = L.layerGroup().addTo(map);
+
+// Suurennustaso jossa yksi senttimetri naytolla on noin 100 metria
+// maastossa (1:10 000).
+//
+// MITATAAN, EI KIRJOITETA VAKIONA. Selain kertoo itse montako CSS-pikselia
+// senttimetrissa on, ja mitattu luku kertoo tarkoituksensa toisin kuin
+// taikanumero 37,8. L.CRS.Simple:lla resoluutio zoomilla z on 2^-z m/px.
+//
+// Kartan zoomSnap on 0,25, joten tulos pyoristyy: laskettu -1,404 pain
+// -1,5:ksi, jolloin senttimetri on 107 m eika 100 m. 7 %:n ero on pienempi
+// kuin laitteiden todellinen pikselitiheyden vaihtelu, joten tarkempaan ei
+// ole syyta pyrkia - "1 cm naytolla" on joka tapauksessa likiarvo.
+function zoomSadalleMetrille() {
+  const koetin = document.createElement('div');
+  koetin.style.cssText = 'width:1cm;position:absolute;visibility:hidden;pointer-events:none';
+  document.body.appendChild(koetin);
+  const pxPerCm = koetin.getBoundingClientRect().width;
+  koetin.remove();
+  if (!(pxPerCm > 0)) return -1.5;          // varapolku jos mittaus ei onnistu
+  return -Math.log2(100 / pxPerCm);
+}
+
+// Osuuko piste yhteenkaan tiileen. Sama rajaustesti kuin muualla
+// (ks. waterConditionsAt): L.CRS.Simple, joten lat=y ja lng=x.
+function aineistossa(x, y) {
+  return tileListCache.some((t) => {
+    const b = t.bounds_epsg3067;
+    return x >= b.minx && x < b.maxx && y >= b.miny && y < b.maxy;
+  });
+}
+
+const PaikannusKontrolli = L.Control.extend({
+  onAdd() {
+    const juuri = L.DomUtil.create('div', 'leaflet-bar leaflet-control paikannus');
+    juuri.innerHTML =
+      '<a href="#" class="paikannus-nappi" title="Näytä sijaintini" role="button">' +
+      '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">' +
+      '<circle cx="12" cy="12" r="6" fill="none" stroke="currentColor" stroke-width="2"/>' +
+      '<circle cx="12" cy="12" r="1.6" fill="currentColor"/>' +
+      '<path d="M12 1v3M12 20v3M1 12h3M20 12h3" stroke="currentColor" stroke-width="2"/>' +
+      '</svg></a><div class="paikannus-viesti" hidden></div>';
+    const nappi = juuri.querySelector('.paikannus-nappi');
+    const viesti = juuri.querySelector('.paikannus-viesti');
+    L.DomEvent.disableClickPropagation(juuri).disableScrollPropagation(juuri);
+
+    let ajastin = null;
+    const kerro = (teksti, virhe) => {
+      viesti.textContent = teksti;
+      viesti.hidden = !teksti;
+      viesti.classList.toggle('virhe', !!virhe);
+      clearTimeout(ajastin);
+      if (teksti) ajastin = setTimeout(() => { viesti.hidden = true; }, 6000);
+    };
+
+    L.DomEvent.on(nappi, 'click', (e) => {
+      L.DomEvent.preventDefault(e);
+      if (!navigator.geolocation) {
+        kerro('Selain ei tue paikannusta.', true);
+        return;
+      }
+      // Turvallinen konteksti on EHTO, ei suositus: selain ei anna sijaintia
+      // http-yhteydella (localhost on poikkeus). Ilman tata viestia painike
+      // vain epaonnistuisi selittamatta miksi.
+      if (!window.isSecureContext) {
+        kerro('Paikannus vaatii https-yhteyden.', true);
+        return;
+      }
+      nappi.classList.add('hakee');
+      kerro('');
+      navigator.geolocation.getCurrentPosition((sijainti) => {
+        nappi.classList.remove('hakee');
+        const { latitude, longitude, accuracy } = sijainti.coords;
+        const { x, y } = wgs84To3067(latitude, longitude);
+        paikannusRyhma.clearLayers();
+        // TARKKUUSYMPYRA ON OSA VASTAUSTA, ei koriste. Kahden kilometrin
+        // tarkkuus ei kerro rannasta mitaan, ja pelkka piste vaittaisi
+        // enemman kuin tiedetaan. Sade on metreja ja karttayksikko on
+        // metri, joten se piirtyy sellaisenaan.
+        if (accuracy > 0) {
+          L.circle([y, x], { radius: accuracy, color: '#1d6fd0', weight: 1,
+                             fillColor: '#1d6fd0', fillOpacity: 0.12 })
+            .addTo(paikannusRyhma);
+        }
+        L.circleMarker([y, x], { radius: 6, color: '#ffffff', weight: 2,
+                                 fillColor: '#1d6fd0', fillOpacity: 1 })
+          .addTo(paikannusRyhma);
+        map.setView([y, x], zoomSadalleMetrille());
+        // AINEISTON ULKOPUOLELLA ON KERROTTAVA. Muuten kartta siirtyisi
+        // tyhjaan kohtaan eika kayttaja tietaisi onko vika sijainnissa,
+        // yhteydessa vai siina ettei aluetta ole laskettu.
+        kerro(aineistossa(x, y) ? '' : 'Sijainti on aineiston ulkopuolella.', true);
+      }, (virhe) => {
+        nappi.classList.remove('hakee');
+        // Jokaiselle syylle oma viesti: kayttaja ei voi korjata evattya
+        // lupaa odottamalla eika aikakatkaisua asetuksista.
+        const syyt = {
+          1: 'Paikannuslupa evätty. Salli sijainti selaimen asetuksista.',
+          2: 'Sijaintia ei saatu laitteelta.',
+          3: 'Paikannus kesti liian kauan.',
+        };
+        kerro(syyt[virhe.code] || 'Paikannus epäonnistui.', true);
+      }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 });
+    });
+    return juuri;
+  },
+});
+map.addControl(new PaikannusKontrolli({ position: 'topright' }));
+
 const baseLayerGroup = L.layerGroup().addTo(map);
 
 // Kaksi VANHAN toteutuksen kerrosryhmaa (esilasketut kuvat, ks. alla) ja
@@ -559,7 +746,18 @@ function paddleDifficulty(fetchM, windSpeed, gustSpeed, obstacleH, metWaveM) {
 }
 
 // Tuulen tila. Lahde on 'kasin', 'fmi' tai 'met'.
-let currentWind = { direction: 180, speed: 7.5, gust: 7.5 * 1.75, source: 'kasin' };
+//
+// OLETUS ON ILMATIETEEN LAITOS, ei kasin asetettu tuuli. Aallokkokerroksen
+// pitaa nayttaa VALLITSEVA tilanne heti, ei kuviteltua 7,5 m/s etelatuulta:
+// kayttaja katsoo karttaa paattaakseen lahteeko tanaan, ja kasin asetettu
+// oletus vastaisi siihen kysymykseen sattumanvaraisesti.
+//
+// Alla olevat luvut jaavat VARAPOLUKSI. Jos rajapinta ei vastaa tai
+// verkkoyhteytta ei ole, kaynnistys palaa naihin arvoihin ja lahteeksi
+// vaihtuu 'kasin' (ks. kaynnistys: loadForecasts-kutsun catch). Kartta siis
+// avautuu aina, mutta silloin se kertoo avoimesti nayttavansa kasin
+// asetettua tuulta.
+let currentWind = { direction: 180, speed: 7.5, gust: 7.5 * 1.75, source: 'fmi' };
 
 // --- SAAENNUSTE HILANA ---
 //
@@ -1080,8 +1278,8 @@ legend.onAdd = function () {
       '<div class="wind-row" id="wind-row">' +
         '<span class="radio-row-label">Lähde</span>' +
         '<div class="wind-source">' +
-          '<label><input type="radio" name="wind-source" value="kasin" checked> Käsin</label>' +
-          '<label><input type="radio" name="wind-source" value="fmi"> Ilmatieteen laitos</label>' +
+          '<label><input type="radio" name="wind-source" value="kasin"> Käsin</label>' +
+          '<label><input type="radio" name="wind-source" value="fmi" checked> Ilmatieteen laitos</label>' +
         '</div>' +
         '<div id="forecast-row" class="hidden">' +
           '<label for="forecast-hour">Aika: <span id="forecast-time"></span></label>' +
@@ -1754,7 +1952,7 @@ let tileListCache = [];
 // 3,5x3,5m-resoluutiota riippumatta zoomista (ks. renderFactorTile).
 const LEVELS = [
   { name: 'overview', suffix: '_overview', maxZoom: -3 },
-  { name: 'mid', suffix: '_mid', maxZoom: -1.5 },
+  { name: 'mid', suffix: '_mid', maxZoom: -2.5 },
   // DETAIL ALKAA HETI MID:N JALKEEN, eika puolivalisaannon mukaisesti
   // vasta -0,5:sta. Muut kynnykset erottavat SAMAA tuotetta eri
   // resoluutioilla, mutta tama erottaa ERI TUOTTEET: taustakartta on
@@ -1762,17 +1960,37 @@ const LEVELS = [
   // symbolit. Kayttaja katsoo sisaltoa eika pikselitiheytta, joten
   // puolivalisaanto optimoi vaaraa suuretta.
   //
-  // _near-tasoa (taustakartta 2 m/px) EI ENAA KAYTETA. Se on jatetty
-  // taulukkoon pois, ei nollattuna kynnyksena, jottei jaisi kuollutta
-  // konfiguraatiota. Kuvat syntyvat yha buildissa (173 Mt) - jos taso ei
-  // palaa kayttoon, niiden tuottamisen voi lopettaa erikseen.
+  // _near-taso on POISTETTU kokonaan, myos buildista (ks.
+  // pipeline.LEVEL_FACTORS). Se ehti elaa jonkin aikaa kuolleena
+  // tuotteena: taulukosta poistettuna mutta yha tuotettuna, 181 Mt
+  // kuvia joita mikaan ei ladannut.
   //
-  // TAHAN RAJA PYSAHTYY. Peruskartta on 1 m/px, joten -1,5:lla se
-  // pienennetaan jo 2,8-kertaisesti; -2:lla pienennys olisi 4x ja teksti
-  // muuttuisi puuroksi. Se on tasan se "pieneksi puristettu peruskartta"
-  // jota vastaan taustakarttatasot alun perin tehtiin.
+  // RAJA ON -2,5, ja sita on siirretty kolmesti. Aiempi kommentti vaitti
+  // etta -1,5 on viimeinen mahdollinen ("-2:lla teksti muuttuisi puuroksi").
+  // VAITE OLI VAARA, ja se testattiin renderoimalla sama kohta kolmella
+  // zoomilla: -2:lla peruskartan nimisto, korkeuskayrat ja rakennukset ovat
+  // yha taysin luettavia, ja -2,5:lla paanimet erottuvat selvasti. Samassa
+  // kohdassa taustakartta on lahes tyhja - juuri siksi peruskarttaa
+  // pyydettiin aikaisemmaksi kolme kertaa perakkain.
   //
-  // Hinta mitattu: nakymassa siirtyy 3,5 Mt aiemman 0,7 Mt sijaan.
+  // Vaite ei ollut vain liian varovainen vaan myos vanhentunut: peruskartta
+  // tallennetaan nyt 2 m/px:na (pipeline.PERUSKARTTA_PIENENNYS), joten
+  // "1 m/px" jonka varaan paattely rakentui ei enaa pida paikkaansa.
+  //
+  // HINTA MITATTU nakymassa 1532x784 (ka 0,95 Mt/tiili):
+  //
+  //   zoom   m/px   tiilia   peruskartta   taustakartta
+  //   -1,5    2,8      2,4       2,2 Mt         0,4 Mt
+  //   -2,0    4,0      3,1       2,9 Mt         0,5 Mt
+  //   -2,5    5,7      4,3       4,0 Mt         0,7 Mt
+  //   -3,0    8,0      6,2       5,9 Mt         1,1 Mt
+  //
+  // -2,5 valittiin koska 4,0 Mt on kaytannossa sama kuin 3,5 Mt joka oli jo
+  // hyvaksytty. -3 poistaisi mid-tason kokonaan (overview alkaa siita), eli
+  // se on seuraava ASKEL eika saato.
+  //
+  // ANALYYSI_TASOT (rivi ~1836) on ERI TAULUKKO eika muutu tassa: se koskee
+  // osatekijakuvia, ei karttapohjaa.
   { name: 'detail', suffix: '', maxZoom: Infinity },
 ];
 
@@ -2271,6 +2489,13 @@ async function renderFactorTile(tileId, displayMode, thicknessPx, topPercent, ma
   const fetchData = useShelter ? await loadFetchLevels(tileId) : null;
   const fetchLevels = fetchData ? fetchData.levels : null;
   const obstacleLevels = fetchData ? fetchData.obstacles : null;
+  // FETCH-RUUDUKKO EI OLE SAMA KUIN NAYTON RUUDUKKO. Pyyhkaisymatkat
+  // lasketaan omaan resoluutioonsa eivatka ne seuraa naytettavaa tasoa
+  // (detail 3000, mid 750, overview 188). Skaalauskertoimet nostetaan
+  // silmukan ulkopuolelle, koska silmukka kay pahimmillaan 9 M pikselia.
+  const fw = fetchData ? fetchData.width : 0;
+  const fh = fetchData ? fetchData.height : 0;
+  const fxScale = fw / w, fyScale = fh / h;
 
   const sg = useShelter ? subgridIndex(w, h) : null;
   let px = -1, py = 0;
@@ -2283,11 +2508,19 @@ async function renderFactorTile(tileId, displayMode, thicknessPx, topPercent, ma
       const tuuli = ruudut[sg.row[py] * WIND_SUBGRID + sg.col[px]];
       windSpeed = tuuli.speed;
       const wf = tuuli.wf;
-      const a = FETCH_LEVEL_METRES[fetchLevels[i * FETCH_SECTORS + wf.lo]];
-      const b = FETCH_LEVEL_METRES[fetchLevels[i * FETCH_SECTORS + wf.hi]];
+      // Ilman tata muunnosta indeksi i osoittaisi fetch-kuvan alkuun ja
+      // karkeat tasot lukisivat koko tiilen suojaisuuden sen ylareunasta.
+      // Vika ei nakynyt oletusnakymassa, koska suojaisuus on valinnainen
+      // tekija (NO_SHELTER_MASK) - se on juuri taman projektin toistuva
+      // vikaluokka: vaara tulos ilman virheilmoitusta.
+      const fx = Math.min(fw - 1, (px * fxScale) | 0);
+      const fy = Math.min(fh - 1, (py * fyScale) | 0);
+      const fi = fy * fw + fx;
+      const a = FETCH_LEVEL_METRES[fetchLevels[fi * FETCH_SECTORS + wf.lo]];
+      const b = FETCH_LEVEL_METRES[fetchLevels[fi * FETCH_SECTORS + wf.hi]];
       fetchM = a + (b - a) * wf.frac;
-      const oa2 = dequantiseObstacle(obstacleLevels[i * FETCH_SECTORS + wf.lo]);
-      const ob2 = dequantiseObstacle(obstacleLevels[i * FETCH_SECTORS + wf.hi]);
+      const oa2 = dequantiseObstacle(obstacleLevels[fi * FETCH_SECTORS + wf.lo]);
+      const ob2 = dequantiseObstacle(obstacleLevels[fi * FETCH_SECTORS + wf.hi]);
       obstacleH = oa2 + (ob2 - oa2) * wf.frac;
     }
     const score = scoreFromComponents(data[i * 4], data[i * 4 + 1], bits & 1, bits & 2, mask,
@@ -2889,11 +3122,23 @@ async function ensureVectorLayer(avain) {
   if (vectorData[avain]) return vectorData[avain];
   if (!vectorLoading[avain]) {
     const [url, piirra] = VECTOR_SOURCES[avain];
-    vectorLoading[avain] = fetch(url).then((r) => r.json()).then((d) => {
+    // TASO VOI PUUTTUA BUILDISTA. Vektoritasot tulevat kolmesta ulkoisesta
+    // palvelusta, ja niiden katko ei enaa kaada buildia (ks.
+    // build_static.py) - silloin json-tiedostoa ei ole. Lataus nollataan,
+    // jotta uusi yritys on mahdollinen, ja virhe kaataa VAIN taman tason,
+    // samoin kuin levalla yllä.
+    vectorLoading[avain] = fetch(url).then((r) => {
+      if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
+      return r.json();
+    }).then((d) => {
       vectorData[avain] = d;
       piirra(d);
       vectorAttribution(d);
       return d;
+    }).catch((e) => {
+      vectorLoading[avain] = null;
+      console.warn(`Vektoritaso "${avain}" ei ole saatavilla:`, e.message);
+      throw e;
     });
   }
   return vectorLoading[avain];
@@ -3039,7 +3284,7 @@ async function init() {
       currentWind = {
         direction: saved.wind.direction, speed: saved.wind.speed,
         gust: isFinite(saved.wind.gust) ? saved.wind.gust : saved.wind.speed * DEFAULT_GUST_FACTOR,
-        source: ['kasin', 'fmi', 'met'].includes(saved.wind.source) ? saved.wind.source : 'kasin',
+        source: ['kasin', 'fmi', 'met'].includes(saved.wind.source) ? saved.wind.source : 'fmi',
       };
     }
     if (isFinite(saved.hour)) forecastHour = saved.hour;

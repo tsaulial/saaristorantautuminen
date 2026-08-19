@@ -108,7 +108,7 @@ Etene kehityksessä seuraavassa järjestyksessä:
    * Palvelin (`uvicorn backend.api:app`) tarjoilee sekä API:n että staattisen frontendin samasta originesta (`app.mount("/", StaticFiles(...))`), joten CORS ei ole ongelma.
    * Testattu headless Chromella (`--headless --screenshot`): kaikki 11 tiiliä muodostavat saumattoman kartan, pistemääräkerros näkyy oikein rantaviivan puskurivyöhykkeellä.
    * "Parhaat rantautumispaikat (top 7%)" -kerros (`/api/overlay/{id}/top.png`, magenta) on oma togglettava `L.layerGroup`, **ladataan laiskasti** (vasta kun käyttäjä ruksii sen näkyviin `overlayadd`-tapahtumalla) — koska ensimmäinen pyyntö laskee globaalin kynnysarvon kaikista tiilistä ja on siksi hidas (~20s kylmänä).
-   * **Moniresoluutioinen nelitasoinen kuvasto** (`detail`/`near`/`mid`/`overview`, ks. `backend/pipeline.py: LEVEL_FACTORS`, kertoimet 1/2/4/16) lisättiin ratkaisemaan hidas alkulataus: peruskartan täysi 1m/px-tarkkuus (`detail`, ~103 MB/11 tiiltä) ladattiin aina kokonaan riippumatta zoomaustasosta. `near` (2m/px, ~41 MB), `mid` (4m/px, ~15 MB) ja `overview` (16m/px, ~1.6 MB) ovat kevyita lohkokeskiarvo-downsamplauksia (`cv2.INTER_AREA`) samoista kuvista, tiedostoina `{tile}_near.png`/`{tile}_mid.png`/`{tile}_overview.png` (vastaavasti basemap/top). Frontend valitsee tason `zoomend`-tapahtumalla (`L.CRS.Simple`: resoluutio zoomilla z on 2^-z m/px; kynnykset puolivälissä perättäisten tasojen natiiviresoluutiota vastaavien zoomien välissä — overview z=-4, mid z=-2, near z=-1, detail z=0) ja lataa **vain näkymässä olevien** tiilien kuvat kyseisellä tasolla (`moveend`, bbox-leikkaus `bounds_epsg3067`:aa vasten) — ei kaikkia 11:tä tiiltä kerralla, paitsi silloin kun ne kaikki sattuvat olemaan näkymässä.
+   * **Moniresoluutioinen kuvasto** (`detail`/`mid`/`overview`, ks. `backend/pipeline.py: LEVEL_FACTORS`, kertoimet 1/4/16; `near`-taso poistettu — ks. "Dataintensiteetin vähentäminen") lisättiin ratkaisemaan hidas alkulataus: peruskartan täysi 1m/px-tarkkuus (`detail`, ~103 MB/11 tiiltä) ladattiin aina kokonaan riippumatta zoomaustasosta. `near` (2m/px, ~41 MB), `mid` (4m/px, ~15 MB) ja `overview` (16m/px, ~1.6 MB) ovat kevyita lohkokeskiarvo-downsamplauksia (`cv2.INTER_AREA`) samoista kuvista, tiedostoina `{tile}_near.png`/`{tile}_mid.png`/`{tile}_overview.png` (vastaavasti basemap/top). Frontend valitsee tason `zoomend`-tapahtumalla (`L.CRS.Simple`: resoluutio zoomilla z on 2^-z m/px; kynnykset puolivälissä perättäisten tasojen natiiviresoluutiota vastaavien zoomien välissä — overview z=-4, mid z=-2, near z=-1, detail z=0) ja lataa **vain näkymässä olevien** tiilien kuvat kyseisellä tasolla (`moveend`, bbox-leikkaus `bounds_epsg3067`:aa vasten) — ei kaikkia 11:tä tiiltä kerralla, paitsi silloin kun ne kaikki sattuvat olemaan näkymässä.
    * **Puskurin/top-korostuksen paksunnus on sama pikselisäde jokaisella tasolla**, ei metrisäde — muuten ohut rantaviiva-indikaattori häviäisi karkeammalla resoluutiolla resize-pehmennyksessä. Tästä syystä `near`/`mid`/`overview`-tasot lasketaan raa'asta pistemäärästä/puskurimaskista uudelleen (downsample + dilataatio), ei suoraan valmiin `detail`-kuvan pienentämällä.
    * **Oletusnäkymä avautuu n. 50 % lähempää kuin "koko aineisto näkyvissä" -taso**: `init()` laskee `map.getBoundsZoom()`-arvon (sama zoom jonka `fitBounds` olisi valinnut) ja lisää siihen yhden zoom-askeleen (`L.CRS.Simple`: 2x resoluutio per askel = puolet leveydestä näkyvissä), keskitettynä koko aineiston keskipisteeseen.
    * **Kokeiltu ja hylätty: "oikea" XYZ-tiilipyramidi.** Nelitasoinen kokonaiskuva-kuvasto korvattiin kertaalleen todellisella nelipuu-tiilipyramidilla (kaikki 11 tiiltä yhdeksi mosaiikiksi, pilkottuna 512×512 px -ruutuihin standardin z/x/y-osoitteistuksella, `L.TileLayer`) — arkkitehtuurisesti "oikeampi" ja tarkemmalla zoomilla kevyempi, mutta osoittautui **käytännössä epävakaammaksi**: kartta pätki ja ruutuja jäi satunnaisesti lataamatta/piirtämättä. Käyttäjän arvion mukaan aiempi nelitasoinen kokonaiskuva-lähestymistapa oli robustimpi, joten se **palautettiin** (`git checkout` edelliseen committiin, koska XYZ-työ ei ollut vielä committoitu). Rantaviivan paksuuden esiasetusominaisuus (ks. yllä) toteutettiin sen sijaan tämän robustimman arkkitehtuurin päälle.
@@ -1051,6 +1051,191 @@ merkitsee vanhan tuloksen vanhentuneeksi. `LASKENTA_VERSIO`,
 ovat kaikki tätä varten — ja ne on päivitettävä käsin.
 
 ---
+
+### Ulkoisen palvelun katko ei saa kaataa buildia
+
+Päijänteen ajo kaatui tunnin jälkeen `HTTP 504 Gateway Timeout` -virheeseen.
+Kaikki 36 tiiltä oli laskettu ja kirjoitettu; kaatunut kohta oli **viimeinen
+vaihe**, palvelutason haku Overpassista (OSM).
+
+Vektoritasot tulevat kolmesta palvelusta joista yksikään ei ole meidän
+hallinnassamme — Väylävirasto, SYKE ja OSM/Overpass. Overpass on jaettu
+ilmaispalvelu ja palauttaa 504:n kuormituspiikeissä rutiininomaisesti.
+Kolme korjausta, kaikki samaa periaatetta kuin taustakartalla jo oli
+(*"kerros on esityksen parannus, ei laskennan edellytys"*):
+
+1. **`_hae` yrittää uudelleen** (3 kertaa, odotukset 5/20/60 s) — mutta vain
+   ohimenevistä virheistä. 4xx nousee heti, koska vika on silloin meidän
+   kyselyssämme eikä parane odottamalla; muuten viallinen kysely maksaisi
+   85 sekuntia hiljaista odotusta ennen kuin virhe näkyy.
+2. **`build_static.py` jatkaa ilman tasoa** ja kertoo mikä jäi puuttumaan.
+3. **Selain kestää puuttuvan tason**: `ensureVectorLayer` nollaa latauksen ja
+   kaataa vain kyseisen tason, samoin kuin levällä jo oli.
+
+Ilman kolmatta kohtaa kaksi ensimmäistä olisivat vain siirtäneet vian
+eteenpäin: build olisi valmistunut, ja selain olisi hiljaa jättänyt tason
+piirtämättä käsittelemättömään promise-hylkäykseen.
+
+### Dataintensiteetin vähentäminen
+
+Järjestelmä on tarkoitus ajaa Railwayssä, jonne ei voi ostaa satojen
+gigatavujen levyä. Rakennuskoneella `output/cache` oli 227 Gt ja `docs/`
+koko rannikolla 4,4 Gt.
+
+**Ilmeisin keino on väärä, ja se mitattiin.** Peruskartta on painettu tuote:
+tiilellä L4131F siinä on **237 litteää väriä**. Sekä häviöllinen pakkaus että
+interpoloiva pienennys luovat niiden väliin tuhansia sävyjä ja tuhoavat juuri
+sen rakenteen jonka varassa häviötön pakkaus toimii.
+
+| Muunnos | Värit | kt | vs. nykyinen |
+|---|---:|---:|---:|
+| maastokartta 1 m/px, häviötön WebP | 237 | 5 637 | 1,0× |
+| 6000² häviöllinen q=90 | — | 2 951* | **0,5× (isompi)** |
+| 3000² LANCZOS häviötön | — | 2 758* | **0,5× (isompi)** |
+| **3000² NEAREST häviötön** | 236 | **2 037** | **2,77×** |
+
+\* mitattu erillisellä tiilellä samassa vertailussa; suuruusluokka on sama.
+
+Taustakartta 1:10 000 samassa 2 m/px resoluutiossa ei ollut johdonmukaisesti
+pienempi (L4134C: 2 258 kt vs. maastokartan 2 014 kt) eikä siinä ole täyttä
+nimistöä — se ei siis korvaa peruskarttaa.
+
+**Toteutettu:**
+
+- **Peruskartta 2 m/px** (`PERUSKARTTA_PIENENNYS`, `cv2.INTER_NEAREST`).
+  Välimuistin nimeen lisättiin `_r2`, muuten vanhat 6000²-kuvat olisivat
+  kelvanneet edelleen — tämän projektin toistuva vikaluokka.
+- **`near`-taso poistettu kokonaan**, myös buildista ja
+  `TAUSTAKARTAT`-latauksesta. Se ehti elää kuolleena tuotteena: pois
+  frontendin taulukosta commitissa `75a0299`, mutta yhä tuotettuna — 181 Mt
+  kuvia joita mikään ei ladannut.
+- **Fetch-kuvien indeksointi korjattu.** `renderFactorTile` indeksoi
+  pyyhkäisymatkataulukkoa **näytettävän tason** ruudukon juoksevalla
+  indeksillä, vaikka taulukot on mitoitettu **fetch-kuvan** mukaan. Karkeilla
+  tasoilla suojaisuus luettiin siis koko tiilelle sen yläreunasta. Vika ei
+  näkynyt oletusnäkymässä, koska suojaisuus on valinnainen tekijä
+  (`NO_SHELTER_MASK`) — eikä detail-tasolla lainkaan, koska siellä ruudukot
+  sattuvat olemaan samat. Mitattu osuus fetch-ruudukosta jota indeksointi
+  kosketti:
+
+  | Taso | Ruudukko | Ennen | Korjattuna |
+  |---|---|---:|---:|
+  | detail | 3000² | 100 % | 100 % |
+  | mid | 750² | 6,3 % | 99,9 % |
+  | overview | 188² | 0,4 % | 99,5 % |
+
+  Uloimmalla zoomilla koko 36 km² tiilen suojaisuus tuli siis 0,4 %:n
+  kaistaleelta sen yläreunassa.
+
+**Kesken:** pyyhkäisymatkakuvien kirjoittaminen 10 m/px:nä (`FETCH_GRID_M`:n
+natiiviresoluutio — arvot ovat jo nyt 2 m ruudukossa monistettuina),
+rannattomien tiilien karsinta rekisteristä (mitattu 14,2 %) ja raakadatan
+muoto (johdetut `score`/`rank_score` pois, liukuluvut uint16 → 2,6×).
+
+### Yksi palvelu: yhdistetty aineisto, paikannus ja siirto Ubuntulle
+
+Aineisto oli kahdessa kopiossa (`docs/` rannikko, `docs-paijanne/` sisävesi),
+koska Macilla ei ole koko lähdeaineistoa. Kaksi kopiota oli kiertotie, ei
+tavoite. Yhdistäminen on **yksi ajo Ubuntulla**, jossa rekisterissä ovat
+molemmat — kaikki muu seuraa siitä.
+
+**Laskenta-alueet jaetaan nyt rykelmittäin, ei itä–länsi-kaistoihin.**
+Kaistajako oletti aineiston yhtenäiseksi ja kapeaksi (*"Suomen rannikko on
+pitkä ja kapea"*), ja sisämaa rikkoi oletuksen: Päijänne on 54 km rannikosta,
+joten yksi kaista venyi 204 km korkeaksi ja oli enimmäkseen tyhjää maata.
+Mitattu yhdistetyllä aineistolla (493 + 48 tiiltä):
+
+| Jako | Alueita | Suurin | Yhteensä |
+|---|---:|---:|---:|
+| kaistat | 4 | 306 M solua | 842 M |
+| rykelmät | 3 | 293 M solua | **584 M** |
+
+Huippumuisti ei juuri muutu (1,23 → 1,17 Gt), koska rannikko on yhtenäinen
+rykelmä ja yhä niin iso että se jakautuu kahteen kaistaan. Hyöty on
+kokonaistyössä, −31 %. Klusterointi nostettiin `tiles.tiilirykelmat()`:iin,
+jota käyttävät sekä `pipeline._laskenta_alueet` että
+`vektoritasot.alueen_bboxit` — kaksi toteutusta olisi ajautunut erilleen.
+
+**Konteksti haetaan koko rekisteristä, ei rykelmän sisältä.** Rykelmät
+erottaa yksi tyhjä ruutu eli 6 km, mutta pyyhkäisysäde yltää 15 km.
+
+**Rantaviivan pituus mitataan vektorigeometriasta.** `SHORELINE_LENGTH_M =
+700 000` oli kovakoodattu vakio, kalibroitu 11 tiilen demolle eikä koskaan
+päivitetty. Mitattu Maastotietokannan vesialueiden reunasta, 86 tiilen
+aineistolla: **4 420 km** — vakio oli 6,3-kertaisesti alakanttiin.
+
+Riippumaton tarkistus: Päijänteen 18,68 km² puskuri / 2 320 km = 8,05 m
+leveys, mikä osuu 5–15 m vyöhykkeeseen.
+
+**Yksi kynnysarvo koko aineistolle.** "Parhaat 7 %" tarkoittaa yhdistämisen
+jälkeen parasta 7 % koko aineistosta, joten kummankin alueen kärkipaikat
+muuttuvat. Tämä on tietoinen valinta yksinkertaisuuden puolesta.
+
+**Paikannus.** WGS84 → EPSG:3067 kirjoitettiin itse (~40 riviä, Krügerin
+sarjakehitelmä, GRS80) — proj4js olisi satoja kilotavuja yhtä kaavaa varten.
+Todennettu 1 029 pisteellä pyprojia vasten koko Suomen yli: **suurin poikkeama
+0,055 mm**.
+
+Ensimmäinen toteutus oli 912 m pielessä Ahvenanmaalla: nimittäjänä oli
+`sqrt(1+t²)` eikä `hypot(t, cos Δλ)`. Ne ovat samat vain keskimeridiaanilla,
+joten väärä muoto näyttää oikealta lähellä 27:ää astetta ja ajautuu sivuun
+sitä kauempana — vika olisi jäänyt huomaamatta jos testipisteet olisivat
+olleet vain Päijänteeltä.
+
+Suurennustaso lasketaan mitatusta 1 cm:n koetinelementistä: 37,79 CSS-px/cm →
+2,646 m/px → z = −1,404, joka `zoomSnap: 0.25`:llä pyöristyy −1,5:een
+(1 cm ≈ 107 m). Ero on pienempi kuin laitteiden pikselitiheyden vaihtelu.
+
+**Paikannus vaatii https:n**, joten palvelu tarjoillaan Ubuntulta
+`tailscale serve`illa eikä pelkällä HTTP-palvelimella. `http://kone:8000`
+tailnetissä ei toimisi lainkaan — localhost on ainoa poikkeus.
+
+### Sisävedet: järvi oli aineistossa koko ajan, sitä ei vain luettu
+
+Aineisto laajennettiin Päijänteen kansallispuistoon ja siitä Padasjoelle
+ulottuvaan vesialueeseen (`--bbox 400000 6796000 434000 6834000`, 1 292 km²,
+36 tiiltä). Laajennus ei vaatinut uutta mallia eikä uutta aineistolähdettä.
+
+**Löydös.** MTK:n `hydrografia`-teema on aina sisältänyt `jarvi`-tason meren
+rinnalla, ja se ladattiin joka kerta — mutta `yhdista_hydrografia` luki
+palasista vain `layer="meri"` ja heitti loput pois. Sisävesi ei siis puuttunut
+aineistosta vaan **yhdistämisestä**. Yhden tason lisääminen lukulistalle riitti.
+
+**Meri ja vesi on pidettävä erillään.** Pelkkä `jarvi`-tason lisääminen
+`meri_maski`-funktioon olisi ollut hiljainen virhe: `leva.py` kysyy
+merimaskia levähavaintoja varten, ja ne ovat aidosti merikohtaisia — leväkerros
+olisi värittänyt Päijänteen. Siksi `backend/vesisto.py` tuntee nyt kaksi
+joukkoa:
+
+| | Tasot | Käyttäjä |
+|---|---|---|
+| `MERI_TASOT` | `meri` | `leva.py` — merikohtaiset kerrokset |
+| `VESI_TASOT` | `meri`, `jarvi` | rantautuminen, pyyhkäisymatkat, aallokko |
+
+`meri_maski` säilyi merikohtaisena; uusi `vesi_maski` on se jota pisteytys
+käyttää (4 kutsupaikkaa `pipeline.py`:ssä).
+
+**Miksi malli kelpaa järvelle sellaisenaan.** Kolme oletusta tarkistettiin
+ennen latausta, koska Päijänteen pinta on 78 m merenpinnan yläpuolella:
+
+- `dist_score` mittaa etäisyyttä **rakennuksiin**, ei mereen.
+- `slope_score` tulee korkeusmallin gradientista — absoluuttista korkeutta ei
+  käytetä. `maa_maski`in jäänyt `dem > 0` on suoja korkeusmallin nodatalle
+  avomerellä, ja sisämaassa kaikki maasto on joka tapauksessa yli nollan.
+- Aallokko lasketaan pyyhkäisymatkasta, joka on nimenomaan järville oikea
+  menetelmä. MET:n aallokkoennuste puuttuu sisämaasta, ja koodi käsitteli
+  puuttuvan arvon jo oikein (`metWave != null && isFinite`).
+
+Todennettu tiilellä M4322E (80 % vettä): 82 338 rantaviivapikseliä, 522 884
+puskuripikseliä, pisteytys 0,030–1,000. Rannikon regressio ajettiin ennen
+latausta: `vesi_maski` oli bitilleen sama kuin `meri_maski` niin kauan kuin
+tiedostossa ei ollut järvipolygoneja.
+
+**Seuraus jota ei saa unohtaa.** `hydrografia.gpkg`:n sormenjälki on osa
+`lahde_sormenjalki`ä, joten järvitason lisääminen vanhentaa **kaikkien**
+tiilien `_raw.npz`:n — myös rannikon, vaikka niiden sisältö ei muutu. Se on
+oikein mutta kallista: koko rannikko lasketaan uudelleen. Rannikkotiilien
+tulos muuttuu vasta jos niiden alueelta ladataan järvipolygoneja.
 
 ## 6. Natiivisovellus (iOS/Android) — tuleva suunta, EI toteuteta vielä
 

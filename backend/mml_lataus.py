@@ -25,7 +25,7 @@ import json
 import shutil
 from pathlib import Path
 
-from . import karttalehti, mml, rannikko
+from . import karttalehti, mml, rannikko, vesisto
 
 ROOT = Path(__file__).resolve().parent.parent
 DEM_DIR = ROOT / "korkeusmalli-mml"
@@ -152,8 +152,12 @@ TAUSTA_PROCESS = "taustakartta_rasteri_karttalehti"
 # jakaja on 5 000. Lehtijako sen sijaan osui metrilleen jo ensimmaisella
 # yrityksella. Tama on tasan se syy miksi tuote todennetaan yhdella
 # lehdella ennen joukkolatausta.
+#
+# "near" (taustakartta_rasteri_10k, 2 m/px) poistettu: taso ei ole
+# kaytossa frontendissa eika sen kuvia enaa tuoteta (ks.
+# pipeline.LEVEL_FACTORS). Jo ladatut lehdet jaavat taustakartta-mml/near/
+# -hakemistoon; ne voi poistaa kasin.
 TAUSTAKARTAT = {
-    "near":     ("taustakartta_rasteri_10k", "kartta", 2.0),
     "mid":      ("taustakartta_rasteri_20k", "tausta20k", 4.0),
     "overview": ("taustakartta_rasteri_80k", "tausta80k", 16.0),
 }
@@ -339,18 +343,27 @@ def _liita_taso(uusi, kohde, taso):
 
 
 def yhdista_hydrografia(uudet_gpkg, kohde=None):
-    """Liittaa meri-tason olemassa olevaan hydrografia.gpkg:hen."""
+    """Liittaa vesitasot olemassa olevaan hydrografia.gpkg:hen.
+
+    TASOJA ON KAKSI, ei yksi. Aiemmin tama luki palasista vain meri-tason,
+    jolloin jarvi-taso ladattiin joka kerta ja heitettiin pois - sisavesi
+    ei siis puuttunut aineistosta vaan yhdistamisesta. Ks.
+    backend/vesisto.py: VESI_TASOT."""
     import geopandas as gpd
+    import pyogrio
 
     kohde = Path(kohde or ROOT / "vesistot-mml" / "hydrografia.gpkg")
     kohde.parent.mkdir(parents=True, exist_ok=True)
-    n = None
     for polku in uudet_gpkg:
-        uusi = gpd.read_file(polku, layer="meri")
-        if len(uusi):
-            n = _liita_taso(uusi, kohde, "meri")
-    if n is not None:
-        print(f"  meri: {n} polygonia")
+        saatavat = {t for t in pyogrio.list_layers(polku)[:, 0]}
+        for taso in vesisto.VESI_TASOT:
+            if taso not in saatavat:
+                continue
+            uusi = gpd.read_file(polku, layer=taso)
+            if not len(uusi):
+                continue
+            n = _liita_taso(uusi, kohde, taso)
+            print(f"  {taso}: +{len(uusi)} -> {n} polygonia", flush=True)
 
 
 def lataa_rakennukset(bbox, key=None, dest=None):
@@ -415,6 +428,7 @@ POISTETTAVAT_KUVIOT = (
     "_water_global_v*.npz", "_global_tiebreak_sorted_v*.npy",
     "_factor_thresholds_v*.json", "_prime_thresholds_v*.json",
     "_shelter_thresholds_v*.json", "_shoreline_stats_v*.json",
+    "_shoreline_length_v*.json",
     "_global_threshold_p*_v*.json",
     "*_fetch?.png", "*_fetchobs?.png", "*_water?.png", "*_waterobs?.png",
     # Kvantisoidut tasot per tiili: johdettu suoraan _fetch_global /

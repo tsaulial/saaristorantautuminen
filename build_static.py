@@ -336,12 +336,33 @@ def build(korvaa=False):
     # Vektoritasot: vaylat, suojelualueet ja palvelut. Haetaan build-vaiheessa
     # eika selaimessa - sovelluksessa ei ole palvelinta ja offline-kaytto on
     # vaatimus (ks. backend/vektoritasot.py).
+    #
+    # ULKOISEN PALVELUN KATKO EI SAA KAATAA BUILDIA. Nama kolme tasoa tulevat
+    # kolmesta eri palvelusta (Vaylavirasto, SYKE, OSM/Overpass), joista
+    # yksikaan ei ole meidan hallinnassamme. Overpass palautti 504:n tunnin
+    # ajon lopussa, ja koko build kaatui - kaikki 36 tiilta oli jo laskettu
+    # ja kirjoitettu, mutta lopputulos jai kelvottomaksi.
+    #
+    # Sama periaate on jo kirjattu taustakartan puolelle: kerros on esityksen
+    # parannus, ei laskennan edellytys. Puuttuva taso jaa pois ja siita
+    # KERROTAAN; selain kestaa sen jo, koska tasot ladataan erikseen.
     print("Vektoritasot:")
+    puuttuvat = []
     for nimi, hakija in (("vaylat", vektoritasot.get_or_compute_vaylat),
                          ("suojelualueet", vektoritasot.get_or_compute_suojelualueet),
                          ("palvelut", vektoritasot.get_or_compute_palvelut)):
-        data = hakija()
+        try:
+            data = hakija()
+        except Exception as e:
+            puuttuvat.append(nimi)
+            print(f"  VAROITUS: {nimi} jai hakematta ({type(e).__name__}: {e}) - "
+                  f"kerros puuttuu tasta buildista", flush=True)
+            continue
         (DOCS_DIR / f"{nimi}.json").write_text(json.dumps(data, separators=(",", ":")))
+    if puuttuvat:
+        print(f"  {len(puuttuvat)} vektoritasoa puuttuu: {', '.join(puuttuvat)}. "
+              f"Aja build uudelleen kun palvelu vastaa - muu aineisto on "
+              f"valimuistissa, joten ajo on nopea.", flush=True)
 
     # "Parhaat X %" -kynnykset kaikille 15 tekijayhdistelmalle omaan
     # tiedostoonsa (ks. pipeline.compute_factor_thresholds) - selain hakee

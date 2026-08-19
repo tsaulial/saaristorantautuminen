@@ -161,35 +161,18 @@ def alueen_bboxit(marginaali=BBOX_MARGIN_M):
     kohteita joita ei nay millaan kartalla. Yhtenaisella alueella klustereita
     on yksi, jolloin kaytos on tasan sama kuin ennen.
 
-    Klusterointi: tiilet ovat 6x6 km ruudukossa, ja kaksi tiilta kuuluvat
-    samaan klusteriin jos ne koskettavat toisiaan reunasta tai kulmasta."""
+    Klusterointi on tiles.tiilirykelmat(): tiilet ovat 6x6 km ruudukossa, ja
+    kaksi tiilta kuuluvat samaan klusteriin jos ne koskettavat toisiaan
+    reunasta tai kulmasta. Sama jako tarvitaan pyyhkaisymatkojen
+    laskenta-alueisiin (pipeline._laskenta_alueet), joten se on yhdessa
+    paikassa - kaksi eri toteutusta ajautuisi ajan mittaan erilleen."""
     registry = tiles.get_registry()
     if not registry:
         raise RuntimeError("Tiilirekisteri on tyhja")
 
-    # Ruudukkoindeksit tiilen koon mukaan - ei oleteta 6 km, vaan luetaan
-    # se ensimmaisesta tiilesta.
-    eka = next(iter(registry.values()))
-    koko = eka.bounds[2] - eka.bounds[0]
-    ruudut = {}
-    for t in registry.values():
-        ruudut[(int(round(t.bounds[0] / koko)), int(round(t.bounds[1] / koko)))] = t.bounds
-
-    kaymatta = set(ruudut)
     klusterit = []
-    while kaymatta:
-        pino = [kaymatta.pop()]
-        ryhma = [pino[0]]
-        while pino:
-            gx, gy = pino.pop()
-            for dx in (-1, 0, 1):
-                for dy in (-1, 0, 1):
-                    naapuri = (gx + dx, gy + dy)
-                    if naapuri in kaymatta:
-                        kaymatta.remove(naapuri)
-                        pino.append(naapuri)
-                        ryhma.append(naapuri)
-        rajat = [ruudut[r] for r in ryhma]
+    for ryhma in tiles.tiilirykelmat(registry):
+        rajat = [registry[t].bounds for t in ryhma]
         klusterit.append((
             min(b[0] for b in rajat) - marginaali,
             min(b[1] for b in rajat) - marginaali,
@@ -199,13 +182,43 @@ def alueen_bboxit(marginaali=BBOX_MARGIN_M):
     return sorted(klusterit)
 
 
+# Kuinka monta kertaa ulkoista palvelua yritetaan, ja odotukset yritysten
+# valissa. Overpass (OSM) on jaettu ilmaispalvelu ja palauttaa 504:n
+# kuormituspiikeissa rutiininomaisesti - nain kavi kesken tunnin ajon.
+# Odotukset kasvavat, koska katko kestaa tavallisesti minuutteja, ei sekunteja.
+_YRITYKSET = 3
+_ODOTUKSET = (5, 20, 60)
+
+
 def _hae(url, timeout=180, data=None):
+    """HTTP-haku, joka kestaa ohimenevan katkon.
+
+    UUDELLEENYRITYS VAIN OHIMENEVISTA VIRHEISTA: 5xx, verkkovirhe ja
+    aikakatkaisu. 4xx on meidan kyselyssamme eika parane odottamalla, joten
+    se nousee heti - muuten viallinen kysely maksaisi 85 sekuntia hiljaista
+    odotusta ennen kuin virhe nakyy."""
+    import time as _time
+
     req = urllib.request.Request(url, data=data)
     req.add_header("User-Agent", "saaristorantautuminen/1.0 (avoin data, build-vaihe)")
     if data is not None:
         req.add_header("Content-Type", "application/x-www-form-urlencoded")
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read()
+    for yritys in range(1, _YRITYKSET + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.read()
+        except urllib.error.HTTPError as e:
+            if e.code < 500 or yritys == _YRITYKSET:
+                raise
+            syy = f"HTTP {e.code}"
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            if yritys == _YRITYKSET:
+                raise
+            syy = type(e).__name__
+        odota = _ODOTUKSET[min(yritys - 1, len(_ODOTUKSET) - 1)]
+        print(f"    {url.split('/')[2]}: {syy}, yritys {yritys}/{_YRITYKSET}, "
+              f"odotetaan {odota} s", flush=True)
+        _time.sleep(odota)
 
 
 def _wfs_geojson(base_url, type_name, bbox):
