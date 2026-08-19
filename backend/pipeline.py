@@ -554,13 +554,20 @@ def varmista_rekisteri():
         #
         # SAMA VIKA KORJATTIIN JO mml_lataus.mitatoi():hin, mutta ei tanne -
         # kaksi paikkaa tekee samaa tyota, ja korjaus osui vain toiseen.
+        #
+        # OSUMA-MUUTTUJA ON NIMELTAAN osuma EIKA polku: tassa funktiossa
+        # polku on sormenjalkitiedosto, ja silmukka jatti siihen viimeisen
+        # osuman. Sormenjalki kirjoitettiin silloin satunnaisen
+        # valimuistitiedoston paalle eika _rekisteri.json:iin - tiilisto
+        # nayttti muuttuvan joka ajolla, ja yksi valimuisti korruptoitui
+        # hiljaa. Mikaan ei kaatunut ennen kuin joku luki sen sisallon.
         loydetyt = {}
         for kuvio in REKISTERISTA_RIIPPUVAT:
-            for polku in CACHE_DIR.glob(kuvio):
-                loydetyt[polku] = True
+            for osuma in CACHE_DIR.glob(kuvio):
+                loydetyt[osuma] = True
         poistetut = sorted(loydetyt)
-        for p in poistetut:
-            p.unlink(missing_ok=True)
+        for osuma in poistetut:
+            osuma.unlink(missing_ok=True)
         print(f"  TIILISTO MUUTTUNUT: mitatoitiin {len(poistetut)} tiilistosta "
               f"riippuvaa valimuistia", flush=True)
     polku.write_text(json.dumps({"sormenjalki": nyt,
