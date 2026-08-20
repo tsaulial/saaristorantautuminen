@@ -1385,9 +1385,18 @@ SHORELINE_HIST_BINS = 25
 # haarukkaa (_LOW/_HIGH) ei enaa ole.
 
 
-# Rantaviivan mittauksen lohkokoko. 60 km on kompromissi: pienempi lohko
-# tekee unioneista halvempia mutta lisaa niiden maaraa ja reunatyota.
-SHORELINE_LOHKO_M = 60000.0
+# Rantaviivan mittauksen lohkokoko.
+#
+# 60 km OSOITTAUTUI LIIAN ISOKSI. Rannikon meri-taso on 9 933 polygonia ja
+# 141,8 M pistetta, joten 3 600 km2 lohkoon osuu tuhansia polygoneja ja
+# kymmenia miljoonia pisteita - unary_union sellaisesta ei valmistu
+# jarkevassa ajassa, eika ajoa voi keskeyttaa Ctrl+C:lla koska suoritus on
+# GEOS:n C-koodissa.
+#
+# 15 km lohkossa on noin kuudestoistaosa siita, ja unionin kustannus kasvaa
+# pistemaaran mukana selvasti nopeammin kuin lineaarisesti. Lohkoja tulee
+# enemman mutta jokainen on halpa.
+SHORELINE_LOHKO_M = 15000.0
 # Marginaali jonka verran lohkon ulkopuolelta otetaan mukaan, jotta
 # leikkausreunat jaavat lopullisen rajauksen ulkopuolelle.
 SHORELINE_MARGINAALI_M = 500.0
@@ -1450,16 +1459,34 @@ def compute_shoreline_length_m(force=False):
 
     # Polygonit puretaan yksittaisiksi: MultiPolygonin osat ovat saaria ja
     # erillisia altaita, ja indeksi loytaa niista vain tarvittavat.
-    osat = []
+    kaikki = []
     for g in vesisto._polygonit((x0, y0, x1, y1), vesisto.VESI_TASOT):
         if g is None or g.is_empty:
             continue
-        osat.extend(g.geoms if hasattr(g, "geoms") else [g])
-    if not osat:
+        kaikki.extend(g.geoms if hasattr(g, "geoms") else [g])
+    if not kaikki:
         cache_path.write_text(json.dumps({"length_m": 0.0}))
         return 0.0
+
+    # TARKAT KAKSOISKAPPALEET POIS ENNEN MITAAN MUUTA.
+    #
+    # hydrografia.gpkg kootaan latauspaloista, ja palat menevat saumoissa
+    # paallekkain - sama polygoni tallentuu moneen kertaan tasan samana.
+    # Mitattuna rannikolla meri-tasolla oli 8 546 riviä, kun pinta-alaan
+    # suhteutettuna odottaisi noin 500. Kaksoiskappaleiden poisto on
+    # tarkkaa (sama tavujono = sama geometria) ja halpaa, ja se pienentaa
+    # kalliin unionin tyota suoraan.
+    nahdyt = set()
+    osat = []
+    for o in kaikki:
+        tunnus = hashlib.blake2b(shapely.to_wkb(o), digest_size=16).digest()
+        if tunnus in nahdyt:
+            continue
+        nahdyt.add(tunnus)
+        osat.append(o)
     pisteita = int(sum(shapely.get_num_coordinates(o) for o in osat))
-    print(f"  rantaviiva: {len(osat)} polygonia, {pisteita:,} pistetta "
+    print(f"  rantaviiva: {len(kaikki)} polygonia -> {len(osat)} ilman "
+          f"kaksoiskappaleita, {pisteita:,} pistetta "
           f"({_aika.perf_counter() - _t0:.1f} s)", flush=True)
     puu = STRtree(osat)
 
