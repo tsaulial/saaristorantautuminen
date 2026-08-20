@@ -261,12 +261,32 @@ def _levenna_kokonaisluvut(kehys):
 
     Se on VAROITUS eika poikkeus, joten arvo tallentuu vaarin hiljaa.
     Vanha lue-concat-kirjoita paatteli tyypin joka kerta koko aineistosta
-    ja leveni itsestaan; lisaystila ei voi, joten leveys valitaan tassa."""
-    import numpy as np
-    muutokset = {s: "int64" for s in kehys.columns
-                 if s != kehys.geometry.name
-                 and np.issubdtype(kehys[s].dtype, np.integer)
-                 and kehys[s].dtype.itemsize < 8}
+    ja leveni itsestaan; lisaystila ei voi, joten leveys valitaan tassa.
+
+    TYYPPITARKISTUS EI KAYTA np.issubdtype:a. Se osaa vain numpy-tyyppeja
+    ja KAATUU pandasin laajennustyyppeihin:
+
+        TypeError: Cannot interpret '<StringDtype(...)>' as a data type
+
+    Nain kavi Ubuntulla mutta ei Macilla: uudempi pandas/pyogrio palauttaa
+    merkkijonosarakkeet StringDtype:na, vanhempi object-tyyppina, ja
+    jalkimmainen menee np.issubdtype:sta lapi. Sama koskee .itemsize:a,
+    jota laajennustyypeilla ei ole. pandas.api.types.is_integer_dtype
+    tuntee molemmat, ja numpy_dtype antaa laajennustyypin leveyden."""
+    from pandas.api.types import is_integer_dtype
+
+    muutokset = {}
+    for sarake in kehys.columns:
+        if sarake == kehys.geometry.name:
+            continue
+        tyyppi = kehys[sarake].dtype
+        if not is_integer_dtype(tyyppi):
+            continue
+        # Laajennustyypilla (esim. Int32) leveys on numpy_dtype:ssa; jos
+        # kumpikaan ei kerro leveytta, oletetaan 8 eika levenneta turhaan.
+        perus = getattr(tyyppi, "numpy_dtype", tyyppi)
+        if getattr(perus, "itemsize", 8) < 8:
+            muutokset[sarake] = "int64"
     return kehys.astype(muutokset) if muutokset else kehys
 
 
