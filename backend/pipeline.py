@@ -1389,14 +1389,24 @@ def compute_shoreline_length_m(force=False):
     """Vesialueiden reunan pituus metreina tiilirekisterin peittamalla
     alueella.
 
-    LEIKATAAN TIILIEN PEITTOON, ei tiili kerrallaan. Hydrografiahaku palauttaa
-    polygonit jotka ulottuvat tiilirajojen yli, joten tiileittain summaaminen
-    laskisi rajanylitykset moneen kertaan. Peitto muodostetaan kerran ja
-    jokainen reuna leikataan siihen.
+    POLYGONIT ON YHDISTETTAVA ENNEN REUNAN MITTAAMISTA. Ensimmainen versio
+    summasi jokaisen polygonin reunan erikseen olettaen, etteivat ne mene
+    paallekkain. OLETUS ON VAARA: rannikon hydrografia.gpkg on koottu 37
+    erillisesta vektoripalasta kaytavaa pitkin (ks. mml_lataus: vektoripalat),
+    ja palat menevat saumoissa paallekkain. Sama rantaviiva oli siis useassa
+    polygonissa ja laskettiin monta kertaa.
 
-    Rykelmittain (tiles.tiilirykelmat) muistin takia: koko rannikon polygonit
-    kerralla olisi tarpeeton kuorma, ja rykelmat ovat erillisia joten
-    summaaminen niiden yli on tarkkaa."""
+    Vika ei nakynyt Paijanteella, joka ladattiin YHTENA laatikkona - siella
+    oletus piti. Mitattuna rannikolla tulos oli 392 928 km eli 364 km per
+    36 km2 tiili, kun Paijanteella on 48 km/tiili. Se on maantieteellisesti
+    mahdoton mutta ei kaada mitaan.
+
+    TIILEITTAIN, EI RYKELMITTAIN. Jokaisen tiilen kohdalla polygonit
+    yhdistetaan (unary_union poistaa paallekkaisyydet ja sisaan jaavat
+    saumaviivat), reuna otetaan YHDISTETYSTA muodosta ja vasta se leikataan
+    tiilen laatikkoon. Jarjestys on olennainen: jos leikkaisi ensin, tiilen
+    reunat tulisivat mukaan keinotekoisena rantaviivana. Kukin reunapatka
+    kuuluu tasan yhteen tiileen, joten summa on tarkka."""
     from shapely.geometry import box
     from shapely.ops import unary_union
 
@@ -1407,23 +1417,18 @@ def compute_shoreline_length_m(force=False):
 
     registry = tiles.get_registry()
     yhteensa = 0.0
-    for ryhma in tiles.tiilirykelmat(registry):
-        rajat = [registry[t].bounds for t in ryhma]
-        bbox = (min(b[0] for b in rajat), min(b[1] for b in rajat),
-                max(b[2] for b in rajat), max(b[3] for b in rajat))
-        geoms = vesisto._polygonit(bbox, vesisto.VESI_TASOT)
+    n = len(registry)
+    for i, (tid, tile) in enumerate(registry.items(), 1):
+        geoms = vesisto._polygonit(tile.bounds, vesisto.VESI_TASOT)
         if not len(geoms):
             continue
-        peitto = unary_union([box(*b) for b in rajat])
-        # Polygonit eivat mene paallekkain, joten reunoja ei tarvitse
-        # yhdistaa - summaus riittaa eika unary_union maksa.
-        osa = 0.0
-        for g in geoms:
-            if g is None or g.is_empty:
-                continue
-            osa += g.boundary.intersection(peitto).length
-        print(f"  rantaviiva: {len(ryhma)} tiilta -> {osa / 1000:.1f} km", flush=True)
-        yhteensa += osa
+        kelpo = [g for g in geoms if g is not None and not g.is_empty]
+        if not kelpo:
+            continue
+        yhdistetty = unary_union(kelpo)
+        yhteensa += yhdistetty.boundary.intersection(box(*tile.bounds)).length
+        if i % 200 == 0 or i == n:
+            print(f"  rantaviiva: {i}/{n} tiilta -> {yhteensa / 1000:.0f} km", flush=True)
 
     cache_path.write_text(json.dumps({"length_m": round(yhteensa, 1)}))
     return round(yhteensa, 1)
