@@ -7,6 +7,7 @@ lehtijakoa - yhdistaminen tehdaan koordinaattien (bounds), ei tiedostonimien,
 perusteella (ks. instructions.md kohta 2).
 """
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,6 +15,7 @@ import rasterio
 
 DEM_DIR = Path(__file__).resolve().parent.parent / "korkeusmalli-mml"
 MAP_DIR = Path(__file__).resolve().parent.parent / "karttakuva-mll"
+ROOT_OUT = Path(__file__).resolve().parent.parent / "output" / "cache"
 
 
 @dataclass(frozen=True)
@@ -106,6 +108,85 @@ def tiilirykelmat(registry=None):
         rykelmat.append([ruudut[r] for r in ryhma])
     # Suurin ensin: lokin lukija nakee heti paaalueen.
     return sorted(rykelmat, key=len, reverse=True)
+
+
+# Rannattomien tiilien tunnistus.
+#
+# MITATTU: 7 % tiilista ei sisalla yhtaan rantaviivaa - ne ovat joko
+# kokonaan sisamaata tai kokonaan avovetta. Ne vievat taydet 211 Mt
+# raakadataa ja tayden laskenta-ajan, eivatka nayta kartalla mitaan.
+#
+# TAMA EI POISTA NIITA REKISTERISTA, ja se on tietoinen ero. Mosaiikin
+# kattamaton alue oletetaan VEDEKSI (ks. pipeline: "Oletus TOSI =
+# tuntematon kasitellaan avovetena"), joten kokonaan maalla olevan tiilen
+# poistaminen muuttaisi maan mereksi ja pyyhkaisysateet lapaisisivat sen.
+# Mitattuna kuudesta rannattomasta VIISI oli kokonaan maalla, joten vika
+# olisi ollut tavallinen eika harvinainen - ja hiljainen.
+#
+# Rekisteri pysyy siis ennallaan laskentaa varten; tuotanto ohittaa nama.
+RANNATON_RUUDUKKO = 600          # 10 m/px, sama kuin FETCH_GRID_M
+_RANNATTOMAT = None
+
+
+def _rannattomien_valimuisti():
+    from . import vesisto
+    polku = ROOT_OUT / "_rannattomat.json"
+    tunnus = None
+    if vesisto.GPKG.exists():
+        tila = vesisto.GPKG.stat()
+        tunnus = f"{tila.st_size}:{tila.st_mtime_ns}:{len(get_registry())}"
+    return polku, tunnus
+
+
+def rannattomat():
+    """Tiilet joissa ei ole rantaviivaa: kokonaan vetta tai kokonaan maata.
+
+    Testi on halpa (10 m ruudukko, n. 85 ms/tiili) ja tulos tallennetaan,
+    koska sita kysytaan monessa kohdassa. Jos vesiaineistoa ei ole, EI
+    OHITETA MITAAN - tuntematon ei ole sama kuin rannaton."""
+    global _RANNATTOMAT
+    from . import vesisto
+    if not vesisto.saatavilla():
+        return frozenset()
+
+    polku, tunnus = _rannattomien_valimuisti()
+    if _RANNATTOMAT is not None and _RANNATTOMAT[0] == tunnus:
+        return _RANNATTOMAT[1]
+    if polku.exists():
+        try:
+            tallennettu = json.loads(polku.read_text())
+            if tallennettu.get("tunnus") == tunnus:
+                _RANNATTOMAT = (tunnus, frozenset(tallennettu["tiilet"]))
+                return _RANNATTOMAT[1]
+        except (ValueError, KeyError):
+            pass
+
+    from rasterio.transform import from_origin
+    n = RANNATON_RUUDUKKO
+    ulos = []
+    reg = get_registry()
+    for tile_id, t in reg.items():
+        tr = from_origin(t.bounds[0], t.bounds[3],
+                         (t.bounds[2] - t.bounds[0]) / n,
+                         (t.bounds[3] - t.bounds[1]) / n)
+        osuus = vesisto.vesi_maski(t.bounds, tr, (n, n)).mean()
+        if osuus == 0.0 or osuus == 1.0:
+            ulos.append(tile_id)
+    print(f"  rannattomia tiilia {len(ulos)}/{len(reg)} "
+          f"({100 * len(ulos) / max(len(reg), 1):.1f} %) - ohitetaan tuotannossa",
+          flush=True)
+    polku.parent.mkdir(parents=True, exist_ok=True)
+    polku.write_text(json.dumps({"tunnus": tunnus, "tiilet": sorted(ulos)}))
+    _RANNATTOMAT = (tunnus, frozenset(ulos))
+    return _RANNATTOMAT[1]
+
+
+def tuotantotiilet():
+    """Rekisteri ilman rannattomia tiilia: se joukko jolle tuotteet tehdaan.
+
+    Laskenta (mosaiikit, konteksti) kayttaa get_registry():a sellaisenaan."""
+    ohita = rannattomat()
+    return {k: v for k, v in get_registry().items() if k not in ohita}
 
 
 REGISTRY = None

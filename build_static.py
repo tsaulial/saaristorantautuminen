@@ -237,8 +237,17 @@ def _varmista_ettei_kutistu(uusia, korvaa):
 
 
 def build(korvaa=False):
-    registry = tiles.get_registry()
-    print(f"{len(registry)} tiilta rekisterissa")
+    # TUOTANTOTIILET, ei koko rekisteri. Rannattomat tiilet (kokonaan
+    # sisamaata tai avovetta) eivat nayta kartalla mitaan, mutta veisivat
+    # taydet kuvat ja laskenta-ajan. Laskenta kayttaa yha koko rekisteria:
+    # mosaiikin kattamaton alue oletetaan vedeksi, joten maatiilen
+    # poistaminen rekisterista muuttaisi maan mereksi (ks.
+    # tiles.rannattomat).
+    kaikki = tiles.get_registry()
+    registry = tiles.tuotantotiilet()
+    ohitettu = len(kaikki) - len(registry)
+    print(f"{len(registry)} tiilta rekisterissa"
+          + (f" ({ohitettu} rannatonta ohitettu)" if ohitettu else ""))
     _varmista_ettei_kutistu(len(registry), korvaa)
 
     if DOCS_DIR.exists():

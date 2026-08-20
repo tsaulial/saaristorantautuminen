@@ -715,7 +715,10 @@ def compute_global_threshold(buildings_path, percentile, force=False):
     if not force and threshold_path.exists():
         return json.loads(threshold_path.read_text())["threshold"]
 
-    registry = tiles.get_registry()
+    # Rannattomat ohitetaan: niiden puskuri on tyhja eivatka ne vaikuta
+    # jakaumaan, mutta laskenta maksaisi taydet minuutit (ks.
+    # tiles.rannattomat).
+    registry = tiles.tuotantotiilet()
     all_scores = []
     for tid in registry:
         raw = get_or_compute_raw(tid, buildings_path, force=force)
@@ -1158,7 +1161,11 @@ def tiilet_edistymisella(vaihe, jono=None):
     tiilelle: mitattuna 5-6 s tiilta, eli 27 tiilella nelisen minuuttia
     tayttaa hiljaisuutta. Kaytetaan naissa kaikissa, jottei mikaan
     kokonaisten tiilien yli kayva silmukka ole enaa aanetön."""
-    kohteet = list(tiles.get_registry() if jono is None else jono)
+    # RANNATTOMAT OHITETAAN. Ne eivat sisalla yhtaan puskuripikselia, joten
+    # jokainen naista silmukoista hylkaa ne joka tapauksessa ("if buf.any()")
+    # - mutta vasta sen jalkeen kun tiili on laskettu kokonaan. Mitattuna
+    # 7 % tiilista. Tulos ei muutu, vain tyo vahenee.
+    kohteet = list(tiles.tuotantotiilet() if jono is None else jono)
     n = len(kohteet)
     print(f"  {vaihe}: {n} tiilta", flush=True)
     t0 = time.perf_counter()
