@@ -161,17 +161,31 @@ def rannattomat():
         except (ValueError, KeyError):
             pass
 
+    import time
     from rasterio.transform import from_origin
     n = RANNATON_RUUDUKKO
     ulos = []
     reg = get_registry()
-    for tile_id, t in reg.items():
+    # EDISTYMINEN NAKYVIIN. Tama on buildin ENSIMMAINEN raskas vaihe eika
+    # tulostanut mitaan ennen valmistumistaan, joten ajo naytti jumiutuvan
+    # heti kaynnistyttyaan. Kesto riippuu aineistosta: talla koneella
+    # 85 ms/tiili, mutta rannikon hydrografiassa sama geometria on noin 17
+    # kertaan (latauspalojen paallekkaisyys), joten tiilikohtainen haku voi
+    # olla sekunteja.
+    t0 = time.perf_counter()
+    print(f"  rannattomien tiilien testi: {len(reg)} tiilta...", flush=True)
+    for i, (tile_id, t) in enumerate(reg.items(), 1):
         tr = from_origin(t.bounds[0], t.bounds[3],
                          (t.bounds[2] - t.bounds[0]) / n,
                          (t.bounds[3] - t.bounds[1]) / n)
         osuus = vesisto.vesi_maski(t.bounds, tr, (n, n)).mean()
         if osuus == 0.0 or osuus == 1.0:
             ulos.append(tile_id)
+        if i <= 3 or i % 100 == 0:
+            kulunut = time.perf_counter() - t0
+            arvio = kulunut / i * (len(reg) - i) / 60
+            print(f"    {i}/{len(reg)} ({kulunut:.0f} s, n. {arvio:.0f} min jaljella)",
+                  flush=True)
     print(f"  rannattomia tiilia {len(ulos)}/{len(reg)} "
           f"({100 * len(ulos) / max(len(reg), 1):.1f} %) - ohitetaan tuotannossa",
           flush=True)
