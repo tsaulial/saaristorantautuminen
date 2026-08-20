@@ -1435,9 +1435,18 @@ def compute_shoreline_length_m(force=False):
     if not force and cache_path.exists():
         return json.loads(cache_path.read_text())["length_m"]
 
+    # EDISTYMINEN NAKYVIIN HETI. Ilman tata ensimmainen tuloste tuli vasta
+    # 20 lohkon jalkeen, eika hidasta ajoa voinut erottaa jumista - ja
+    # aineiston luku yksin voi kestaa minuutteja. Vaiheet tulostetaan
+    # erikseen, jotta hitaan kohdan nakee ilman arvailua.
+    import time as _aika
+    _t0 = _aika.perf_counter()
+
     registry = tiles.get_registry()
     peitto = unary_union([box(*t.bounds) for t in registry.values()])
     x0, y0, x1, y1 = peitto.bounds
+    print(f"  rantaviiva: luetaan vesialueet ({len(registry)} tiilta, "
+          f"{(x1-x0)/1000:.0f} x {(y1-y0)/1000:.0f} km)...", flush=True)
 
     # Polygonit puretaan yksittaisiksi: MultiPolygonin osat ovat saaria ja
     # erillisia altaita, ja indeksi loytaa niista vain tarvittavat.
@@ -1449,6 +1458,9 @@ def compute_shoreline_length_m(force=False):
     if not osat:
         cache_path.write_text(json.dumps({"length_m": 0.0}))
         return 0.0
+    pisteita = int(sum(shapely.get_num_coordinates(o) for o in osat))
+    print(f"  rantaviiva: {len(osat)} polygonia, {pisteita:,} pistetta "
+          f"({_aika.perf_counter() - _t0:.1f} s)", flush=True)
     puu = STRtree(osat)
 
     yhteensa = 0.0
@@ -1472,12 +1484,14 @@ def compute_shoreline_length_m(force=False):
             vesi = unary_union(leikatut)
             yhteensa += vesi.boundary.intersection(peitto).intersection(lohko).length
             lohkoja += 1
-            if lohkoja % 20 == 0:
-                print(f"  rantaviiva: {lohkoja} lohkoa -> {yhteensa / 1000:.0f} km",
-                      flush=True)
+            # Ensimmaiset lohkot yksitellen: niista nakee tahdin heti ja voi
+            # paattaa kannattaako odottaa. Sen jalkeen harvemmin.
+            if lohkoja <= 5 or lohkoja % 20 == 0:
+                print(f"  rantaviiva: lohko {lohkoja} -> {yhteensa / 1000:.0f} km "
+                      f"({_aika.perf_counter() - _t0:.0f} s)", flush=True)
 
     print(f"  rantaviiva: {lohkoja} lohkoa, {len(osat)} polygonia -> "
-          f"{yhteensa / 1000:.1f} km", flush=True)
+          f"{yhteensa / 1000:.1f} km ({_aika.perf_counter() - _t0:.1f} s)", flush=True)
     cache_path.write_text(json.dumps({"length_m": round(yhteensa, 1)}))
     return round(yhteensa, 1)
 
