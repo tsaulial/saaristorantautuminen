@@ -1385,30 +1385,48 @@ SHORELINE_HIST_BINS = 25
 # haarukkaa (_LOW/_HIGH) ei enaa ole.
 
 
+# Rantaviivan mittauksen lohkokoko. 60 km on kompromissi: pienempi lohko
+# tekee unioneista halvempia mutta lisaa niiden maaraa ja reunatyota.
+SHORELINE_LOHKO_M = 60000.0
+# Marginaali jonka verran lohkon ulkopuolelta otetaan mukaan, jotta
+# leikkausreunat jaavat lopullisen rajauksen ulkopuolelle.
+SHORELINE_MARGINAALI_M = 500.0
+
+
 def compute_shoreline_length_m(force=False):
     """Vesialueiden reunan pituus metreina tiilirekisterin peittamalla
     alueella.
 
-    POLYGONIT ON YHDISTETTAVA ENNEN REUNAN MITTAAMISTA. Ensimmainen versio
-    summasi jokaisen polygonin reunan erikseen ja perusteli sen kommentissa:
-    "Polygonit eivat mene paallekkain, joten reunoja ei tarvitse yhdistaa".
-    OLETUS ON VAARA: rannikon hydrografia.gpkg on koottu 37 erillisesta
-    vektoripalasta kaytavaa pitkin, ja jokainen lataus leikkaa merialueen
-    omaan laatikkoonsa - sama rantaviiva on siis useassa polygonissa.
-    Mitattuna Ubuntulla 1078 rannikkotiilella tulos oli 392 928 km eli
-    364 km per 36 km2 tiili, kun Paijanteella on 41 km/tiili.
-    Maantieteellisesti mahdoton, mutta mikaan ei kaatunut.
+    POLYGONIT ON YHDISTETTAVA ENNEN REUNAN MITTAAMISTA, ja se on tehtava
+    LOHKOITTAIN.
 
-    YHDISTAMINEN TEHDAAN KERRAN RYKELMAA KOHTI, ei kerran tiilta kohti.
-    Toinen yritys unionoi jokaisen tiilen kohdalla erikseen, mika on
-    kelvoton: merialue on yksi valtava polygoni, ja se olisi kasitelty
-    uudelleen kaikilla 1126 tiilella. Ajo jouduttiin keskeyttamaan.
-    Mitattuna 587 polygonia / 1,0 M pistetta unionoituu 4,5 sekunnissa,
-    joten kerran per rykelma on halpa.
+    Ensimmainen versio summasi jokaisen polygonin reunan erikseen ja
+    perusteli: "polygonit eivat mene paallekkain". Vaarin. Vierekkaiset
+    vesialueet jakavat reunoja, ja rannikon hydrografia.gpkg on lisaksi
+    koottu 37 latauspalasta jotka menevat saumoissa paallekkain. Vesi vetta
+    vasten ei ole rantaviivaa, joten jaetut reunat kuuluu poistaa - mitattuna
+    ne olivat 18 % tuloksesta talla koneella ja Ubuntulla viisinkertaistivat
+    sen (392 928 km eli 364 km per 36 km2 tiili).
 
-    JARJESTYS: reuna otetaan YHDISTETYSTA muodosta ja vasta se leikataan
-    tiilien peittoon. Jos leikkaisi ensin, tiilien reunat tulisivat mukaan
-    keinotekoisena rantaviivana."""
+    Kaksi hylattya yritysta, molemmat mitattuja:
+      - yhdistaminen tiileittain: merialue on yksi valtava polygoni, joka
+        olisi kasitelty uudelleen kaikilla 1126 tiilella - ajo jumittui
+      - yhdistaminen vain saman mtk_id:n kesken: halpa mutta ei riita,
+        4 397 km vs. oikea 3 607 km, koska paallekkaisyys ei ole
+        kaksoiskappaleita vaan JAETTUJA REUNOJA
+
+    Nyt: polygonit puretaan osiin ja indeksoidaan kerran (STRtree), ja tyo
+    tehdaan 60 km lohkoissa. Jokaisessa lohkossa LEIKATAAN ENSIN
+    (clip_by_rect, halpa suorakaideleikkaus) ja yhdistetaan vasta sitten,
+    jolloin unioni tehdaan aina pienelle joukolle.
+
+    MARGINAALI JA RAJAUS OVAT YHDESSA OLENNAISET. Leikkaus tuottaa
+    keinotekoisia reunoja marginaalin rajalle; ne jaavat pois kun tulos
+    rajataan lohkoon ILMAN marginaalia. Ja peitto on rajattava lohkoon,
+    koska 6 km tiili voi ylittaa lohkorajan - ilman sita tulos oli 1,25 %
+    pielessa. Todennettu globaalia yhdistamista vastaan: ero +0,001 %."""
+    import shapely
+    from shapely import STRtree
     from shapely.geometry import box
     from shapely.ops import unary_union
 
@@ -1418,21 +1436,48 @@ def compute_shoreline_length_m(force=False):
         return json.loads(cache_path.read_text())["length_m"]
 
     registry = tiles.get_registry()
-    yhteensa = 0.0
-    for ryhma in tiles.tiilirykelmat(registry):
-        rajat = [registry[t].bounds for t in ryhma]
-        bbox = (min(b[0] for b in rajat), min(b[1] for b in rajat),
-                max(b[2] for b in rajat), max(b[3] for b in rajat))
-        geoms = vesisto._polygonit(bbox, vesisto.VESI_TASOT)
-        kelpo = [g for g in geoms if g is not None and not g.is_empty]
-        if not kelpo:
-            continue
-        vesi = unary_union(kelpo)
-        peitto = unary_union([box(*b) for b in rajat])
-        osa = vesi.boundary.intersection(peitto).length
-        print(f"  rantaviiva: {len(ryhma)} tiilta -> {osa / 1000:.1f} km", flush=True)
-        yhteensa += osa
+    peitto = unary_union([box(*t.bounds) for t in registry.values()])
+    x0, y0, x1, y1 = peitto.bounds
 
+    # Polygonit puretaan yksittaisiksi: MultiPolygonin osat ovat saaria ja
+    # erillisia altaita, ja indeksi loytaa niista vain tarvittavat.
+    osat = []
+    for g in vesisto._polygonit((x0, y0, x1, y1), vesisto.VESI_TASOT):
+        if g is None or g.is_empty:
+            continue
+        osat.extend(g.geoms if hasattr(g, "geoms") else [g])
+    if not osat:
+        cache_path.write_text(json.dumps({"length_m": 0.0}))
+        return 0.0
+    puu = STRtree(osat)
+
+    yhteensa = 0.0
+    lohkoja = 0
+    for lx in range(int(np.floor(x0 / SHORELINE_LOHKO_M)),
+                    int(np.floor(x1 / SHORELINE_LOHKO_M)) + 1):
+        for ly in range(int(np.floor(y0 / SHORELINE_LOHKO_M)),
+                        int(np.floor(y1 / SHORELINE_LOHKO_M)) + 1):
+            lohko = box(lx * SHORELINE_LOHKO_M, ly * SHORELINE_LOHKO_M,
+                        (lx + 1) * SHORELINE_LOHKO_M, (ly + 1) * SHORELINE_LOHKO_M)
+            if not lohko.intersects(peitto):
+                continue
+            iso = box(*shapely.buffer(lohko, SHORELINE_MARGINAALI_M).bounds)
+            leikatut = []
+            for i in puu.query(iso):
+                c = shapely.clip_by_rect(osat[i], *iso.bounds)
+                if not c.is_empty:
+                    leikatut.append(c if c.is_valid else shapely.make_valid(c))
+            if not leikatut:
+                continue
+            vesi = unary_union(leikatut)
+            yhteensa += vesi.boundary.intersection(peitto).intersection(lohko).length
+            lohkoja += 1
+            if lohkoja % 20 == 0:
+                print(f"  rantaviiva: {lohkoja} lohkoa -> {yhteensa / 1000:.0f} km",
+                      flush=True)
+
+    print(f"  rantaviiva: {lohkoja} lohkoa, {len(osat)} polygonia -> "
+          f"{yhteensa / 1000:.1f} km", flush=True)
     cache_path.write_text(json.dumps({"length_m": round(yhteensa, 1)}))
     return round(yhteensa, 1)
 
@@ -2221,6 +2266,52 @@ def shelter_score_from_level(fetch_level, wind_speed, obstacle_h=0.0):
                                     wind_speed, obstacle_h)
 
 
+def _fetch_natiiviruudukkoon(fetch_levels, obs_levels, buffer_small):
+    """Pyyhkaisymatkat puskuriruudukolta (2 m/px) niiden OMAAN
+    natiiviresoluutioon (FETCH_GRID_M, 10 m/px).
+
+    TAMA EI OLE TARKKUUSHAVIO vaan turhan toiston poisto. Pyyhkaisymatkat
+    lasketaan globaalilla 10 m ruudukolla (ks. global_cell_ids), ja
+    _tile_mosaic_cells monistaa saman arvon puskuriruudukon 2 m soluihin -
+    jokainen arvo on siis kuvassa 25 kertaa. Kuvat pienenevat 3000x3000 ->
+    600x600 eli 25-kertaisesti, ja selain lukee ne oikein riippumatta
+    resoluutiosta (ks. frontend: renderFactorTile skaalaa fetch-ruudukon
+    naytettavaan ruudukkoon).
+
+    ARVO OTETAAN PUSKURIPIKSELISTA, ei lohkon keskelta. Puskurivyohyke on
+    vain n. 10 m leveä, joten useimmissa 10 m soluissa on seka puskuria
+    etta sen ulkopuolta - keskisolu osuisi usein nollaan ja rantaviivaan
+    tulisi reikia. Valitaan lahin puskuripikseli lohkon keskipisteesta, ja
+    fetch seka este otetaan SAMASTA pikselista jottei pari hajoa."""
+    # Montako puskuripikselia mahtuu yhteen natiiviin fetch-soluun.
+    k = int(round(FETCH_GRID_M / NEW_PIXEL_FACTOR))
+    h, w = buffer_small.shape
+    if k <= 1 or h % k or w % k:
+        return fetch_levels, obs_levels        # ei jaollinen: jatetaan ennalleen
+
+    n_h, n_w = h // k, w // k
+    puskuri = np.asarray(buffer_small, dtype=bool).reshape(n_h, k, n_w, k)
+    puskuri = puskuri.transpose(0, 2, 1, 3).reshape(n_h, n_w, k * k)
+
+    # Lohkon solut etaisyysjarjestykseen keskipisteesta: ensimmainen osuva
+    # puskuripikseli voittaa, joten valinta on keskeinen eika satunnainen.
+    ii, jj = np.meshgrid(np.arange(k), np.arange(k), indexing="ij")
+    keskus = (k - 1) / 2.0
+    jarjestys = np.argsort(((ii - keskus) ** 2 + (jj - keskus) ** 2).ravel(), kind="stable")
+
+    lajiteltu = puskuri[:, :, jarjestys]
+    on_puskuria = lajiteltu.any(axis=2)
+    valinta = np.take(jarjestys, lajiteltu.argmax(axis=2))     # lohkon sisainen indeksi
+
+    ulos = []
+    for taso in (fetch_levels, obs_levels):
+        lohkot = taso.reshape(n_h, k, n_w, k, taso.shape[2])
+        lohkot = lohkot.transpose(0, 2, 1, 3, 4).reshape(n_h, n_w, k * k, taso.shape[2])
+        otettu = np.take_along_axis(lohkot, valinta[:, :, None, None], axis=2)[:, :, 0, :]
+        ulos.append(np.where(on_puskuria[:, :, None], otettu, 0).astype(taso.dtype))
+    return ulos[0], ulos[1]
+
+
 def get_or_compute_fetch_png(tile_id, buildings_path, part="a", force=False):
     """Pyyhkaisymatkat kahtena kuvana per tiili. 12 sektoria a 4 bittia = 6
     tavua, jotka mahtuvat tasmalleen kahden kuvan RGB-kanaviin:
@@ -2245,9 +2336,11 @@ def get_or_compute_fetch_png(tile_id, buildings_path, part="a", force=False):
     if tile_id not in tiles.get_registry():
         raise KeyError(f"Tuntematon tile_id: {tile_id}")
 
-    fetch_levels, obs_levels, _buffer = get_or_compute_fetch_levels(
+    fetch_levels, obs_levels, buffer_small = get_or_compute_fetch_levels(
         tile_id, buildings_path, force=force
     )
+    fetch_levels, obs_levels = _fetch_natiiviruudukkoon(
+        fetch_levels, obs_levels, buffer_small)
     levels = obs_levels if part.startswith("obs") else fetch_levels
     base = 6 if part.endswith("b") else 0
     chan = [
