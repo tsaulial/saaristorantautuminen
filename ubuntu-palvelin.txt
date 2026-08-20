@@ -78,6 +78,15 @@ VAIHE 3 - Paijanteen aineisto (Ubuntu)
 Ubuntun hydrografia.gpkg:ssa ei ole jarvi-tasoa eika Paijanteen
 korkeusmallia lainkaan.
 
+AKTIVOI VIRTUAALIYMPARISTO ENSIN. Ilman sita tulee:
+
+    ImportError: Puuttuvat kirjastot: pyproj, rasterio
+
+eraajo.sh aktivoi venvin itse, joten vaihe 4 toimii ilmankin - mutta
+kasin ajettavat backend-komennot eivat.
+
+    source .venv/bin/activate
+
     python3 -m backend.mml_lataus --bbox 400000 6786000 434000 6834000 --taustakartta
     python3 -m backend.mml_lataus --mitatoi
 
