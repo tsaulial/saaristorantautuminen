@@ -121,7 +121,12 @@
   /* Paikannuspainike. Leafletin .leaflet-bar antaa reunat ja varjon, joten
      tama maarittelee vain sisallon - painike nayttaa silloin samalta kuin
      zoom-napit eika irrallisen lisatyn olen. */
-  .paikannus .paikannus-nappi {
+  /* VALITSIN ON TAHALLAAN TARKKA. Leafletin oma
+     ".leaflet-touch .leaflet-bar a" on 30x30 ja tarkkuudeltaan (0,2,1),
+     joten pelkka ".paikannus .paikannus-nappi" (0,2,0) havisi sille -
+     mobiilikoon 40 px ei mennyt lapi ja luulin ensin syyksi selaimen
+     valimuistia. .leaflet-touch on paalla myos tyopoydalla. */
+  .paikannus.leaflet-bar a.paikannus-nappi {
     display: flex; align-items: center; justify-content: center;
     width: 30px; height: 30px; color: var(--color-text);
   }
@@ -310,6 +315,8 @@
     }
     .m-time.m-disabled { opacity: .45; }
     .m-time.m-disabled .m-time-input { pointer-events: none; }
+    /* Aikajana kuuluu vain melottavuuteen; ks. paivitaMobiiliValilehdet. */
+    .m-time.m-piilossa { display: none; }
 
     .m-tabs { display: flex; }
     .m-tab {
@@ -339,7 +346,16 @@
 
     /* Leafletin oma kalusto pois alaklusterin alta. */
     .leaflet-control-attribution { display: none; }
-    .leaflet-top.leaflet-left { top: 60px; }
+    /* MOLEMMAT ylakulmat ylapalkin alta, ei vain vasen. Oikea jai
+       alunperin nollaan, jolloin paikannuspainike oli 56 px korkean
+       .m-top-palkin ALLA (z-index 1200 vs. Leafletin 800) - painike oli
+       olemassa mutta nakymatta ja klikkaamatta. */
+    .leaflet-top.leaflet-left,
+    .leaflet-top.leaflet-right { top: 60px; }
+    /* Kosketuskohde isommaksi: 30 px riittaa hiirelle, ei sormelle. */
+    .paikannus.leaflet-bar a.paikannus-nappi { width: 40px; height: 40px; }
+    .paikannus.leaflet-bar a.paikannus-nappi svg { width: 22px; height: 22px; }
+    .paikannus .paikannus-viesti { top: 44px; max-width: 62vw; font-size: 14px; }
   }
 
   .status {
@@ -2800,6 +2816,18 @@ function syncMobileShell() {
   const aika = document.getElementById('m-time');
   const src = document.getElementById('forecast-hour');
   const ennuste = currentWind.source !== 'kasin' && forecast.hours && forecast.hours.length > 0;
+
+  // AIKAJANA VAIN MELOTTAVUUDESSA. Rantautumispisteytys ja karkipaikat
+  // kuvaavat rannan PYSYVIA ominaisuuksia - jyrkkyytta, etaisyytta
+  // rakennuksiin, kalliota - jotka eivat muutu tunnin mukana. Jana
+  // lupasi niissa muutosta jota ei tule, ja vei kolmanneksen
+  // alapalkista.
+  //
+  // Suojaisuus on ainoa tuulesta riippuva tekija, ja se on valinnainen
+  // (NO_SHELTER_MASK). Jos se kytketaan paalle, ennustehetki loytyy yha
+  // paneelin tuulivalilehdelta - toiminto ei siis katoa, vain sen
+  // pysyva paikka alapalkissa.
+  aika.classList.toggle('m-piilossa', currentDisplay !== 'paddle');
   aika.classList.toggle('m-disabled', !ennuste);
 
   const mSlider = document.getElementById('m-time-input');
