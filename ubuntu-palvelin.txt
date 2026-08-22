@@ -111,8 +111,12 @@ VAIHE 5 - Palvelin (Ubuntu)
 tailscale serve paattaa HTTPS:n oikealla sertifikaatilla ja nakyy VAIN
 tailnetissa - ei julkiseen verkkoon.
 
-    cd ~/saaristorantautuminen-0826/saaristorantautuminen
-    tailscale serve --bg docs
+POLUN ON OLTAVA ABSOLUUTTINEN. Suhteellinen "docs" tulkitaan
+verkko-osoitteeksi, ei hakemistoksi:
+
+    error: non-localhost target "http://docs" must include a scheme
+
+    tailscale serve --bg /home/tsaulial/saaristorantautuminen-0826/saaristorantautuminen/docs
 
     tailscale serve status
 
