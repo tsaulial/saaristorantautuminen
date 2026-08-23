@@ -190,9 +190,8 @@
       <dt>piirto ka.</dt><dd id="hud-ms">–</dd>
       <dt>hitain</dt><dd id="hud-max">–</dd>
     </dl>
-    <label class="saadin">zoomausnopeus (pienempi = nopeampi)
-      <input type="range" id="zoom-nopeus" min="10" max="120" step="5" value="30">
-      <span id="zoom-nopeus-arvo">30</span>
+    <label class="saadin">zoomausherkkyys <span id="zoom-nopeus-arvo">1,0</span>
+      <input type="range" id="zoom-nopeus" min="0.3" max="3" step="0.1" value="1">
     </label>
     <div class="note">Ruututiilidemo &middot; vertailu:
       <a href="index.html">nykyinen versio</a></div>
@@ -312,15 +311,19 @@ const map = L.map('map', {
   // resoluutiotasoa kovilla rajoilla, joita on jouduttu saatamaan kahdesti.
   // Ruututiilella kirjasto skaalaa tasojen yli, joten raja ei enaa nay.
   zoomSnap: 0, zoomDelta: 0.6,
-  // ZOOMAUSNOPEUS. wheelPxPerZoomLevel kertoo montako "vierityspikselia"
-  // vastaa yhta zoom-tasoa, joten PIENEMPI ARVO = NOPEAMPI zoomaus.
-  // Leafletin oletus on 60; ensimmainen versio talla sivulla oli 120 eli
-  // kaksi kertaa oletusta HITAAMPI, mika tuntui tapahtumalla jaykalta
-  // kahden sormen elelella. Arvoa saadetaan HUDista, koska oikea luku
-  // riippuu laitteesta - trackpad ja hiiren rulla tuottavat eri
-  // suuruisia deltoja eika sita voi paattaa arvaamalla.
-  wheelPxPerZoomLevel: 30,
-  wheelDebounceTime: 20,
+  // RULLAZOOMAUS ON LEAFLETIN OMA, mutta ILMAN PUSKUROINTIA.
+  //
+  // Kokeilin korvata sen omalla kasittelijalla joka lahestyy tavoitezoomia
+  // joka ruudunpaivityksella. Se JAADYTTI SELAIMEN kolmesti: setZoomAround
+  // ei ole kevyt kutsu vaan taysi zoom-siirtyma, joka siirtaa kaikki
+  // kerrokset ja kontrollit - 60 kertaa sekunnissa se on liikaa. Leafletin
+  // oma animaatio tekee saman CSS-muunnoksella, joka on murto-osa hinnasta.
+  //
+  // Portaisuuden aiheutti PUSKUROINTI, ei animaatio: Leaflet keraa
+  // vieritystapahtumat wheelDebounceTime-ikkunaan ennen kuin se toimii.
+  // Nollattuna jokainen tapahtuma kaynnistaa zoomin heti.
+  wheelDebounceTime: 0,
+  wheelPxPerZoomLevel: 60,
   minZoom: -10, maxZoom: 4,
 });
 L.control.scale({ position: 'bottomleft', imperial: false, maxWidth: 180 }).addTo(map);
@@ -737,10 +740,17 @@ function dilatoiLahimmalla(alpha, w, h, sade) {
   // ulkopuolella eika pyyda yhtaan tiilta - kartta jaa tyhjaksi eika
   // mikaan kaadu.
   const rajat = { minZoom: map.getMinZoom(), maxZoom: map.getMaxZoom() };
-  const peruskarttaKerros = new Peruskartta({ tileSize: 256, pane: 'peruskartta',
-    keepBuffer: 2, updateWhenZooming: false, ...rajat }).addTo(map);
-  const analyysiKerros = new Analyysi({ tileSize: 256, pane: 'analyysi',
-    keepBuffer: 2, updateWhenZooming: false, ...rajat }).addTo(map);
+  // updateWhenIdle: TIILET PAIVITETAAN VASTA KUN LIIKE PYSAHTYY.
+  //
+  // Ilman tata portaaton rullazoomaus jaadytti selaimen: oma kasittelija
+  // kutsuu setZoomAround(:ia joka ruudunpaivityksella, ja jokainen kutsu
+  // sai GridLayerin pyytamaan uudet tiilet - analyysikerros laski niita
+  // 60 kertaa sekunnissa. Nyt eleen aikana skaalataan olemassa olevia
+  // tiilia (halpaa, naytonohjaimella) ja lasketaan vasta lopuksi.
+  const kerrosAsetukset = { tileSize: 256, keepBuffer: 2,
+    updateWhenZooming: false, updateWhenIdle: true, ...rajat };
+  const peruskarttaKerros = new Peruskartta({ ...kerrosAsetukset, pane: 'peruskartta' }).addTo(map);
+  const analyysiKerros = new Analyysi({ ...kerrosAsetukset, pane: 'analyysi' }).addTo(map);
 
   // Kauppatori, EPSG:3067. L.CRS.Simple: lat = pohjoinen, lng = ita.
   // LEGENDA SAMASTA VARIASTEIKOSTA kuin kartta (SCORE_COLOR_LUT), ei
@@ -953,7 +963,16 @@ function dilatoiLahimmalla(alpha, w, h, sade) {
     history.replaceState(null, '',
       `#${c.lat.toFixed(0)},${c.lng.toFixed(0)},${map.getZoom().toFixed(2)}${pinOsa}`);
   };
-  map.on('moveend zoomend', tallennaNakyma);
+  // VIIVASTETTY. Portaaton rullazoomaus laukaisee moveend-tapahtuman joka
+  // ruudunpaivityksella, ja history.replaceState 60 kertaa sekunnissa
+  // jaadyttaa selaimen - se on selaimen suoja, ei meidan vikamme, mutta
+  // seuraus on sama. URL kirjoitetaan vasta kun liike on pysahtynyt.
+  let urlAjastin = null;
+  const tallennaMyohemmin = () => {
+    clearTimeout(urlAjastin);
+    urlAjastin = setTimeout(tallennaNakyma, 400);
+  };
+  map.on('moveend zoomend', tallennaMyohemmin);
 
   // Naytettavan lajin vaihto. GridLayerin redraw() piirtaa nakyvat tiilet
   // uudelleen mutta SAILYTTAA ne kartalla siihen asti - ei valahdysta.
@@ -985,12 +1004,19 @@ function dilatoiLahimmalla(alpha, w, h, sade) {
 
   // Zoomausnopeuden saadin. Leaflet lukee arvon tapahtumahetkella, joten
   // muutos vaikuttaa heti ilman kartan uudelleenluontia. PIENEMPI = NOPEAMPI.
+  // Zoomausherkkyys: wheelPxPerZoomLevel kertoo montako vierityspikselia
+  // vastaa yhta zoom-tasoa, joten PIENEMPI ARVO = NOPEAMPI zoomaus.
+  // Leaflet lukee sen tapahtumahetkella, joten muutos vaikuttaa heti.
   const nopeus = document.getElementById('zoom-nopeus');
   const nopeusArvo = document.getElementById('zoom-nopeus-arvo');
-  nopeus.addEventListener('input', () => {
-    map.options.wheelPxPerZoomLevel = Number(nopeus.value);
-    nopeusArvo.textContent = nopeus.value;
-  });
+  const paivitaHerkkyys = () => {
+    // Saadin on herkkyytta (suuri = nopeampi); Leaflet haluaa kaanteisen.
+    const herkkyys = Number(nopeus.value);
+    map.options.wheelPxPerZoomLevel = Math.round(60 / herkkyys);
+    nopeusArvo.textContent = herkkyys.toFixed(1).replace('.', ',');
+  };
+  nopeus.addEventListener('input', paivitaHerkkyys);
+  paivitaHerkkyys();
 
   const lohkot = location.hash.slice(1).split('|');
   const osat = (lohkot[0] || '').split(',').map(Number);
