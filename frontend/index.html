@@ -598,6 +598,9 @@ const baseLayerGroup = L.layerGroup().addTo(map);
 // Esilasketut paksuus x prosentti -kuvat poistettiin - niita oli 50 per
 // tiili, ne olivat 53 % docs/-hakemiston koosta ja 2/3 laskenta-ajasta.
 const newGroup = L.layerGroup();
+// Nakyvat kuvakerrokset tiilittain: tile_id -> { overlay, dataUrl }.
+// Tarvitaan jotta muuttumattomia ei luoda uudelleen (ks. refreshNew).
+const newOverlays = new Map();
 let currentDisplay = 'score'; // 'score' | 'top'
 
 // --- VEKTORITASOT: OMA PANE, EKSPLISIITTINEN JARJESTYS ---
@@ -2746,10 +2749,60 @@ async function refreshNew() {
     await new Promise((r) => setTimeout(r, 0));
   }
   if (myGeneration !== newRenderGeneration) return; // uudempi pyynto on jo kaynnissa/valmis, hylataan tama
-  newGroup.clearLayers();
-  rendered.forEach(({ tile, dataUrl }) => {
-    L.imageOverlay(dataUrl, tileLatLngBounds(tile), { opacity: 1 }).addTo(newGroup);
+
+  // VAIN MUUTTUNUT VAIHDETAAN.
+  //
+  // Aiemmin koko kerros tyhjennettiin ja jokainen kuva luotiin uudelleen
+  // joka siirrolla ja zoomauksella - myos silloin kun kuva oli tasan sama.
+  // Uusi <img> joutuu purkamaan kuvan uudelleen, ja vanha oli jo poistettu,
+  // joten valiin jai ruutu jossa kerrosta ei ollut lainkaan. Se nakyi
+  // valahdyksena: aallokon varitys ja rantautumisviiva katosivat hetkeksi
+  // joka kerta kun karttaa liikutti.
+  //
+  // Laskenta oli jo suunniteltu valttamaan tata (kaikki tiilet lasketaan
+  // valmiiksi ENNEN vaihtoa), mutta vaihto itse teki saman virheen
+  // uudelleen. Siirrossa valtaosa tiilista on samoja ja niiden kuvat tulevat
+  // valimuistista muuttumattomina, joten nyt niihin ei kosketa lainkaan.
+  // KUVAT PURETAAN ENNEN VAIHTOA. Uusi tai vaihtuva <img> ei piirry heti kun
+  // src asetetaan: selain purkaa sen vasta sen jalkeen. Zoomatessa
+  // analyysitaso vaihtuu, jolloin kuva muuttuu oikeasti - ja ilman
+  // esipurkua kerros katosi juuri siksi ajaksi. decode() odottaa valmiiksi,
+  // jolloin vaihto on yhdessa ruudunpaivityksessa.
+  const purettavat = rendered.filter(({ tile, dataUrl }) => {
+    const o = newOverlays.get(tile.tile_id);
+    return !o || o.dataUrl !== dataUrl;
   });
+  if (purettavat.length) {
+    await Promise.all(purettavat.map(({ dataUrl }) => {
+      const img = new Image();
+      img.src = dataUrl;
+      // Virhe ei saa estaa vaihtoa: pahin tapaus on entinen valahdys.
+      return img.decode().catch(() => {});
+    }));
+    if (myGeneration !== newRenderGeneration) return;
+  }
+
+  const pidettavat = new Set(rendered.map(({ tile }) => tile.tile_id));
+  for (const [tid, tieto] of newOverlays) {
+    if (!pidettavat.has(tid)) {
+      newGroup.removeLayer(tieto.overlay);
+      newOverlays.delete(tid);
+    }
+  }
+  for (const { tile, dataUrl } of rendered) {
+    const olemassa = newOverlays.get(tile.tile_id);
+    if (olemassa) {
+      // setUrl vaihtaa lahteen paikallaan; kerros pysyy kartalla koko ajan.
+      if (olemassa.dataUrl !== dataUrl) {
+        olemassa.overlay.setUrl(dataUrl);
+        olemassa.dataUrl = dataUrl;
+      }
+      continue;
+    }
+    const overlay = L.imageOverlay(dataUrl, tileLatLngBounds(tile), { opacity: 1 })
+      .addTo(newGroup);
+    newOverlays.set(tile.tile_id, { overlay, dataUrl });
+  }
 }
 
 
