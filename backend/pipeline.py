@@ -503,8 +503,16 @@ def _alueen_sormenjalki(polku, tasot, bbox):
     return ";".join(osat)
 
 
-def _vanha_muoto_kelpaa(vanha, uusi):
-    """Kelpuuttaa ENNEN sisaltotunnistetta lasketun sormenjaljen.
+def sormenjalki_kelpaa(vanha, uusi):
+    """Kelpaako tallennettu sormenjalki nykyista vasten?
+
+    KAIKKI SORMENJALKIVERTAILUT KULKEVAT TASTA. Niita on kaksi eri
+    paikassa - _raw.npz:n kelpoisuus ja _fetch_global/_water_global:n
+    muuttuneet tiilet - ja jos vain toinen osaa siirtymasaannon, toinen
+    laskee koko aineiston uudelleen silti. Juuri nain kavi kun mitatointi
+    korjattiin aikanaan vain toiseen kahdesta paikasta.
+
+    Tasmallinen osuma kelpaa aina. Sen lisaksi kelpaa SIIRTYMATAPAUS:
 
     Jaetut tiedostot tunnistettiin aiemmin koon ja muokkausajan perusteella
     (esim. "12345:678901234"). Kun tunnistus vaihtui sisaltopohjaiseksi,
@@ -523,6 +531,8 @@ def _vanha_muoto_kelpaa(vanha, uusi):
     olisi ollut laskea kaikki uudelleen, mika on suurempi hinta kuin riski."""
     if not vanha:
         return False
+    if vanha == uusi:
+        return True
     v, u = vanha.split("|"), uusi.split("|")
     if len(v) != 5 or len(u) != 5:
         return False
@@ -674,9 +684,7 @@ def get_or_compute_raw(tile_id, buildings_path, force=False):
         if "shoreline_mask" not in d.files:
             return False
         vanha = str(d["sormenjalki"]) if "sormenjalki" in d.files else None
-        if vanha == sormenjalki:
-            return True
-        if _vanha_muoto_kelpaa(vanha, sormenjalki):
+        if sormenjalki_kelpaa(vanha, sormenjalki):
             return True
         print(f"  {tile_id}: lahdeaineisto muuttunut, lasketaan uudelleen", flush=True)
         return False
@@ -3057,7 +3065,12 @@ def _globaalin_tila(cache_path, gid, buildings_path):
                 vanhat_sj = dict(zip(vanhat_idt, (str(x) for x in d["sormenjaljet"])))
             muuttuneet_idt = set(nyt - oli)
             for tid in nyt & oli:
-                if vanhat_sj.get(tid) != nyt_sormenjaljet[tid]:
+                # SAMA VERTAILU KUIN _raw.npz:LLA. Suora != olisi merkinnyt
+                # jokaisen tiilen muuttuneeksi heti kun sormenjaljen muoto
+                # vaihtui, ja koko rannikon sadelaskenta olisi ajettu
+                # uudelleen vaikka _raw.npz-tarkistus paasti ne lapi.
+                if not sormenjalki_kelpaa(vanhat_sj.get(tid),
+                                          nyt_sormenjaljet[tid]):
                     muuttuneet_idt.add(tid)
             muuttuneet = [nyt_tiilet[t] for t in muuttuneet_idt]
             if muuttuneet_idt:
