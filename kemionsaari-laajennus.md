@@ -69,6 +69,35 @@ Levytilaa kuluu arviolta 2–4 Gt.
 
 ---
 
+## 2b. Tarkista ennen ajoa, montako tiiltä laskettaisiin
+
+Tarkistus maksaa noin 30 sekuntia, ajo tunteja. Ilman tätä väärin mennyt
+siirtymä näkyisi vasta kun tunti on jo kulunut.
+
+```bash
+.venv/bin/python3 tarkista_sormenjaljet.py
+```
+
+Skripti **ei laske mitään** — se lukee `_raw.npz`:n sormenjäljen ja
+vertaa sitä tasan samalla funktiolla jota pipeline käyttää.
+
+Odotettu tulos: `LASKETTAISIIN UUDELLEEN` on **kourallinen**, ja lähes
+kaikki tiilet ovat kohdassa `kelpaa siirtymäsäännöllä`. Uudet tiilet
+näkyvät kohdassa `ei välimuistia (UUSI)` — niitä pitäisi olla 13.
+
+Kaksi syytä uudelleenlaskennalle ovat odotettuja eivätkä merkitse vikaa:
+
+- **`ei sormenjälkeä (vanha välimuisti)`** — välimuisti on vanhempi kuin
+  koko sormenjälkikenttä. Ei ole näyttöä tuoreudesta, joten se lasketaan.
+- **`lukuvirhe: BadZipFile`** — vioittunut välimuistitiedosto. Sekin on
+  oikein laskea uudelleen.
+
+Jos sen sijaan **satoja** tiiliä on kohdassa `lähde oikeasti muuttunut`,
+siirtymä ei purrut. Skripti varoittaa siitä itse eikä ajoa kannata
+aloittaa.
+
+---
+
 ## 3. Rakenna
 
 ```bash
