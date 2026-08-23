@@ -86,9 +86,47 @@
     .paikannus.leaflet-bar a.paikannus-nappi svg { width: 24px; height: 24px; }
   }
 
-  /* Osuman tiedot: klikatun pisteen arvo lukuna. */
-  .osuma-arvo { font-size: 22px; font-weight: 800; }
-  .osuma-selite { color: var(--color-neutral-700); font-size: 14px; }
+  /* VERTAILULISTA PANEELISSA, EI POPUPEJA KARTALLA.
+     Popupit olivat vaara ratkaisu: ne peittavat juuri sen mita vertaillaan,
+     ja kaksi lahekkaista pistetta peittivat toisensa ja paneelin. Lista
+     pysyy paikallaan, kestaa siirron ja zoomin, ja toimii mobiilissa jossa
+     paneeli on jo valmiiksi alalaidan levy. */
+  .moodit { margin: 4px 0 10px; }
+  .moodit label { display: block; padding: 7px 0; cursor: pointer; min-height: 24px; }
+  .moodit input { margin-right: 8px; width: 18px; height: 18px; vertical-align: -3px; }
+  .tuuli { margin: 0 0 10px; }
+  .tuuli[hidden] { display: none; }
+  .tuuli-huom { color: var(--color-neutral-700); font-size: 14px; }
+
+  .vertailu { margin: 10px 0 0; }
+  .vertailu-otsikko {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 14px; color: var(--color-neutral-700); margin-bottom: 4px;
+  }
+  .vertailu-tyhjenna {
+    background: none; border: 0; color: var(--color-neutral-700); cursor: pointer;
+    font: inherit; text-decoration: underline; padding: 6px 0; min-height: 32px;
+  }
+  .vertailu-rivi {
+    display: grid; grid-template-columns: 22px 16px 1fr 32px; align-items: center;
+    gap: 8px; padding: 6px 0; border-top: 1px solid var(--color-neutral-300);
+  }
+  .vertailu-nro { font-weight: 800; font-variant-numeric: tabular-nums; }
+  .vertailu-vari { width: 14px; height: 14px; border-radius: 3px;
+                   border: 1px solid rgba(0,0,0,.3); }
+  .vertailu-pisteet { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .vertailu-sanat { color: var(--color-neutral-700); font-size: 14px; }
+  .vertailu-poista {
+    background: none; border: 0; cursor: pointer; font-size: 20px; line-height: 1;
+    color: var(--color-neutral-700); min-width: 32px; min-height: 32px;
+  }
+  .vertailu-tyhja { color: var(--color-neutral-700); font-size: 14px; }
+  .pin-merkki {
+    display: flex; align-items: center; justify-content: center;
+    width: 24px; height: 24px; border-radius: 50%; background: var(--color-text);
+    color: #fff; font: 800 13px/1 Archivo, sans-serif;
+    border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.5);
+  }
 
   /* KOSKETUSKOHTEET. Leafletin oletus on 30x30 ja linkit 14 px korkeita;
      sormelle suositus on 44x44. Kasvatetaan vain kosketuslaitteilla, jottei
@@ -122,7 +160,26 @@
   </div>
   <p class="legenda-selite">Väri kertoo, miten helppo rantaan on nousta veneellä
      tai kajakilla. Arvio perustuu rannan jyrkkyyteen, etäisyyteen rakennuksista
-     ja siihen onko ranta kalliota vai suota. <b>Napauta rantaa</b> nähdäksesi sen arvon.</p>
+     ja siihen onko ranta kalliota vai suota. <b>Napauta rantaa</b> lisätäksesi sen vertailuun.</p>
+  <div class="moodit" id="moodit">
+    <label><input type="radio" name="laji" value="rantautuminen" checked> Rantautuminen</label>
+    <label><input type="radio" name="laji" value="karkipaikat"> Kärkipaikat</label>
+    <label><input type="radio" name="laji" value="melottavuus"> Melottavuus</label>
+  </div>
+  <div class="tuuli" id="tuuli" hidden>
+    <div class="tuuli-huom">Tuuli on <b>käsin asetettu</b>, ei ennuste.</div>
+    <label class="saadin">suunta <span id="tuuli-suunta-arvo">225°</span>
+      <input type="range" id="tuuli-suunta" min="0" max="350" step="10" value="225"></label>
+    <label class="saadin">nopeus <span id="tuuli-nopeus-arvo">7,5 m/s</span>
+      <input type="range" id="tuuli-nopeus" min="0" max="20" step="0.5" value="7.5"></label>
+  </div>
+  <div class="vertailu">
+    <div class="vertailu-otsikko">
+      <span>Vertailu</span>
+      <button type="button" class="vertailu-tyhjenna" id="tyhjenna" hidden>tyhjennä</button>
+    </div>
+    <div id="vertailu-lista"><div class="vertailu-tyhja">Napauta rantaa lisätäksesi sen listaan.</div></div>
+  </div>
   <details class="tekniset">
     <summary>Tekniset tiedot</summary>
     <dl>
@@ -193,6 +250,52 @@ function hsvToRgb(h, s, v) {
 }
 const SCORE_COLOR_LUT = Array.from({ length: 256 }, (_, i) => hsvToRgb((i / 255) * 120, 1, 1));
 
+// --- MELOTTAVUUS. Samat vakiot ja kaavat kuin index.html:ssa; demo ei saa
+// laskea eri tavalla, vain piirtaa eri tavalla.
+//
+// TUULI ON KASIN ASETETTAVA eika haettu ennusteesta. Ennustekoneisto
+// (FMI:n hilahaku, aallokkomalli, tuntiliuku) on iso ja sen siirtaminen
+// tanne ei kertoisi mitaan ruututiilesta - se on demon kysymys. Kasin
+// asetettu tuuli riittaa nayttamaan etta vesikerros piirtyy oikein, ja se
+// on sanottu kayttoliittymassa jottei sita luulla ennusteeksi.
+const FETCH_SECTORS = 12, OBSTACLE_LEVELS = 16, OBSTACLE_MAX_M = 20.0;
+const WAVE_COEFF = 5.1e-4, WIND_SHELTER_MAX = 0.6, WIND_SHELTER_K = 8.0;
+const PADDLE_WAVE_LIMITS = [0.20, 0.40, 0.70], PADDLE_GUST_LIMITS = [8.0, 12.0, 16.0];
+const DEFAULT_GUST_FACTOR = 1.75;
+const FETCH_LEVEL_METRES = [
+  50.0000, 73.1327, 106.9677, 156.4567, 228.8420, 334.7165, 489.5742, 716.0773,
+  1047.3729, 1531.9435, 2240.7024, 3277.3709, 4793.6576, 7011.4594, 10255.3348, 15000.0000,
+];
+function fetchWeights(bearingDeg) {
+  const step = 360 / FETCH_SECTORS;
+  const pos = ((((bearingDeg % 360) + 360) % 360)) / step;
+  const lo = Math.floor(pos) % FETCH_SECTORS;
+  return { lo, hi: (lo + 1) % FETCH_SECTORS, frac: pos - Math.floor(pos) };
+}
+const dequantiseObstacle = (l) => l * (OBSTACLE_MAX_M / (OBSTACLE_LEVELS - 1));
+function shelteredWind(windSpeed, fetchM, obstacleH) {
+  if (!(obstacleH > 0)) return windSpeed;
+  return windSpeed * (1 - WIND_SHELTER_MAX
+    * Math.exp(-(fetchM / 2) / (WIND_SHELTER_K * obstacleH)));
+}
+function piecewiseClass(v, [a, b, c]) {
+  let out;
+  if (v < a) out = v / a; else if (v < b) out = 1 + (v - a) / (b - a);
+  else if (v < c) out = 2 + (v - b) / (c - b); else out = 3;
+  return out < 0 ? 0 : out > 3 ? 3 : out;
+}
+function paddleDifficulty(fetchM, windSpeed, gustSpeed, obstacleH) {
+  const hs = WAVE_COEFF * shelteredWind(windSpeed, fetchM, obstacleH) * Math.sqrt(fetchM);
+  const gustEff = shelteredWind(gustSpeed, fetchM, obstacleH);
+  return Math.max(piecewiseClass(hs, PADDLE_WAVE_LIMITS),
+                  piecewiseClass(gustEff, PADDLE_GUST_LIMITS)) / 3;
+}
+
+// Naytettava laji. 'rantautuminen' ja 'karkipaikat' kayttavat samaa
+// piirtoa eri lahdekuvasta; 'melottavuus' on oma polkunsa.
+let LAJI = 'rantautuminen';
+let TUULI = { suunta: 225, nopeus: 7.5 };
+
 // --- Lahdetasot. Osatekijakuvat ovat 3000/750/188 pikselia 6 km tiilella
 // (ks. backend: ANALYYSI_TASOT), peruskartta 6000-3000/1500/375 riippuen
 // siita milloin aineisto on rakennettu. Peruskartan todellinen koko luetaan
@@ -224,8 +327,15 @@ L.control.scale({ position: 'bottomleft', imperial: false, maxWidth: 180 }).addT
 
 let tiles = [];
 const kuvaValimuisti = new Map();     // avain -> Promise<Image>
-const dataValimuisti = new Map();     // avain -> Promise<{factors, tiebreak, px}>
+// Vesiruudukko on 120x120 eli 0,2 Mt tiilta kohti - se mahtuu muistiin
+// sellaisenaan eika tarvitse rajaa.
+const vesiValimuisti = new Map();
 
+// 6 km tiilen rajat ja osumatesti. Nama kolme katosivat valimuistin
+// uudelleenkirjoituksessa, ja seuraus oli opettava: createTile heitti
+// ReferenceErrorin, catch nielaisi sen ja jatti tiilen TYHJAKSI. Kartta
+// nayttti tyhjalta eika konsolissa ollut mitaan - virheenkasittely joka
+// jatkaa hiljaa piilotti oman vikansa.
 function tiiliRajat(t) {
   const b = t.bounds_epsg3067;
   return { minx: b.minx, miny: b.miny, maxx: b.maxx, maxy: b.maxy };
@@ -237,6 +347,8 @@ function osuvatTiilet(alue) {
   return tiles.filter((t) => osuu(tiiliRajat(t), alue));
 }
 
+// Kuvan lataus kerran per osoite. Selain hoitaa purkamisen ja voi
+// vapauttaa bittikartan itse, joten tama on vain lupausten kirjanpitoa.
 function lataaKuva(url) {
   if (!kuvaValimuisti.has(url)) {
     kuvaValimuisti.set(url, new Promise((ok, fail) => {
@@ -250,24 +362,85 @@ function lataaKuva(url) {
   return kuvaValimuisti.get(url);
 }
 
-async function lataaOsatekijat(tileId, taso) {
-  const avain = `${tileId}|${taso.name}`;
-  if (!dataValimuisti.has(avain)) {
-    dataValimuisti.set(avain, (async () => {
-      const [f, t] = await Promise.all([
-        lataaKuva(`cache/${tileId}_factors${taso.suffix}.png`),
-        lataaKuva(`cache/${tileId}_tiebreak${taso.suffix}.png`),
-      ]);
-      const lue = (img) => {
-        const c = document.createElement('canvas');
+// OSATEKIJAKUVIA EI PIDETA IMAGEDATANA MUISTISSA.
+//
+// Ensimmainen yritys luki koko 3000x3000 kuvan ImageDataksi ja rajasi
+// valimuistin tavuina. Se oli VAAROIN kahdesta syysta, ja jalkimmainen
+// paljastui vasta mittaamalla:
+//
+//   1. Yksi detail-pari on 72 Mt. Nakyma tarvitsee neljaa lahdetiilta eli
+//      288 Mt, joten 180 Mt budjetti oli PIENEMPI KUIN TYOJOUKKO - jokainen
+//      ruututiili haati sen mita seuraava tarvitsi. Mitattuna kärkipaikkojen
+//      piirto oli 3 888 ms/tiili, kun se ilman rajaa oli 175 ms.
+//      Tyojoukkoa pienempi valimuisti on huonompi kuin ei valimuistia
+//      lainkaan: se tekee saman tyon uudelleen ja uudelleen.
+//
+//   2. Koko kuvaa ei tarvita. Ruututiili lukee siita ikkunan joka on
+//      detail-tasolla luokkaa 400x400 pikselia - alle 2 % kuvasta.
+//
+// Nyt valimuistissa on vain <img>-elementti, jonka purkamisen selain hoitaa
+// ja jonka se voi vapauttaa itse. Ikkuna luetaan pienelle apucanvasille
+// vasta kun sita tarvitaan.
+const apuCanvas = document.createElement('canvas');
+const apuCtx = apuCanvas.getContext('2d', { willReadFrequently: true });
+
+// Lukee ikkunan kuvasta ImageDataksi. Canvas kierratetaan, jottei jokainen
+// ruututiili varaa uutta.
+function lueIkkuna(img, x0, y0, w, h) {
+  if (apuCanvas.width < w) apuCanvas.width = w;
+  if (apuCanvas.height < h) apuCanvas.height = h;
+  apuCtx.clearRect(0, 0, w, h);
+  apuCtx.drawImage(img, x0, y0, w, h, 0, 0, w, h);
+  return apuCtx.getImageData(0, 0, w, h);
+}
+
+async function lataaOsatekijat(tileId, taso, laji) {
+  const nimi = laji === 'karkipaikat' ? 'prime' : 'factors';
+  const f = await lataaKuva(`cache/${tileId}_${nimi}${taso.suffix}.png`);
+  return { img: f, px: f.naturalWidth };
+}
+
+// Vesiruudukko melottavuutta varten: 12 sektoria pakattuna kahden kuvan
+// RGB-kanaviin puolitavuina, sama purku kuin index.html:ssa. Ruudukko on
+// 50 m eli 120x120 tiilta kohti, joten se on kevyt eika riipu zoomista.
+async function lataaVesi(tileId) {
+  const avain = `${tileId}|vesi`;
+  if (!vesiValimuisti.has(avain)) {
+    vesiValimuisti.set(avain, (async () => {
+      const [a, b, oa, ob] = await Promise.all(['watera', 'waterb', 'waterobsa', 'waterobsb']
+        .map((osa) => lataaKuva(`cache/${tileId}_${osa}.png`)));
+      const lue = (img) => { const c = document.createElement('canvas');
         c.width = img.naturalWidth; c.height = img.naturalHeight;
         c.getContext('2d', { willReadFrequently: true }).drawImage(img, 0, 0);
-        return c.getContext('2d').getImageData(0, 0, c.width, c.height);
-      };
-      return { factors: lue(f), tiebreak: lue(t), px: f.naturalWidth };
+        return c.getContext('2d').getImageData(0, 0, c.width, c.height); };
+      const [A, B, OA, OB] = [lue(a), lue(b), lue(oa), lue(ob)];
+      const n = A.width * A.height;
+      const levels = new Uint8Array(n * FETCH_SECTORS);
+      const obst = new Uint8Array(n * FETCH_SECTORS);
+      const vesi = new Uint8Array(n);
+      for (let i = 0; i < n; i++) {
+        let summa = 0;
+        for (let c = 0; c < 3; c++) {
+          const va = A.data[i * 4 + c], vb = B.data[i * 4 + c];
+          const wa = OA.data[i * 4 + c], wb = OB.data[i * 4 + c];
+          levels[i * FETCH_SECTORS + 2 * c] = va >> 4;
+          levels[i * FETCH_SECTORS + 2 * c + 1] = va & 15;
+          levels[i * FETCH_SECTORS + 6 + 2 * c] = vb >> 4;
+          levels[i * FETCH_SECTORS + 6 + 2 * c + 1] = vb & 15;
+          obst[i * FETCH_SECTORS + 2 * c] = wa >> 4;
+          obst[i * FETCH_SECTORS + 2 * c + 1] = wa & 15;
+          obst[i * FETCH_SECTORS + 6 + 2 * c] = wb >> 4;
+          obst[i * FETCH_SECTORS + 6 + 2 * c + 1] = wb & 15;
+          summa += va + vb;
+        }
+        // Vesi tunnistetaan siita etta sektoreissa on arvoja: maalla
+        // pyyhkaisymatkoja ei ole laskettu lainkaan.
+        vesi[i] = summa > 0 ? 1 : 0;
+      }
+      return { levels, obst, vesi, px: A.width };
     })());
   }
-  return dataValimuisti.get(avain);
+  return vesiValimuisti.get(avain);
 }
 
 // Ruututiilen maantieteelliset rajat ja naytön resoluutio.
@@ -345,7 +518,10 @@ const Peruskartta = L.GridLayer.extend({
         kirjaaPiirto(performance.now() - t0);
         done(null, canvas);
       } catch (e) {
-        // Puuttuva kuva ei saa kaataa kerrosta: tiili jaa tyhjaksi.
+        // Puuttuva kuva ei saa kaataa kerrosta, mutta virhe on KERROTTAVA:
+        // hiljainen catch piilotti kertaalleen puuttuvan funktion ja
+        // kartta nayttti vain tyhjalta.
+        console.warn('ruututiili epaonnistui:', e.message);
         done(null, canvas);
       }
     })();
@@ -378,9 +554,14 @@ const Analyysi = L.GridLayer.extend({
     (async () => {
       const t0 = performance.now();
       try {
+        if (LAJI === 'melottavuus') {
+          await piirraMelottavuus(ctx, alue, koko);
+          kirjaaPiirto(performance.now() - t0);
+          return done(null, canvas);
+        }
         for (const t of osuvatTiilet(alue)) {
           const r = tiiliRajat(t);
-          const { factors, tiebreak, px } = await lataaOsatekijat(t.tile_id, taso);
+          const { img: osatekijaKuva, px } = await lataaOsatekijat(t.tile_id, taso, LAJI);
           const lahdeMpp = (r.maxx - r.minx) / px;
 
           // Kaistaleen paksuus lahdepikseleina, sama kaava kuin nykyisessa
@@ -403,7 +584,9 @@ const Analyysi = L.GridLayer.extend({
           const w = cx1 - cx0, h = cy1 - cy0;
           if (w <= 0 || h <= 0) continue;
 
-          const pala = piirraPala(factors, tiebreak, px, cx0, cy0, w, h, sade);
+          // IKKUNA LUETAAN VASTA TASSA, ja vain sen kokoisena kuin tarvitaan.
+          const ikkuna = lueIkkuna(osatekijaKuva, cx0, cy0, w, h);
+          const pala = piirraPala(ikkuna, w, h, sade);
 
           // Ikkunan maantieteelliset rajat -> kohde ruututiilessa. Marginaali
           // piirtyy mukaan, mutta se on TARKOITUS: naapuriruudun kaistale
@@ -419,6 +602,7 @@ const Analyysi = L.GridLayer.extend({
         kirjaaPiirto(performance.now() - t0);
         done(null, canvas);
       } catch (e) {
+        console.warn('ruututiili epaonnistui:', e.message);
         done(null, canvas);
       }
     })();
@@ -426,17 +610,55 @@ const Analyysi = L.GridLayer.extend({
   },
 });
 
+// MELOTTAVUUS. Vesiruudukko on 50 m ja kentta sileä, joten dilataatiota ei
+// tarvita eika marginaalia - piirto voi menna suoraan ruututiilen
+// pikseleihin. Sama kaava kuin index.html:ssa, mutta tuuli on kasin
+// asetettu (ks. TUULI).
+async function piirraMelottavuus(ctx, alue, koko) {
+  const kuva = ctx.createImageData(koko.x, koko.y);
+  const out = kuva.data;
+  const wf = fetchWeights(TUULI.suunta);
+  const puuska = Math.max(TUULI.nopeus, TUULI.nopeus * DEFAULT_GUST_FACTOR);
+  for (const t of osuvatTiilet(alue)) {
+    const r = tiiliRajat(t);
+    const { levels, obst, vesi, px } = await lataaVesi(t.tile_id);
+    const mpp = (r.maxx - r.minx) / px;
+    for (let y = 0; y < koko.y; y++) {
+      const gy = alue.maxy - (y + 0.5) * ((alue.maxy - alue.miny) / koko.y);
+      if (gy < r.miny || gy >= r.maxy) continue;
+      const cy = Math.floor((r.maxy - gy) / mpp);
+      for (let x = 0; x < koko.x; x++) {
+        const gx = alue.minx + (x + 0.5) * ((alue.maxx - alue.minx) / koko.x);
+        if (gx < r.minx || gx >= r.maxx) continue;
+        const cx = Math.floor((gx - r.minx) / mpp);
+        const i = cy * px + cx;
+        if (!vesi[i]) continue;
+        const fa = FETCH_LEVEL_METRES[levels[i * FETCH_SECTORS + wf.lo]];
+        const fb = FETCH_LEVEL_METRES[levels[i * FETCH_SECTORS + wf.hi]];
+        const fetchM = fa + (fb - fa) * wf.frac;
+        const oa = dequantiseObstacle(obst[i * FETCH_SECTORS + wf.lo]);
+        const ob = dequantiseObstacle(obst[i * FETCH_SECTORS + wf.hi]);
+        const este = oa + (ob - oa) * wf.frac;
+        const d = paddleDifficulty(fetchM, TUULI.nopeus, puuska, este);
+        const [rr, gg, bb] = SCORE_COLOR_LUT[Math.round((1 - d) * 255)];
+        const o = (y * koko.x + x) * 4;
+        out[o] = rr; out[o + 1] = gg; out[o + 2] = bb; out[o + 3] = 130;
+      }
+    }
+  }
+  ctx.putImageData(kuva, 0, 0);
+}
+
 // Yksi lahdeikkuna: pistemaara, dilataatio ja varitys. Palauttaa canvasin
 // LAHDERESOLUUTIOSSA, jonka kutsuja skaalaa.
-function piirraPala(factors, tiebreak, px, x0, y0, w, h, sade) {
-  const src = factors.data;
+function piirraPala(ikkuna, w, h, sade) {
+  const src = ikkuna.data;
   const scoreByte = new Uint8Array(w * h);
   const alpha = new Uint8Array(w * h);
   for (let y = 0; y < h; y++) {
-    const rivi = (y0 + y) * px;
     for (let x = 0; x < w; x++) {
-      const s = (rivi + x0 + x) * 4;
       const i = y * w + x;
+      const s = i * 4;
       if (src[s + 3] === 0) continue;          // peittomaskin ulkopuolella
       const bits = src[s + 2];
       scoreByte[i] = Math.round(
@@ -516,9 +738,9 @@ function dilatoiLahimmalla(alpha, w, h, sade) {
   // mikaan kaadu.
   const rajat = { minZoom: map.getMinZoom(), maxZoom: map.getMaxZoom() };
   const peruskarttaKerros = new Peruskartta({ tileSize: 256, pane: 'peruskartta',
-    keepBuffer: 4, updateWhenZooming: false, ...rajat }).addTo(map);
+    keepBuffer: 2, updateWhenZooming: false, ...rajat }).addTo(map);
   const analyysiKerros = new Analyysi({ tileSize: 256, pane: 'analyysi',
-    keepBuffer: 4, updateWhenZooming: false, ...rajat }).addTo(map);
+    keepBuffer: 2, updateWhenZooming: false, ...rajat }).addTo(map);
 
   // Kauppatori, EPSG:3067. L.CRS.Simple: lat = pohjoinen, lng = ita.
   // LEGENDA SAMASTA VARIASTEIKOSTA kuin kartta (SCORE_COLOR_LUT), ei
@@ -540,53 +762,92 @@ function dilatoiLahimmalla(alpha, w, h, sade) {
   // porrastus lupaisi tarkkuutta jota lahtoaineistossa ei ole.
   const sana = (tavu, sanat) => sanat[Math.min(sanat.length - 1, Math.floor(tavu / 64))];
 
+  // ── VERTAILULISTA ──────────────────────────────────────────────
+  //
+  // Napautus lisaa pisteen listaan, ei popupia kartalle. Lista kestaa
+  // siirron ja zoomin, ja kiinnitetyt pisteet menevat URL-tunnisteeseen -
+  // silloin jaettava linkki sisaltaa VERTAILUN eika vain sijaintia.
   const osumaKerros = L.layerGroup().addTo(map);
-  map.on('click', async (e) => {
-    const x = e.latlng.lng, y = e.latlng.lat;
-    const t = tiles.find((t) => {
-      const b = t.bounds_epsg3067;
-      return x >= b.minx && x < b.maxx && y >= b.miny && y < b.maxy;
-    });
-    osumaKerros.clearLayers();
-    if (!t) return;
+  let pinnit = [];
+
+  const sanaPisteista = (p) => p >= 0.8 ? 'Helppo' : p >= 0.6 ? 'Kohtalainen'
+                             : p >= 0.4 ? 'Vaikea' : 'Ei suositella';
+
+  // Pisteen arvo samasta kuvasta ja samalla kaavalla kuin varitys, joten
+  // lista ei voi olla eri mielta kuin kartta.
+  async function lueArvo(x, y) {
+    const t = tiles.find((t) => { const b = t.bounds_epsg3067;
+      return x >= b.minx && x < b.maxx && y >= b.miny && y < b.maxy; });
+    if (!t) return null;
     const taso = valitseTaso(Math.pow(2, -map.getZoom()));
-    const { factors, px } = await lataaOsatekijat(t.tile_id, taso);
-    const b = t.bounds_epsg3067;
-    const mpp = (b.maxx - b.minx) / px;
+    const { img, px } = await lataaOsatekijat(t.tile_id, taso, LAJI);
+    const b = t.bounds_epsg3067, mpp = (b.maxx - b.minx) / px;
     const cx = Math.floor((x - b.minx) / mpp), cy = Math.floor((b.maxy - y) / mpp);
-    if (cx < 0 || cy < 0 || cx >= px || cy >= px) return;
-    const i = (cy * px + cx) * 4;
-    const d = factors.data;
-    let sisalto;
-    if (d[i + 3] === 0) {
-      // Puskurivyohykkeen ulkopuolella ei ole arvoa - se on eri asia kuin
-      // huono arvo, ja se on sanottava eika naytettava nollana.
-      sisalto = '<div class="osuma-selite">Tässä kohdassa ei ole rantaviivaa.<br>'
-              + 'Arvio lasketaan vain 5–15 m leveälle rantakaistaleelle.</div>';
-    } else {
-      const bits = d[i + 2];
-      const pist = scoreFromComponents(d[i], d[i + 1], bits & 1, bits & 2, MASK);
-      const sanat = pist >= 0.8 ? 'Helppo' : pist >= 0.6 ? 'Kohtalainen'
-                  : pist >= 0.4 ? 'Vaikea' : 'Ei suositella';
-      const [r, g, bb] = SCORE_COLOR_LUT[Math.round(pist * 255)];
-      sisalto = `<div class="osuma-arvo" style="color:rgb(${r},${g},${bb});`
-        + `-webkit-text-stroke:.5px rgba(0,0,0,.45)">${(pist * 100).toFixed(0)} / 100</div>`
-        + `<div><b>${sanat}</b></div>`
-        // NIMET KERTOVAT SUUNNAN. Osapistemaarissa SUURI ON HYVA, joten
-        // "jyrkkyys 100 %" luettiin painvastoin: se tarkoittaa loivinta
-        // mahdollista rantaa, ei pystysuoraa. Nimi vaihdettu ja mukaan
-        // sanallinen arvio, jottei lukua tarvitse osata tulkita.
-        + `<div class="osuma-selite">`
-        + `Ranta: <b>${sana(d[i], ['jyrkkä', 'melko jyrkkä', 'melko loiva', 'loiva'])}</b>`
-        + ` &middot; rakennukset: <b>${sana(d[i + 1], ['aivan vieressä', 'lähellä', 'jonkin matkan päässä', 'kaukana'])}</b>`
-        + `${(bits & 1) ? ' &middot; kalliota' : ''}${(bits & 2) ? ' &middot; suota' : ''}`
-        + `<br>Osapisteet ${(d[i] / 255 * 100).toFixed(0)} ja `
-        + `${(d[i + 1] / 255 * 100).toFixed(0)} / 100 (suuri on hyvä).</div>`;
+    if (cx < 0 || cy < 0 || cx >= px || cy >= px) return null;
+    // Yksi pikseli riittaa: ei ole syyta lukea koko kuvaa yhden arvon takia.
+    const d = lueIkkuna(img, cx, cy, 1, 1).data;
+    const i = 0;
+    if (d[i + 3] === 0) return { rannaton: true };
+    const bits = d[i + 2];
+    return {
+      pisteet: scoreFromComponents(d[i], d[i + 1], bits & 1, bits & 2, MASK),
+      ranta: sana(d[i], ['jyrkkä', 'melko jyrkkä', 'melko loiva', 'loiva']),
+      rakennukset: sana(d[i + 1], ['rakennukset vieressä', 'rakennukset lähellä',
+                                   'rakennukset jonkin matkan päässä', 'rakennukset kaukana']),
+      kallio: !!(bits & 1), suo: !!(bits & 2),
+    };
+  }
+
+  function piirraLista() {
+    const el = document.getElementById('vertailu-lista');
+    document.getElementById('tyhjenna').hidden = pinnit.length === 0;
+    if (!pinnit.length) {
+      el.innerHTML = '<div class="vertailu-tyhja">Napauta rantaa lisätäksesi sen listaan.</div>';
+      return;
     }
-    // autoClose/closeOnClick POIS: kahden paikan vertailu on koko kartan
-    // tarkoitus, eika se onnistu jos toinen napautus sulkee ensimmaisen.
-    L.popup({ closeButton: true, autoPan: true, autoClose: false, closeOnClick: false })
-      .setLatLng(e.latlng).setContent(sisalto).addTo(map);
+    el.innerHTML = pinnit.map((p, i) => {
+      if (p.rannaton) {
+        return `<div class="vertailu-rivi"><span class="vertailu-nro">${i + 1}</span>`
+          + `<span class="vertailu-vari" style="background:#ccc"></span>`
+          + `<span class="vertailu-sanat">ei rantaviivaa</span>`
+          + `<button class="vertailu-poista" data-i="${i}" aria-label="Poista">&times;</button></div>`;
+      }
+      const [r, g, b] = SCORE_COLOR_LUT[Math.round(p.pisteet * 255)];
+      return `<div class="vertailu-rivi"><span class="vertailu-nro">${i + 1}</span>`
+        + `<span class="vertailu-vari" style="background:rgb(${r},${g},${b})"></span>`
+        + `<span><span class="vertailu-pisteet">${(p.pisteet * 100).toFixed(0)}</span> `
+        + `${sanaPisteista(p.pisteet)}<br>`
+        + `<span class="vertailu-sanat">${p.ranta} &middot; ${p.rakennukset}`
+        + `${p.kallio ? ' &middot; kalliota' : ''}${p.suo ? ' &middot; suota' : ''}</span></span>`
+        + `<button class="vertailu-poista" data-i="${i}" aria-label="Poista">&times;</button></div>`;
+    }).join('');
+    el.querySelectorAll('.vertailu-poista').forEach((b) => {
+      b.addEventListener('click', () => { pinnit.splice(Number(b.dataset.i), 1);
+                                          piirraMerkit(); piirraLista(); tallennaNakyma(); });
+    });
+  }
+
+  function piirraMerkit() {
+    osumaKerros.clearLayers();
+    pinnit.forEach((p, i) => {
+      L.marker([p.y, p.x], { icon: L.divIcon({
+        className: '', html: `<div class="pin-merkki">${i + 1}</div>`,
+        iconSize: [24, 24], iconAnchor: [12, 12] }) }).addTo(osumaKerros);
+    });
+  }
+
+  map.on('click', async (e) => {
+    const arvo = await lueArvo(e.latlng.lng, e.latlng.lat);
+    if (!arvo) return;
+    // Raja on kaytannollinen: pidempi lista ei mahdu paneeliin eika
+    // kymmenen paikan vertailu ole enaa vertailua.
+    if (pinnit.length >= 8) pinnit.shift();
+    pinnit.push({ x: e.latlng.lng, y: e.latlng.lat, ...arvo });
+    piirraMerkit(); piirraLista(); tallennaNakyma();
+  });
+
+  document.getElementById('tyhjenna').addEventListener('click', () => {
+    pinnit = []; piirraMerkit(); piirraLista(); tallennaNakyma();
   });
 
   // LATAUSMERKKI. GridLayer kertoo itse milloin se lataa; nayta se, jottei
@@ -687,10 +948,40 @@ function dilatoiLahimmalla(alpha, w, h, sade) {
   // ettei selaimen takaisin-nappi tayty jokaisesta siirrosta.
   const tallennaNakyma = () => {
     const c = map.getCenter();
+    const pinOsa = pinnit.length
+      ? '|' + pinnit.map((p) => `${p.x.toFixed(0)},${p.y.toFixed(0)}`).join('|') : '';
     history.replaceState(null, '',
-      `#${c.lat.toFixed(0)},${c.lng.toFixed(0)},${map.getZoom().toFixed(2)}`);
+      `#${c.lat.toFixed(0)},${c.lng.toFixed(0)},${map.getZoom().toFixed(2)}${pinOsa}`);
   };
   map.on('moveend zoomend', tallennaNakyma);
+
+  // Naytettavan lajin vaihto. GridLayerin redraw() piirtaa nakyvat tiilet
+  // uudelleen mutta SAILYTTAA ne kartalla siihen asti - ei valahdysta.
+  const legendaPaat = document.querySelector('.legenda-paat');
+  document.querySelectorAll('input[name="laji"]').forEach((el) => {
+    el.addEventListener('change', () => {
+      LAJI = el.value;
+      document.getElementById('tuuli').hidden = LAJI !== 'melottavuus';
+      legendaPaat.innerHTML = LAJI === 'melottavuus'
+        ? '<span>Ei suositella</span><span>Helppo melottava</span>'
+        : '<span>Ei suositella</span><span>Helppo</span>';
+      // Vertailulista koskee rantaviivaa; melottavuudessa se ei pade.
+      document.querySelector('.vertailu').hidden = LAJI === 'melottavuus';
+      analyysiKerros.redraw();
+    });
+  });
+
+  const suunta = document.getElementById('tuuli-suunta');
+  const nopeusT = document.getElementById('tuuli-nopeus');
+  const paivitaTuuli = () => {
+    TUULI = { suunta: Number(suunta.value), nopeus: Number(nopeusT.value) };
+    document.getElementById('tuuli-suunta-arvo').textContent = `${suunta.value}°`;
+    document.getElementById('tuuli-nopeus-arvo').textContent =
+      `${Number(nopeusT.value).toFixed(1).replace('.', ',')} m/s`;
+    if (LAJI === 'melottavuus') analyysiKerros.redraw();
+  };
+  suunta.addEventListener('change', paivitaTuuli);
+  nopeusT.addEventListener('change', paivitaTuuli);
 
   // Zoomausnopeuden saadin. Leaflet lukee arvon tapahtumahetkella, joten
   // muutos vaikuttaa heti ilman kartan uudelleenluontia. PIENEMPI = NOPEAMPI.
@@ -701,9 +992,19 @@ function dilatoiLahimmalla(alpha, w, h, sade) {
     nopeusArvo.textContent = nopeus.value;
   });
 
-  const osat = location.hash.slice(1).split(',').map(Number);
+  const lohkot = location.hash.slice(1).split('|');
+  const osat = (lohkot[0] || '').split(',').map(Number);
   if (osat.length === 3 && osat.every(Number.isFinite)) map.setView([osat[0], osat[1]], osat[2]);
   else map.setView([6671827, 386385], -1);
+  // Jaetun linkin pinnit luetaan vasta kun kartta on paikallaan, koska
+  // arvo riippuu naytettavasta tasosta.
+  for (const lohko of lohkot.slice(1)) {
+    const [px, py] = lohko.split(',').map(Number);
+    if (!Number.isFinite(px) || !Number.isFinite(py)) continue;
+    const arvo = await lueArvo(px, py);
+    if (arvo) pinnit.push({ x: px, y: py, ...arvo });
+  }
+  piirraMerkit(); piirraLista();
   paivitaHud();
   map.attributionControl.addAttribution(
     'Maanmittauslaitos (CC BY 4.0) &middot; ruututiilidemo');
