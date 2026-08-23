@@ -26,6 +26,9 @@
   .hud dt { color: var(--color-neutral-700); }
   .hud dd { margin: 0; font-variant-numeric: tabular-nums; }
   .hud .note { color: var(--color-neutral-700); margin-top: 8px; font-size: 12px; }
+  .hud .saadin { display: block; margin-top: 10px; color: var(--color-neutral-700); }
+  .hud .saadin input { width: 100%; margin: 4px 0 0; }
+  .hud .saadin span { font-variant-numeric: tabular-nums; color: var(--color-text); }
   .hud a { color: inherit; }
 </style>
 </head>
@@ -43,6 +46,10 @@
     <dt>piirto ka.</dt><dd id="hud-ms">–</dd>
     <dt>hitain</dt><dd id="hud-max">–</dd>
   </dl>
+  <label class="saadin">zoomausnopeus
+    <input type="range" id="zoom-nopeus" min="10" max="120" step="5" value="30">
+    <span id="zoom-nopeus-arvo">30</span>
+  </label>
   <div class="note">Vertailu: <a href="index.html">index.html</a></div>
 </div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -112,7 +119,16 @@ const map = L.map('map', {
   // PORTAATON ZOOMAUS. Nykyisessa sovelluksessa on nelja portaat ja kolme
   // resoluutiotasoa kovilla rajoilla, joita on jouduttu saatamaan kahdesti.
   // Ruututiilella kirjasto skaalaa tasojen yli, joten raja ei enaa nay.
-  zoomSnap: 0, zoomDelta: 0.4, wheelPxPerZoomLevel: 120,
+  zoomSnap: 0, zoomDelta: 0.6,
+  // ZOOMAUSNOPEUS. wheelPxPerZoomLevel kertoo montako "vierityspikselia"
+  // vastaa yhta zoom-tasoa, joten PIENEMPI ARVO = NOPEAMPI zoomaus.
+  // Leafletin oletus on 60; ensimmainen versio talla sivulla oli 120 eli
+  // kaksi kertaa oletusta HITAAMPI, mika tuntui tapahtumalla jaykalta
+  // kahden sormen elelella. Arvoa saadetaan HUDista, koska oikea luku
+  // riippuu laitteesta - trackpad ja hiiren rulla tuottavat eri
+  // suuruisia deltoja eika sita voi paattaa arvaamalla.
+  wheelPxPerZoomLevel: 30,
+  wheelDebounceTime: 20,
   minZoom: -10, maxZoom: 4,
 });
 L.control.scale({ position: 'bottomleft', imperial: false, maxWidth: 180 }).addTo(map);
@@ -416,6 +432,15 @@ function dilatoiLahimmalla(alpha, w, h, sade) {
                  updateWhenZooming: false, ...rajat }).addTo(map);
 
   // Kauppatori, EPSG:3067. L.CRS.Simple: lat = pohjoinen, lng = ita.
+  // Zoomausnopeuden saadin. Leaflet lukee arvon tapahtumahetkella, joten
+  // muutos vaikuttaa heti ilman kartan uudelleenluontia. PIENEMPI = NOPEAMPI.
+  const nopeus = document.getElementById('zoom-nopeus');
+  const nopeusArvo = document.getElementById('zoom-nopeus-arvo');
+  nopeus.addEventListener('input', () => {
+    map.options.wheelPxPerZoomLevel = Number(nopeus.value);
+    nopeusArvo.textContent = nopeus.value;
+  });
+
   map.setView([6671827, 386385], -1);
   paivitaHud();
   map.attributionControl.addAttribution(
