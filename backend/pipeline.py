@@ -471,15 +471,97 @@ def _tiedoston_sormenjalki(polku):
 LASKENTA_VERSIO = 3
 
 
+# Kuinka kaukaa tiilen ulkopuolelta lahdeaineisto vaikuttaa. Rakennusten
+# etaisyyspisteytys katsoo DIST_IDEAL_M paahan (ks. score_engine.
+# load_buildings pad_m), ja vesi vaikuttaa vain tiilen sisalla. Otetaan
+# valjasti sama marginaali molemmille.
+SORMENJALKI_MARGINAALI_M = 200.0
+
+
+def _alueen_sormenjalki(polku, tasot, bbox):
+    """Sisaltotunniste sille aineistolle jota TAMA tiili kayttaa.
+
+    Luetaan vain mtk_id ilman geometriaa, jolloin haku kayttaa
+    paikkaindeksia eika pura muotoja. Mitattuna 6-10 ms tiilta kohti eli
+    noin 20 s koko aineistolle - halpa verrattuna siihen mita se saastaa.
+
+    Tunniste on (maara, tunnusten summa) tasoittain. Se ei ole
+    tormaysvarma tiiviste eika tarvitse olla: vaara osuma tarkoittaisi
+    ettei tiilta lasketa uudelleen vaikka pitaisi, ja sen todennakoisyys
+    on olematon kun sek maara etta summa tasmaavat."""
+    import pyogrio
+    osat = []
+    for taso in tasot:
+        try:
+            df = pyogrio.read_dataframe(polku, layer=taso, bbox=tuple(bbox),
+                                        columns=["mtk_id"], read_geometry=False)
+            osat.append(f"{taso}:{len(df)}:{int(df['mtk_id'].sum()) if len(df) else 0}")
+        except Exception:
+            # Puuttuva taso tai lukuvirhe -> palataan tiedoston
+            # sormenjalkeen, joka on turvallinen mutta karkea.
+            return None
+    return ";".join(osat)
+
+
+def _vanha_muoto_kelpaa(vanha, uusi):
+    """Kelpuuttaa ENNEN sisaltotunnistetta lasketun sormenjaljen.
+
+    Jaetut tiedostot tunnistettiin aiemmin koon ja muokkausajan perusteella
+    (esim. "12345:678901234"). Kun tunnistus vaihtui sisaltopohjaiseksi,
+    JOKAINEN olemassa oleva _raw.npz olisi nayttanyt vanhentuneelta ja koko
+    aineisto - 1126 tiilta, yli 20 tuntia - olisi laskettu uudelleen tasan
+    kerran, ilman etta mikaan oikeasti muuttui.
+
+    Siksi vanha muoto kelpaa, JOS versio, DEM ja karttalehti tasmaavat.
+    Ne ovat tiilikohtaisia tiedostoja ja siten luotettavia; vain jaettujen
+    tiedostojen osuus jatetaan huomiotta.
+
+    HINTA ON KIRJATTAVA: jos tiilen oma vesi- tai rakennusaineisto on
+    muuttunut sen jalkeen kun se laskettiin, sita ei huomata. Riski koskee
+    vain tata siirtymaa - heti kun tiili lasketaan kerran uudelleen, sen
+    sormenjalki on uutta muotoa ja tarkistus on tasmallinen. Vaihtoehto
+    olisi ollut laskea kaikki uudelleen, mika on suurempi hinta kuin riski."""
+    if not vanha:
+        return False
+    v, u = vanha.split("|"), uusi.split("|")
+    if len(v) != 5 or len(u) != 5:
+        return False
+    if v[:3] != u[:3]:            # versio, DEM, karttalehti
+        return False
+    # Vanhassa muodossa jaetut osat ovat "koko:mtime" - ei tasonimia.
+    return all(":" in osa and ";" not in osa and not any(c.isalpha() for c in osa)
+               for osa in v[3:])
+
+
 def lahde_sormenjalki(tile, buildings_path):
-    """Tiilen kaikkien lahteiden JA laskennan sormenjalki merkkijonona."""
+    """Tiilen kaikkien lahteiden JA laskennan sormenjalki merkkijonona.
+
+    JAETUT TIEDOSTOT TUNNISTETAAN SISALLON MUKAAN, ei koon ja
+    muokkausajan. Aiemmin tassa oli _tiedoston_sormenjalki(buildings_path)
+    ja saman vesistolle, ja molemmat ovat JAETTUJA: uuden alueen
+    lisaaminen kirjoittaa niihin, jolloin JOKAISEN tiilen _raw.npz
+    vanheni - myos niiden joiden oma aineisto ei muuttunut lainkaan.
+    Paijanteen lisays pakotti nain 1126 tiilen uudelleenlaskennan, josta
+    96 % oli turhaa.
+
+    DEM ja karttalehti ovat tiilikohtaisia tiedostoja, joten niille koko
+    tiedoston sormenjalki on tasan oikea mitta."""
     osat = [
         f"v{LASKENTA_VERSIO}",
         _tiedoston_sormenjalki(tile.dem_path),
         _tiedoston_sormenjalki(tile.map_path),
-        _tiedoston_sormenjalki(buildings_path),
-        _tiedoston_sormenjalki(vesisto.GPKG),
     ]
+    m = SORMENJALKI_MARGINAALI_M
+    laaja = (tile.bounds[0] - m, tile.bounds[1] - m,
+             tile.bounds[2] + m, tile.bounds[3] + m)
+    rakennukset = _alueen_sormenjalki(str(buildings_path),
+                                      score_engine.BUILDING_LAYERS, laaja)
+    vesi = _alueen_sormenjalki(str(vesisto.GPKG), vesisto.VESI_TASOT, tile.bounds)
+    # Jos sisaltotunnistetta ei saada, palataan vanhaan tapaan. Se laskee
+    # liikaa mutta ei koskaan liian vahan.
+    osat.append(rakennukset if rakennukset is not None
+                else _tiedoston_sormenjalki(buildings_path))
+    osat.append(vesi if vesi is not None else _tiedoston_sormenjalki(vesisto.GPKG))
     return "|".join(osat)
 
 
@@ -592,10 +674,12 @@ def get_or_compute_raw(tile_id, buildings_path, force=False):
         if "shoreline_mask" not in d.files:
             return False
         vanha = str(d["sormenjalki"]) if "sormenjalki" in d.files else None
-        if vanha != sormenjalki:
-            print(f"  {tile_id}: lahdeaineisto muuttunut, lasketaan uudelleen", flush=True)
-            return False
-        return True
+        if vanha == sormenjalki:
+            return True
+        if _vanha_muoto_kelpaa(vanha, sormenjalki):
+            return True
+        print(f"  {tile_id}: lahdeaineisto muuttunut, lasketaan uudelleen", flush=True)
+        return False
 
     def _lataa():
         """Valimuisti tai None. VIALLINEN TIEDOSTO KASITELLAAN PUUTTUVANA.
