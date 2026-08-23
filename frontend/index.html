@@ -1072,6 +1072,55 @@ function windInTile(kentta, fx, fy) {
 // astetta eli nakymaton, ja fetchWeights-kutsuja on 64 eika 108 021.
 const WIND_SUBGRID = 8;
 
+// Aallokkokentta tiilen KULMISTA, samaan tapaan kuin tuuli.
+//
+// Aallokko luettiin aiemmin kerran tiilen KESKIPISTEESTA ja kaytettiin
+// vakiona koko tiilelle. Perustelu oli etta "6 km sisainen vaihtelu ei muuta
+// lopputulosta merkittavasti" - ja se on totta VAIHTELUN SUURUUDESTA mutta
+// vaarin sen MUODOSTA. Vakio per tiili tekee sileasta kentasta portaikon,
+// ja portaan reuna nakyy silmalle vaikka askel olisi pieni: naemme reunoja,
+// emme absoluuttisia arvoja. Kartalla se nakyi selvina varirajoina
+// tiilirajoilla, vaikka seka tuuli- etta aaltoennuste olivat molemmin puolin
+// johdonmukaisia.
+//
+// Kulmanaytteistys takaa JATKUVUUDEN: vierekkaiset tiilet jakavat kaksi
+// kulmaa, ja yhteisella reunalla molemmat interpoloivat samojen arvojen
+// valilla - askelta ei jaa lainkaan.
+//
+// Jos WAM ei kata kaikkia neljaa kulmaa, koko tiili jaa ilman WAM-osuutta
+// ja kaytetaan pelkkaa omaa mallia. Se on sama saanto kuin ennen (silloin
+// keskipisteen mukaan), mutta arvioituna reunoista - WAM-alue kutistuu
+// hitusen, mutta sen sisus on nyt jatkuva.
+function tileWaveField(b, hour) {
+  const kulmat = [
+    metWaveAt(hour, { lat: b.miny, lng: b.minx }),
+    metWaveAt(hour, { lat: b.miny, lng: b.maxx }),
+    metWaveAt(hour, { lat: b.maxy, lng: b.minx }),
+    metWaveAt(hour, { lat: b.maxy, lng: b.maxx }),
+  ];
+  return kulmat.every((v) => v != null && isFinite(v)) ? kulmat : null;
+}
+
+// fx, fy ovat 0..1 tiilen sisalla (fy 0 = miny), kuten windInTile.
+function waveInTile(kulmat, fx, fy) {
+  const [a, b, c, d] = kulmat;
+  return (a * (1 - fx) + b * fx) * (1 - fy) + (c * (1 - fx) + d * fx) * fy;
+}
+
+// Aallokko samalle alihilalle kuin tuuli, jotta renderointisilmukka lukee
+// molemmat samasta indeksista.
+function waveSubgrid(kulmat) {
+  if (!kulmat) return null;
+  const ruudut = new Float32Array(WIND_SUBGRID * WIND_SUBGRID);
+  for (let j = 0; j < WIND_SUBGRID; j++) {
+    for (let i = 0; i < WIND_SUBGRID; i++) {
+      ruudut[j * WIND_SUBGRID + i] =
+        waveInTile(kulmat, (i + 0.5) / WIND_SUBGRID, (j + 0.5) / WIND_SUBGRID);
+    }
+  }
+  return ruudut;
+}
+
 function windSubgrid(kentta) {
   const ruudut = new Array(WIND_SUBGRID * WIND_SUBGRID);
   for (let j = 0; j < WIND_SUBGRID; j++) {
@@ -2254,12 +2303,13 @@ async function loadWaterLevels(tileId) {
 async function renderPaddleTile(tileId) {
   const tile = tileListCache.find((tl) => tl.tile_id === tileId);
   const b = tile.bounds_epsg3067;
-  // Aallokko luetaan tiilen keskelta: WAM:n vaikutus rajoittuu joka tapauksessa
-  // suuren pyyhkaisymatkan ruutuihin (sekoituspaino w = F_eff / MAX_FETCH_M),
-  // joten 6 km sisainen vaihtelu ei muuta lopputulosta merkittavasti.
-  const metWave = metWaveAt(forecastHour,
-    { lat: (b.miny + b.maxy) / 2, lng: (b.minx + b.maxx) / 2 });
-  const key = `${tileId}|paddle|${windKey()}|${metWave == null ? 'x' : metWave.toFixed(2)}`;
+  // Aallokko tiilen kulmista ja bilineaarisesti sisalle (ks. tileWaveField).
+  const aaltoKulmat = tileWaveField(b, forecastHour);
+  const aallot = waveSubgrid(aaltoKulmat);
+  // VALIMUISTIAVAIMESSA KAIKKI NELJA KULMAA. Yksi luku ei enaa yksiloi
+  // tiilen aallokkoa, ja vaara avain nayttaisi vanhan kuvan uusilla arvoilla.
+  const aaltoAvain = aaltoKulmat ? aaltoKulmat.map((v) => v.toFixed(2)).join(',') : 'x';
+  const key = `${tileId}|paddle|${windKey()}|${aaltoAvain}`;
   if (renderResultCache.has(key)) return renderResultCache.get(key);
 
   const { levels, obstacles, water, width: w, height: h } = await loadWaterLevels(tileId);
@@ -2271,7 +2321,9 @@ async function renderPaddleTile(tileId) {
   for (let i = 0; i < w * h; i++) {
     if (++px === w) { px = 0; py++; }
     if (!water[i]) continue;
-    const tuuli = ruudut[sg.row[py] * WIND_SUBGRID + sg.col[px]];
+    const alihila = sg.row[py] * WIND_SUBGRID + sg.col[px];
+    const tuuli = ruudut[alihila];
+    const metWave = aallot ? aallot[alihila] : null;
     const wf = tuuli.wf;
     const fa = FETCH_LEVEL_METRES[levels[i * FETCH_SECTORS + wf.lo]];
     const fb = FETCH_LEVEL_METRES[levels[i * FETCH_SECTORS + wf.hi]];
