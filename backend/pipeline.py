@@ -2230,19 +2230,31 @@ def get_or_compute_sea_mosaic(force=False):
     cache_path = CACHE_DIR / f"_sea_mosaic_v{LASKENTA_VERSIO}.npz"
     (ox, oy), (h, w) = _sea_mosaic_geometry()
 
-    # GEOMETRIA TARKISTETAAN, ei vain olemassaolo. Mosaiikki kattaa tasan
-    # sen tiilijoukon jolla se rakennettiin; jos tiilia lisataan, vanha
-    # mosaiikki ei ulotu uusille ja niiden ruudut osuisivat sen ulkopuolelle.
-    # Tarkistus on tassa eika mitatointilistassa, koska se johtuu suoraan
-    # rekisterista eika voi jaada tekematta.
+    # TIILISTO TARKISTETAAN, ei vain geometria. Mosaiikki kattaa tasan sen
+    # tiilijoukon jolla se rakennettiin, ja kattamattomat ruudut jaavat
+    # oletusarvoon TOSI eli avovedeksi.
+    #
+    # PELKKA MUOTO EI RIITA, ja tama oli oikea vika. Muoto on tiilien
+    # yhteisen laatikon koko. Kemionsaaren puuttuvat ruudut ovat syvalla
+    # aineiston sisalla - Ahvenanmaan ja Suomenlahden valissa - joten
+    # laatikko ei muutu lainkaan kun ne lisataan. Vanha mosaiikki olisi
+    # kelvannut, ja uudet ruudut olisivat jaaneet AVOVEDEKSI: pyyhkaisymatka
+    # rajaton, jokainen ranta taysin altis. Mikaan ei olisi kaatunut.
+    #
+    # Sama koskee mita tahansa lisaysta olemassa olevan laatikon sisalle -
+    # eli tasan sita tapausta jota inkrementaalinen laajennus varten on.
+    sormenjalki = rekisterin_sormenjalki()
     if not force and cache_path.exists():
         data = np.load(cache_path)
+        tallennettu = str(data["tiilisto"]) if "tiilisto" in data.files else None
         if (data["sea"].shape == (h, w)
-                and float(data["ox"]) == ox and float(data["oy"]) == oy):
+                and float(data["ox"]) == ox and float(data["oy"]) == oy
+                and tallennettu == sormenjalki):
             return data["sea"], (ox, oy)
-        print(f"  merimosaiikki: tiilisto muuttunut "
-              f"({data['sea'].shape} -> {(h, w)}), rakennetaan uudelleen",
-              flush=True)
+        syy = ("muoto muuttunut" if data["sea"].shape != (h, w)
+               else "ei tiilistotietoa" if tallennettu is None
+               else "tiilisto muuttunut")
+        print(f"  merimosaiikki: {syy}, rakennetaan uudelleen", flush=True)
 
     # Oletus TOSI = tuntematon kasitellaan avovetena, jolloin sade jatkaa
     # kulkuaan kattoon asti ja ranta tulkitaan alttiiksi.
@@ -2261,7 +2273,7 @@ def get_or_compute_sea_mosaic(force=False):
         row = int(round((oy - tile.bounds[3]) / FETCH_GRID_M))
         sea[row:row + small.shape[0], col:col + small.shape[1]] = small
 
-    np.savez_compressed(cache_path, sea=sea, ox=ox, oy=oy)
+    np.savez_compressed(cache_path, sea=sea, ox=ox, oy=oy, tiilisto=sormenjalki)
     return sea, (ox, oy)
 
 
@@ -2662,23 +2674,34 @@ def get_or_compute_height_mosaic(buildings_path, force=False):
     kasvillisuuslisa."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_path = CACHE_DIR / f"_height_mosaic_v{LASKENTA_VERSIO}.npy"
+    # TIILISTO OMASSA SIVUTIEDOSTOSSAAN: .npy kantaa vain taulukon, joten
+    # tunniste ei mahdu itse tiedostoon niin kuin merimosaiikin .npz:aan.
+    tiilisto_path = CACHE_DIR / f"_height_mosaic_v{LASKENTA_VERSIO}.tiilisto"
+    sormenjalki = rekisterin_sormenjalki()
     if not force and cache_path.exists():
-        # Sama geometriatarkistus kuin merimosaiikilla - ne jakavat ruudukon.
+        # Sama tarkistus kuin merimosaiikilla - ne jakavat ruudukon, ja
+        # samasta syysta: pelkka muoto ei huomaa laatikon SISALLE lisattyja
+        # tiilia, jolloin niiden esteenkorkeus jaisi nollaan eli maasto ei
+        # suojaisi niita lainkaan.
         # Muoto luetaan mmapilla, jottei gigatavun taulukkoa ladata pelkan
         # tarkistuksen takia.
         _o, muoto = _sea_mosaic_geometry()
         kurkistus = np.load(cache_path, mmap_mode="r")
-        if kurkistus.shape == muoto:
-            del kurkistus
-            return np.load(cache_path)
+        muoto_ok = kurkistus.shape == muoto
         del kurkistus
-        print(f"  korkeusmosaiikki: tiilisto muuttunut, rakennetaan uudelleen",
-              flush=True)
+        tallennettu = tiilisto_path.read_text() if tiilisto_path.exists() else None
+        if muoto_ok and tallennettu == sormenjalki:
+            return np.load(cache_path)
+        syy = ("muoto muuttunut" if not muoto_ok
+               else "ei tiilistotietoa" if tallennettu is None
+               else "tiilisto muuttunut")
+        print(f"  korkeusmosaiikki: {syy}, rakennetaan uudelleen", flush=True)
 
     sea, origo = get_or_compute_sea_mosaic(force=force)
     height = _height_mosaic_for(list(tiles.get_registry()), sea, origo,
                                 buildings_path, force=force)
     np.save(cache_path, height)
+    tiilisto_path.write_text(sormenjalki)
     return height
 
 

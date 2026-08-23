@@ -444,7 +444,8 @@ POISTETTAVAT_TIEDOSTOT = (
     "_vaylat.json", "_suojelualueet.json", "_palvelut.json",
 )
 POISTETTAVAT_KUVIOT = (
-    "_sea_mosaic_v*.npz", "_height_mosaic_v*.npy", "_fetch_global_v*.npz",
+    "_sea_mosaic_v*.npz", "_height_mosaic_v*.npy", "_height_mosaic_v*.tiilisto",
+    "_fetch_global_v*.npz",
     "_water_global_v*.npz", "_global_tiebreak_sorted_v*.npy",
     "_factor_thresholds_v*.json", "_prime_thresholds_v*.json",
     "_shelter_thresholds_v*.json", "_shoreline_stats_v*.json",
