@@ -2763,25 +2763,18 @@ async function refreshNew() {
   // valmiiksi ENNEN vaihtoa), mutta vaihto itse teki saman virheen
   // uudelleen. Siirrossa valtaosa tiilista on samoja ja niiden kuvat tulevat
   // valimuistista muuttumattomina, joten nyt niihin ei kosketa lainkaan.
-  // KUVAT PURETAAN ENNEN VAIHTOA. Uusi tai vaihtuva <img> ei piirry heti kun
-  // src asetetaan: selain purkaa sen vasta sen jalkeen. Zoomatessa
-  // analyysitaso vaihtuu, jolloin kuva muuttuu oikeasti - ja ilman
-  // esipurkua kerros katosi juuri siksi ajaksi. decode() odottaa valmiiksi,
-  // jolloin vaihto on yhdessa ruudunpaivityksessa.
-  const purettavat = rendered.filter(({ tile, dataUrl }) => {
-    const o = newOverlays.get(tile.tile_id);
-    return !o || o.dataUrl !== dataUrl;
-  });
-  if (purettavat.length) {
-    await Promise.all(purettavat.map(({ dataUrl }) => {
-      const img = new Image();
-      img.src = dataUrl;
-      // Virhe ei saa estaa vaihtoa: pahin tapaus on entinen valahdys.
-      return img.decode().catch(() => {});
-    }));
-    if (myGeneration !== newRenderGeneration) return;
-  }
-
+  // ESIPURKUA EI TEHDA ENNEN VAIHTOA, ja se on opittu virheesta.
+  //
+  // Kokeilin odottaa kuvien decode():a jotta vaihtuva kuva piirtyisi
+  // yhdessa ruudunpaivityksessa. Se rikkoi kerroksen kokonaan: await tuli
+  // SUKUPOLVITARKISTUKSEN JA VAIHDON VALIIN, joten jokainen siirto ehti
+  // korvata edellisen ajon ennen kuin se paasi lisaamaan kerroksia -
+  // mitattuna kerroksia oli nolla eika mitaan nakynyt.
+  //
+  // Vaihdon on siis tapahduttava SYNKRONISESTI tarkistuksen jalkeen.
+  // Muuttumattomiin ei kosketa lainkaan (alla), joten tavallinen siirto ei
+  // valahda; vaihtuvan kuvan lyhyt purkuviive jaa jaljelle, ja se on
+  // hyvaksyttava hinta siita etta kerros ylipaataan ilmestyy.
   const pidettavat = new Set(rendered.map(({ tile }) => tile.tile_id));
   for (const [tid, tieto] of newOverlays) {
     if (!pidettavat.has(tid)) {
