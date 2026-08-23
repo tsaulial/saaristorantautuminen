@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ruututiilidemo – rantautuminen</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;800&display=swap">
+<style>
+  :root {
+    --color-bg: #f3f2f2; --color-surface: #eae9e9; --color-text: #201e1d;
+    --color-neutral-300: #d7d3d3; --color-neutral-700: #605d5d;
+  }
+  html, body { margin: 0; height: 100%; font-family: Archivo, system-ui, sans-serif; }
+  #map { position: absolute; inset: 0; background: var(--color-bg); }
+  .hud {
+    position: absolute; top: 10px; right: 10px; z-index: 1000; width: 268px;
+    background: var(--color-surface); color: var(--color-text);
+    border: 1px solid var(--color-neutral-300); border-radius: 4px;
+    padding: 12px 14px; font-size: 13px; line-height: 1.45;
+  }
+  .hud h1 { font-size: 14px; font-weight: 800; margin: 0 0 6px; letter-spacing: .02em; }
+  .hud dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 8px 0 0; }
+  .hud dt { color: var(--color-neutral-700); }
+  .hud dd { margin: 0; font-variant-numeric: tabular-nums; }
+  .hud .note { color: var(--color-neutral-700); margin-top: 8px; font-size: 12px; }
+  .hud a { color: inherit; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="hud">
+  <h1>RUUTUTIILIDEMO</h1>
+  <div>Peruskartta ja rantautumispisteytys piirretään 256×256 ruututiileinä,
+       ei 6 km tiilinä. Zoomaus on portaaton.</div>
+  <dl>
+    <dt>zoom</dt><dd id="hud-zoom">–</dd>
+    <dt>m/px</dt><dd id="hud-mpp">–</dd>
+    <dt>lähdetaso</dt><dd id="hud-taso">–</dd>
+    <dt>ruututiiliä</dt><dd id="hud-tiilia">–</dd>
+    <dt>piirto ka.</dt><dd id="hud-ms">–</dd>
+    <dt>hitain</dt><dd id="hud-max">–</dd>
+  </dl>
+  <div class="note">Vertailu: <a href="index.html">index.html</a></div>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// ═══════════════════════════════════════════════════════════════════
+// RUUTUTIILIDEMO
+//
+// Nykyinen sovellus piirtaa yhden 6 km tiilen kerralla: detail-tasolla se on
+// 3000x3000 = 9,0 M pikselia ja 69 Mt muistia, ja koko nakyva alue lasketaan
+// uudelleen aina kun nakyma muuttuu. Siita seuraa valahtely ja jahmeys.
+//
+// Retkikartta.fi (OpenLayers + WMTS/vektoritiilet) tuntuu vakaalta koska se
+// ei tee niin: kiintea tiilipyramidi, 256x256 ruututiilet, kirjasto lataa
+// vain uudet ja skaalaa vanhat. Tama demo ottaa siita mallin Leafletin
+// L.GridLayerilla.
+//
+// AINEISTO ON SAMA kuin index.html:lla - samat kuvat samasta cache/-
+// hakemistosta. Vain piirtotapa on eri, jotta vertailu on rehellinen.
+// ═══════════════════════════════════════════════════════════════════
+
+// --- Pisteytyssopimus. SAMAT LUVUT kuin index.html:ssa ja backendissa
+// (score_from_components). Demo ei saa muuttaa pisteytysta, vain sen
+// piirtotapaa - muuten vertailu ei kertoisi mitaan.
+const SLOPE_WEIGHT = 0.50, DIST_WEIGHT = 0.35, ROCK_WEIGHT = 0.15;
+const ROCK_SCORE_YES = 1.0, ROCK_SCORE_NO = 0.2, SWAMP_PENALTY_FACTOR = 0.5;
+const FACTOR_BITS = { slope: 1, dist: 2, rock: 4, swamp: 8, shelter: 16 };
+const MASK = 15;                    // kaikki paitsi suojaisuus (NO_SHELTER_MASK)
+const DEFAULT_THICKNESS_PX = 10;
+const NEW_PIXEL_FACTOR = 2.0;
+const TASO_KERTOIMET = { detail: 1, mid: 4, overview: 16 };
+
+function scoreFromComponents(slopeByte, distByte, rockBit, swampBit, mask) {
+  let total = 0, weightSum = 0;
+  if (mask & FACTOR_BITS.slope) { total += SLOPE_WEIGHT * (slopeByte / 255); weightSum += SLOPE_WEIGHT; }
+  if (mask & FACTOR_BITS.dist) { total += DIST_WEIGHT * (distByte / 255); weightSum += DIST_WEIGHT; }
+  if (mask & FACTOR_BITS.rock) {
+    total += ROCK_WEIGHT * (rockBit ? ROCK_SCORE_YES : ROCK_SCORE_NO);
+    weightSum += ROCK_WEIGHT;
+  }
+  let score = weightSum > 0 ? total / weightSum : 1.0;
+  if ((mask & FACTOR_BITS.swamp) && swampBit) score *= SWAMP_PENALTY_FACTOR;
+  return score < 0 ? 0 : score > 1 ? 1 : score;
+}
+
+function hsvToRgb(h, s, v) {
+  const c = v * s, x = c * (1 - Math.abs(((h / 60) % 2) - 1)), m = v - c;
+  let r, g, b;
+  if (h < 60) { r = c; g = x; b = 0; } else if (h < 120) { r = x; g = c; b = 0; }
+  else if (h < 180) { r = 0; g = c; b = x; } else if (h < 240) { r = 0; g = x; b = c; }
+  else if (h < 300) { r = x; g = 0; b = c; } else { r = c; g = 0; b = x; }
+  return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)];
+}
+const SCORE_COLOR_LUT = Array.from({ length: 256 }, (_, i) => hsvToRgb((i / 255) * 120, 1, 1));
+
+// --- Lahdetasot. Osatekijakuvat ovat 3000/750/188 pikselia 6 km tiilella
+// (ks. backend: ANALYYSI_TASOT), peruskartta 6000-3000/1500/375 riippuen
+// siita milloin aineisto on rakennettu. Peruskartan todellinen koko luetaan
+// kuvasta, joten se ei ole taalla oletus.
+const TASOT = [
+  { name: 'detail',   suffix: '',          osatekijaPx: 3000 },
+  { name: 'mid',      suffix: '_mid',      osatekijaPx: 750 },
+  { name: 'overview', suffix: '_overview', osatekijaPx: 188 },
+];
+
+const map = L.map('map', {
+  crs: L.CRS.Simple,
+  // PORTAATON ZOOMAUS. Nykyisessa sovelluksessa on nelja portaat ja kolme
+  // resoluutiotasoa kovilla rajoilla, joita on jouduttu saatamaan kahdesti.
+  // Ruututiilella kirjasto skaalaa tasojen yli, joten raja ei enaa nay.
+  zoomSnap: 0, zoomDelta: 0.4, wheelPxPerZoomLevel: 120,
+  minZoom: -10, maxZoom: 4,
+});
+L.control.scale({ position: 'bottomleft', imperial: false, maxWidth: 180 }).addTo(map);
+
+let tiles = [];
+const kuvaValimuisti = new Map();     // avain -> Promise<Image>
+const dataValimuisti = new Map();     // avain -> Promise<{factors, tiebreak, px}>
+
+function tiiliRajat(t) {
+  const b = t.bounds_epsg3067;
+  return { minx: b.minx, miny: b.miny, maxx: b.maxx, maxy: b.maxy };
+}
+function osuu(a, b) {
+  return a.maxx > b.minx && a.minx < b.maxx && a.maxy > b.miny && a.miny < b.maxy;
+}
+function osuvatTiilet(alue) {
+  return tiles.filter((t) => osuu(tiiliRajat(t), alue));
+}
+
+function lataaKuva(url) {
+  if (!kuvaValimuisti.has(url)) {
+    kuvaValimuisti.set(url, new Promise((ok, fail) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => ok(img);
+      img.onerror = () => fail(new Error(url));
+      img.src = url;
+    }));
+  }
+  return kuvaValimuisti.get(url);
+}
+
+async function lataaOsatekijat(tileId, taso) {
+  const avain = `${tileId}|${taso.name}`;
+  if (!dataValimuisti.has(avain)) {
+    dataValimuisti.set(avain, (async () => {
+      const [f, t] = await Promise.all([
+        lataaKuva(`cache/${tileId}_factors${taso.suffix}.png`),
+        lataaKuva(`cache/${tileId}_tiebreak${taso.suffix}.png`),
+      ]);
+      const lue = (img) => {
+        const c = document.createElement('canvas');
+        c.width = img.naturalWidth; c.height = img.naturalHeight;
+        c.getContext('2d', { willReadFrequently: true }).drawImage(img, 0, 0);
+        return c.getContext('2d').getImageData(0, 0, c.width, c.height);
+      };
+      return { factors: lue(f), tiebreak: lue(t), px: f.naturalWidth };
+    })());
+  }
+  return dataValimuisti.get(avain);
+}
+
+// Ruututiilen maantieteelliset rajat ja naytön resoluutio.
+function ruutuRajat(kerros, coords) {
+  const b = kerros._tileCoordsToBounds(coords);
+  return { minx: b.getWest(), miny: b.getSouth(), maxx: b.getEast(), maxy: b.getNorth() };
+}
+
+// Lahdetaso sen mukaan mika on lahinna naytön resoluutiota. Valitaan karkein
+// joka on viela naytön resoluutiota tarkempi, jottei koskaan skaalata ylos
+// enempaa kuin on pakko.
+function valitseTaso(mppNaytto) {
+  const tiiliM = 6000;
+  let valittu = TASOT[0];
+  for (const t of TASOT) {
+    const mpp = tiiliM / t.osatekijaPx;
+    if (mpp <= mppNaytto) valittu = t;
+  }
+  return valittu;
+}
+
+// --- Mittarit HUDiin.
+const mittari = { n: 0, summa: 0, max: 0 };
+function kirjaaPiirto(ms) {
+  mittari.n++; mittari.summa += ms; mittari.max = Math.max(mittari.max, ms);
+  document.getElementById('hud-tiilia').textContent = mittari.n;
+  document.getElementById('hud-ms').textContent = (mittari.summa / mittari.n).toFixed(1) + ' ms';
+  document.getElementById('hud-max').textContent = mittari.max.toFixed(1) + ' ms';
+}
+function paivitaHud() {
+  const mpp = Math.pow(2, -map.getZoom());
+  document.getElementById('hud-zoom').textContent = map.getZoom().toFixed(2);
+  document.getElementById('hud-mpp').textContent = mpp.toFixed(2);
+  document.getElementById('hud-taso').textContent = valitseTaso(mpp).name;
+}
+map.on('zoomend moveend', paivitaHud);
+
+// ═══════════ PERUSKARTTA RUUTUTIILINA ═══════════
+//
+// Pelkkaa rajausta ja skaalausta: drawImage tekee sen naytönohjaimella.
+// Lahdekuvat ovat tavallisia <img>-elementteja, joten selaimen oma
+// HTTP-valimuisti hoitaa lataukset eika niita tarvitse itse hallita.
+const Peruskartta = L.GridLayer.extend({
+  createTile(coords, done) {
+    const canvas = document.createElement('canvas');
+    const koko = this.getTileSize();
+    canvas.width = koko.x; canvas.height = koko.y;
+    const ctx = canvas.getContext('2d');
+    const alue = ruutuRajat(this, coords);
+    const mpp = (alue.maxx - alue.minx) / koko.x;
+    const taso = valitseTaso(mpp);
+
+    (async () => {
+      const t0 = performance.now();
+      try {
+        for (const t of osuvatTiilet(alue)) {
+          const r = tiiliRajat(t);
+          const img = await lataaKuva(`cache/${t.tile_id}_base${taso.suffix}.webp`);
+          const W = img.naturalWidth, H = img.naturalHeight;
+          // Leikkaus: yhteinen osa ruututiilesta ja 6 km tiilesta.
+          const ix0 = Math.max(alue.minx, r.minx), ix1 = Math.min(alue.maxx, r.maxx);
+          const iy0 = Math.max(alue.miny, r.miny), iy1 = Math.min(alue.maxy, r.maxy);
+          if (ix1 <= ix0 || iy1 <= iy0) continue;
+          // Lahdekuvan rivi 0 on POHJOISREUNA, joten y kaannetaan.
+          const sx = (ix0 - r.minx) / (r.maxx - r.minx) * W;
+          const sy = (r.maxy - iy1) / (r.maxy - r.miny) * H;
+          const sw = (ix1 - ix0) / (r.maxx - r.minx) * W;
+          const sh = (iy1 - iy0) / (r.maxy - r.miny) * H;
+          const dx = (ix0 - alue.minx) / (alue.maxx - alue.minx) * koko.x;
+          const dy = (alue.maxy - iy1) / (alue.maxy - alue.miny) * koko.y;
+          const dw = (ix1 - ix0) / (alue.maxx - alue.minx) * koko.x;
+          const dh = (iy1 - iy0) / (alue.maxy - alue.miny) * koko.y;
+          ctx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
+        }
+        kirjaaPiirto(performance.now() - t0);
+        done(null, canvas);
+      } catch (e) {
+        // Puuttuva kuva ei saa kaataa kerrosta: tiili jaa tyhjaksi.
+        done(null, canvas);
+      }
+    })();
+    return canvas;
+  },
+});
+
+// ═══════════ ANALYYSIKERROS RUUTUTIILINA ═══════════
+//
+// PIIRTO TEHDAAN LAHDEPIKSELIAVARUUDESSA, ei ruututiilen pikseleissa.
+//
+// Syy on dilataatio: rantakaistale paksunnetaan katsomalla naapuripikseleita
+// (dilateWithNearestColor). Jos jokainen ruututiili dilatoitaisiin erikseen
+// omista pikseleistaan, kaistale KATKEAISI ruututiilen rajalla - sauma joka
+// nakyy heti. Siksi luetaan lahdeikkuna jossa on MARGINAALI dilataation
+// sateen verran, lasketaan siina, ja skaalataan vasta lopuksi ruututiileen.
+//
+// Sivutuotteena tama on halpa: lahdeikkuna on ruututiilen kokoinen eika koko
+// 6 km tiili. Detail-tasolla se on luokkaa 360x360 pikselia, ei 3000x3000.
+const Analyysi = L.GridLayer.extend({
+  createTile(coords, done) {
+    const canvas = document.createElement('canvas');
+    const koko = this.getTileSize();
+    canvas.width = koko.x; canvas.height = koko.y;
+    const ctx = canvas.getContext('2d');
+    const alue = ruutuRajat(this, coords);
+    const mpp = (alue.maxx - alue.minx) / koko.x;
+    const taso = valitseTaso(mpp);
+
+    (async () => {
+      const t0 = performance.now();
+      try {
+        for (const t of osuvatTiilet(alue)) {
+          const r = tiiliRajat(t);
+          const { factors, tiebreak, px } = await lataaOsatekijat(t.tile_id, taso);
+          const lahdeMpp = (r.maxx - r.minx) / px;
+
+          // Kaistaleen paksuus lahdepikseleina, sama kaava kuin nykyisessa
+          // toteutuksessa (paksuus on METREJA, ei kuvapikseleita).
+          const kerroin = TASO_KERTOIMET[taso.name] || 1;
+          const sade = kerroin > 1
+            ? Math.max(1, Math.round(DEFAULT_THICKNESS_PX / NEW_PIXEL_FACTOR / kerroin))
+            : Math.max(0, Math.round(DEFAULT_THICKNESS_PX / NEW_PIXEL_FACTOR));
+
+          // Lahdeikkuna MARGINAALEINEEN, rajattuna kuvan sisaan.
+          const ix0 = Math.max(alue.minx, r.minx), ix1 = Math.min(alue.maxx, r.maxx);
+          const iy0 = Math.max(alue.miny, r.miny), iy1 = Math.min(alue.maxy, r.maxy);
+          if (ix1 <= ix0 || iy1 <= iy0) continue;
+          const px0 = Math.floor((ix0 - r.minx) / lahdeMpp) - sade;
+          const py0 = Math.floor((r.maxy - iy1) / lahdeMpp) - sade;
+          const px1 = Math.ceil((ix1 - r.minx) / lahdeMpp) + sade;
+          const py1 = Math.ceil((r.maxy - iy0) / lahdeMpp) + sade;
+          const cx0 = Math.max(0, px0), cy0 = Math.max(0, py0);
+          const cx1 = Math.min(px, px1), cy1 = Math.min(px, py1);
+          const w = cx1 - cx0, h = cy1 - cy0;
+          if (w <= 0 || h <= 0) continue;
+
+          const pala = piirraPala(factors, tiebreak, px, cx0, cy0, w, h, sade);
+
+          // Ikkunan maantieteelliset rajat -> kohde ruututiilessa. Marginaali
+          // piirtyy mukaan, mutta se on TARKOITUS: naapuriruudun kaistale
+          // jatkuu sen yli, ja paallekkain piirtyva osa on identtinen.
+          const gx0 = r.minx + cx0 * lahdeMpp, gy1 = r.maxy - cy0 * lahdeMpp;
+          const gx1 = r.minx + cx1 * lahdeMpp, gy0 = r.maxy - cy1 * lahdeMpp;
+          const dx = (gx0 - alue.minx) / (alue.maxx - alue.minx) * koko.x;
+          const dy = (alue.maxy - gy1) / (alue.maxy - alue.miny) * koko.y;
+          const dw = (gx1 - gx0) / (alue.maxx - alue.minx) * koko.x;
+          const dh = (gy1 - gy0) / (alue.maxy - alue.miny) * koko.y;
+          ctx.drawImage(pala, dx, dy, dw, dh);
+        }
+        kirjaaPiirto(performance.now() - t0);
+        done(null, canvas);
+      } catch (e) {
+        done(null, canvas);
+      }
+    })();
+    return canvas;
+  },
+});
+
+// Yksi lahdeikkuna: pistemaara, dilataatio ja varitys. Palauttaa canvasin
+// LAHDERESOLUUTIOSSA, jonka kutsuja skaalaa.
+function piirraPala(factors, tiebreak, px, x0, y0, w, h, sade) {
+  const src = factors.data;
+  const scoreByte = new Uint8Array(w * h);
+  const alpha = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const rivi = (y0 + y) * px;
+    for (let x = 0; x < w; x++) {
+      const s = (rivi + x0 + x) * 4;
+      const i = y * w + x;
+      if (src[s + 3] === 0) continue;          // peittomaskin ulkopuolella
+      const bits = src[s + 2];
+      scoreByte[i] = Math.round(
+        scoreFromComponents(src[s], src[s + 1], bits & 1, bits & 2, MASK) * 255);
+      alpha[i] = 1;
+    }
+  }
+  const { alpha: dilated, sourceIdx } = dilatoiLahimmalla(alpha, w, h, sade);
+  const out = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0; i < w * h; i++) {
+    if (!dilated[i]) continue;
+    const [r, g, b] = SCORE_COLOR_LUT[scoreByte[sourceIdx[i]]];
+    out[i * 4] = r; out[i * 4 + 1] = g; out[i * 4 + 2] = b; out[i * 4 + 3] = 230;
+  }
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  c.getContext('2d').putImageData(new ImageData(out, w, h), 0, 0);
+  return c;
+}
+
+// Dilataatio joka SAILYTTAA VARIN LAHTEEN: vari haetaan lahimmasta aidosti
+// puskurilla olevasta pikselista, ei dilatoidun pikselin omasta arvosta
+// (joka olisi puskurin ulkopuolelta ja siten merkityksetön). Sama peruste
+// kuin index.html:n dilateWithNearestColor.
+function dilatoiLahimmalla(alpha, w, h, sade) {
+  const idx = new Int32Array(w * h);
+  for (let i = 0; i < w * h; i++) idx[i] = alpha[i] ? i : -1;
+  if (sade <= 0) return { alpha, sourceIdx: idx };
+
+  // Kaksi 1D-pyyhkaisya: vaakasuora, sitten pystysuora. Erotettava
+  // neliomainen dilataatio on O(n*r) eika O(n*r^2).
+  const vaaka = new Int32Array(w * h).fill(-1);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let paras = -1, parasEt = Infinity;
+      for (let d = -sade; d <= sade; d++) {
+        const xx = x + d;
+        if (xx < 0 || xx >= w) continue;
+        const j = idx[y * w + xx];
+        if (j >= 0 && Math.abs(d) < parasEt) { paras = j; parasEt = Math.abs(d); }
+      }
+      vaaka[y * w + x] = paras;
+    }
+  }
+  const ulos = new Int32Array(w * h).fill(-1);
+  const uusiAlpha = new Uint8Array(w * h);
+  for (let x = 0; x < w; x++) {
+    for (let y = 0; y < h; y++) {
+      let paras = -1, parasEt = Infinity;
+      for (let d = -sade; d <= sade; d++) {
+        const yy = y + d;
+        if (yy < 0 || yy >= h) continue;
+        const j = vaaka[yy * w + x];
+        if (j >= 0 && Math.abs(d) < parasEt) { paras = j; parasEt = Math.abs(d); }
+      }
+      ulos[y * w + x] = paras;
+      uusiAlpha[y * w + x] = paras >= 0 ? 1 : 0;
+    }
+  }
+  return { alpha: uusiAlpha, sourceIdx: ulos };
+}
+
+// ═══════════ KAYNNISTYS ═══════════
+(async () => {
+  const d = await (await fetch('tiles.json')).json();
+  tiles = d.tiles;
+
+  // OMAT PANET, EKSPLISIITTINEN JARJESTYS. Sama peruste kuin index.html:ssa:
+  // jarjestys ei saa jaada lisaysjarjestyksen varaan.
+  map.createPane('peruskartta'); map.getPane('peruskartta').style.zIndex = 400;
+  map.createPane('analyysi');    map.getPane('analyysi').style.zIndex = 425;
+
+  // minZoom/maxZoom ON ANNETTAVA. L.GridLayerin oletus on minZoom: 0, ja
+  // talla kartalla zoomit ovat NEGATIIVISIA (L.CRS.Simple, 1 yksikko = 1 m,
+  // joten 2 m/px on zoom -1). Ilman naita kerros on oman alueensa
+  // ulkopuolella eika pyyda yhtaan tiilta - kartta jaa tyhjaksi eika
+  // mikaan kaadu.
+  const rajat = { minZoom: map.getMinZoom(), maxZoom: map.getMaxZoom() };
+  new Peruskartta({ tileSize: 256, pane: 'peruskartta', keepBuffer: 4,
+                    updateWhenZooming: false, ...rajat }).addTo(map);
+  new Analyysi({ tileSize: 256, pane: 'analyysi', keepBuffer: 4,
+                 updateWhenZooming: false, ...rajat }).addTo(map);
+
+  // Kauppatori, EPSG:3067. L.CRS.Simple: lat = pohjoinen, lng = ita.
+  map.setView([6671827, 386385], -1);
+  paivitaHud();
+  map.attributionControl.addAttribution(
+    'Maanmittauslaitos (CC BY 4.0) &middot; ruututiilidemo');
+})();
+</script>
+</body>
+</html>
