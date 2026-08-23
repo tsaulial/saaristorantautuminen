@@ -613,6 +613,26 @@ let currentDisplay = 'score'; // 'score' | 'top'
 // vika etsittiin silloin vaarasta paikasta kolme kertaa. Siksi vektoreille
 // annetaan OMA pane omalla z-indeksillaan: rasteri (400) < vektorit (450) <
 // tietopallot (markerPane 600). Jarjestys ei jaa piirtojarjestyksen varaan.
+// PERUSKARTTA JA ANALYYSIKERROS OMIIN PANEIHINSA.
+//
+// Molemmat ovat L.imageOverlay ja menivat oletuksena samaan overlayPaneen,
+// jolloin niiden keskinainen jarjestys jai DOM-lisaysjarjestyksen varaan.
+// Se toimi vahingossa: refreshBase tyhjentaa ja lisaa peruskartan joka
+// moveend-hetkella, ja refreshNew loi omansa uudelleen sen JALKEEN, joten
+// analyysikerros paatyi paallimmaiseksi.
+//
+// Kun refreshNew lakkasi luomasta muuttumattomia uudelleen (valahtelyn
+// korjaus), ne jaivat vanhaan kohtaansa - peruskartan ALLE. Melottavuuden
+// varitys nakyi viela vedettaessa mutta katosi hiiren irrotessa, koska
+// juuri silloin peruskartta lisattiin sen paalle.
+//
+// Sama vikaluokka on kirjattu alle vektoritasoista: jarjestys ei saa jaada
+// lisaysjarjestyksen varaan. Nyt se on eksplisiittinen.
+map.createPane('peruskartta');
+map.getPane('peruskartta').style.zIndex = 400;
+map.createPane('analyysi');
+map.getPane('analyysi').style.zIndex = 425;
+
 map.createPane('vektorit');
 map.getPane('vektorit').style.zIndex = 450;
 
@@ -2122,7 +2142,8 @@ function refreshBase() {
   const level = levelForZoom(map.getZoom());
   baseLayerGroup.clearLayers();
   visibleTiles().forEach((tile) => {
-    L.imageOverlay(`/api/basemap/${tile.tile_id}${level.suffix}.png`, tileLatLngBounds(tile), { opacity: 1 })
+    L.imageOverlay(`/api/basemap/${tile.tile_id}${level.suffix}.png`,
+                   tileLatLngBounds(tile), { opacity: 1, pane: 'peruskartta' })
       .addTo(baseLayerGroup);
   });
 }
@@ -2792,7 +2813,8 @@ async function refreshNew() {
       }
       continue;
     }
-    const overlay = L.imageOverlay(dataUrl, tileLatLngBounds(tile), { opacity: 1 })
+    const overlay = L.imageOverlay(dataUrl, tileLatLngBounds(tile),
+                                   { opacity: 1, pane: 'analyysi' })
       .addTo(newGroup);
     newOverlays.set(tile.tile_id, { overlay, dataUrl });
   }
