@@ -394,7 +394,6 @@ def build(korvaa=False):
 
     write_static_index_html()
     write_static_settings_html()
-    write_static_demo_html()
 
     # Estaa GitHub Pagesia ajamasta Jekylla-prosessointia staattisten
     # tiedostojen paalla (nopeampi julkaisu, ei yllatyksia tiedostonimissa).
@@ -403,20 +402,6 @@ def build(korvaa=False):
     total_size = sum(f.stat().st_size for f in DOCS_DIR.rglob("*") if f.is_file())
     print(f"\nValmis: {DOCS_DIR} ({total_size / 1e6:.1f} MB, {len(tile_entries)} tiilta)")
     print(f"Paras {pipeline.DEFAULT_TOP_PERCENT}% -kynnysarvo: {threshold:.4f} (persentiili {default_percentile})")
-
-
-def write_static_demo_html():
-    """Ruututiilidemo docs/-hakemistoon.
-
-    KOPIO SELLAISENAAN, ei URL-korvauksia: demo kirjoitettiin alusta asti
-    suhteellisilla poluilla (cache/, tiles.json), koska se on erillinen sivu
-    eika kayta /api/-reitteja. Kirjoitetaan buildissa, jottei se katoa
-    docs/-hakemiston tyhjennyksessa."""
-    lahde = ROOT / "frontend" / "demo.html"
-    if not lahde.exists():
-        return
-    (DOCS_DIR / "demo.html").write_text(lahde.read_text(encoding="utf-8"),
-                                        encoding="utf-8")
 
 
 # Asetussivun ainoa API-riippuvuus on rantaviivan jakauma; muut valinnat

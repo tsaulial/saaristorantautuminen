@@ -411,7 +411,10 @@
 // metrit "lat/lng"-pareina (pohjoinen=lat, ita=lng) L.CRS.Simple:lla, jonka
 // project()/unproject() on identiteetti - ei geodeettista muunnosta, ei
 // proj4-riippuvuutta, silti pikselintarkka ja saumaton lopputulos.
-const map = L.map('map', { crs: L.CRS.Simple, zoomSnap: 0.25, minZoom: -10, maxZoom: 6 });
+// zoomSnap: 0 - zoom EI pyoristy portaisiin. Se on edellytys
+// portaattomalle vierityszoomaukselle (ks. VIERITYSZOOMAUS alempana);
+// arvolla 0,25 pieninkin touchpadin liike hyppasi kokonaisen askeleen.
+const map = L.map('map', { crs: L.CRS.Simple, zoomSnap: 0, minZoom: -10, maxZoom: 6 });
 
 // Mittakaavajana. Leafletin oma kontrolli KELPAA TASSA SELLAISENAAN, mika ei
 // ole itsestaan selvaa: se laskee matkan map.distance():lla, joka
@@ -487,10 +490,10 @@ const paikannusRyhma = L.layerGroup().addTo(map);
 // senttimetrissa on, ja mitattu luku kertoo tarkoituksensa toisin kuin
 // taikanumero 37,8. L.CRS.Simple:lla resoluutio zoomilla z on 2^-z m/px.
 //
-// Kartan zoomSnap on 0,25, joten tulos pyoristyy: laskettu -1,404 pain
-// -1,5:ksi, jolloin senttimetri on 107 m eika 100 m. 7 %:n ero on pienempi
-// kuin laitteiden todellinen pikselitiheyden vaihtelu, joten tarkempaan ei
-// ole syyta pyrkia - "1 cm naytolla" on joka tapauksessa likiarvo.
+// Kartan zoomSnap on nyt 0, joten tulosta EI enaa pyoristeta. Aiemmin
+// arvolla 0,25 laskettu -1,404 pyoristyi -1,5:ksi ja senttimetrista tuli
+// 107 m; nyt se on tasan 100 m. "1 cm naytolla" on silti likiarvo, koska
+// selaimen ilmoittama pikselitiheys ei aina vastaa fyysista naytto.
 function zoomSadalleMetrille() {
   const koetin = document.createElement('div');
   koetin.style.cssText = 'width:1cm;position:absolute;visibility:hidden;pointer-events:none';
@@ -2837,7 +2840,180 @@ function switchActiveGroup() {
   refreshActive();
 }
 
-map.on('zoomend moveend', () => refreshActive());
+// --- VIERITYSZOOMAUS -----------------------------------------------------
+//
+// Leafletin oma scrollWheelZoom on korvattu. Sen kolme ominaisuutta
+// tuottavat YHDESSA sen portaisen tunnun josta tama tyo alkoi:
+//
+//   1. 40 ms debounce jokaiselle tapahtumalle, myos touchpadin tiheaan
+//      virtaan. Zoomaus laahaa aina vahintaan sen verran jaljessa.
+//   2. Math.ceil(d / snap) * snap - tulos pyoristetaan YLOSPAIN seuraavaan
+//      zoomSnap-askeleeseen. Pieninkin touchpadin liike hyppaa siis
+//      kokonaisen askeleen: "vahan zoomausta" ei ole olemassa.
+//   3. Sama kasittely hiirelle ja touchpadille, vaikka laitteet antavat
+//      taysin eri suuruusluokan deltoja.
+//
+// Tilalle on otettu OpenLayersin MouseWheelZoomin logiikka, jota
+// retkikartta.fi kayttaa. VAKIOT ON LUETTU SEN OMASTA BUNDLESTA, ei
+// arvattu: deltaPerZoom 300, trackpad-kynnys |delta| < 4, ele paattyy
+// 80 ms hiljaisuuteen, hiiren animaatio 250 ms, enintaan yksi taso
+// pykalaa kohti.
+//
+// OLENNAINEN ERO ON ETTA LAITTEET EROTELLAAN.
+//
+// Touchpad antaa kymmenia pienia tapahtumia sekunnissa. Ne viedaan
+// kartalle sellaisenaan - ei animaatiota, ei pyoristysta, ei viivetta -
+// jolloin zoomaus seuraa sormia portaattomasti.
+//
+// Hiiren rullan pykala antaa yhden suuren deltan. Pykalien valissa ei ole
+// mitaan valitilaa jota seurata, joten se animoidaan yhdeksi kokonaiseksi
+// tasoksi 250 millisekunnissa.
+//
+// Kosketusnaytot eivat kulje tasta lainkaan: nipistys on Leafletin oma
+// touchZoom-kasittelija, johon ei kosketa.
+const ZOOM_DELTA_PER_TASO = 300;        // OL: deltaPerZoom_
+const ZOOM_TRACKPAD_RAJA = 4;           // OL: |delta| < 4 => trackpad
+const ZOOM_ELEEN_LOPPU_MS = 80;         // OL: timeout_
+const ZOOM_HIIRI_ANIMAATIO_MS = 250;    // OL: duration_
+const ZOOM_HIIRI_MAX_TASOA = 1;         // OL: maxDelta_
+
+let zoomTila = null;            // null | 'trackpad' | 'hiiri'
+let zoomKertyma = 0;
+let zoomEnsimmainen = 0;
+let zoomPykalaAjastin = null;
+let zoomLoppuAjastin = null;
+let zoomVarmistin = null;
+let zoomEleKesken = false;
+
+function zoomDeltaPikseleina(e) {
+  // deltaMode: 0 = pikselia, 1 = rivia, 2 = sivua. Kertoimet ovat samat
+  // kuin OpenLayersilla; ilman niita rivideltoja kayttava selain (Firefox
+  // tietyilla asetuksilla) zoomaisi noin neljakymmenesosan vauhdilla.
+  if (e.deltaMode === 1) return e.deltaY * 40;
+  if (e.deltaMode === 2) return e.deltaY * 800;
+  return e.deltaY;
+}
+
+function zoomaaAnkkurista(zoom, ankkuri, animoi) {
+  // KESKEN OLEVA ANIMAATIO ON PAATETTAVA ENSIN.
+  //
+  // Leafletin _tryAnimatedZoom palauttaa "liikuttiin" jos zoom-animaatio on
+  // jo kaynnissa, jolloin setView palaa tekematta yhtaan mitaan. Zoomaus
+  // katoaa AANETTOMASTI: ei virhetta, ei lokia, kartta vain ei liiku.
+  //
+  // TATA EI OLE MITATTU, vaan paatelty Leafletin lahdekoodista. Yritin
+  // mitata sen, sain "kolme pykalaa muuttivat zoomia 0,000 tasoa" ja
+  // uskoin todisteeksi - mutta syy oli mittausvalineessa: testivalilehti
+  // oli piilossa, jolloin requestAnimationFrame ei laukea eika Leafletin
+  // animoitu zoom voi valmistua lainkaan. Touchpad-polku nayttti
+  // toimivalta tasan siksi, ettei se kayta animaatiota.
+  //
+  // Vartija on silti paikallaan: 250 ms animaation paalle osuva toinen
+  // pykala on tavallinen rullausnopeus, ja Leafletin oma rullakasittelija
+  // kutsuu samasta syysta map._stop():ia ennen zoomausta.
+  //
+  // OpenLayers tekee saman asian omalla tavallaan (cancelAnimations ennen
+  // zoomausta), ja Leafletin oma rullakasittelija kutsuu map._stop():ia.
+  if (map._animatingZoom) map._onZoomTransitionEnd();
+  map._stop();
+  const rajattu = Math.max(map.getMinZoom(), Math.min(map.getMaxZoom(), zoom));
+  if (Math.abs(rajattu - map.getZoom()) < 1e-9) return;
+  // setZoomAround pitaa ANKKURIPISTEEN paikallaan, eli kartta zoomaa
+  // kohtaan jossa osoitin on - ei nakyman keskipisteeseen.
+  map.setZoomAround(ankkuri, rajattu, { animate: animoi });
+}
+
+function zoomEleAlkaa() {
+  zoomEleKesken = true;
+  clearTimeout(zoomLoppuAjastin);
+  // VARMISTIN. Jos ele jaisi jostain syysta paattymatta, zoomEleKesken
+  // jaisi todeksi ja kartta lakkaisi paivittymasta KOKONAAN JA HILJAA -
+  // mikaan ei kaatuisi, kuva vain jaisi vanhaksi. Tama pakottaa lopetuksen.
+  clearTimeout(zoomVarmistin);
+  zoomVarmistin = setTimeout(zoomEleLoppuu, 2000);
+}
+
+function zoomEleLoppuu() {
+  clearTimeout(zoomVarmistin);
+  zoomTila = null;
+  zoomKertyma = 0;
+  zoomEnsimmainen = 0;
+  zoomEleKesken = false;
+  refreshActive();
+}
+
+function zoomEleLoppuuViiveella(ms) {
+  clearTimeout(zoomLoppuAjastin);
+  zoomLoppuAjastin = setTimeout(zoomEleLoppuu, ms);
+}
+
+function zoomHiirenPykala(ankkuri) {
+  // YKSI PYKALA = YKSI KOKONAINEN TASO, suunta kertymasta.
+  //
+  // Pelkka kertyma jaettuna deltaPerZoomilla antaisi Chromen 100 pikselin
+  // pykalalle 100/300 = 0,33 tasoa. Se tuntuu rikkinaiselta: rullaa
+  // pyoraytetaan taysi pykala ja kartta liikahtaa kolmasosan. Sama
+  // valitettiin aiemmin demosta - "suurennusta tapahtuu vain vahan".
+  //
+  // Retkikartta ei kayta jakolaskua tahan lainkaan: sen nakymassa on
+  // kiintea tiilipyramidi, jolloin OpenLayers pyoristaa tuloksen
+  // yhdeksi tasoksi (constrainResolution-haara). Pykalien VALISSA ei ole
+  // mitaan valitilaa jota seurata, toisin kuin touchpadin liukuvassa
+  // virrassa - siksi laitteita kohdellaan eri tavalla.
+  //
+  // Kertyma rajataan yhteen tasoon myos silloin kun pykalia tuli monta
+  // saman eleen aikana: muuten nopea rullaus hyppaisi useita tasoja ja
+  // maisema katoaisi.
+  const suunta = zoomKertyma > 0 ? -1 : (zoomKertyma < 0 ? 1 : 0);
+  zoomKertyma = 0;
+  zoomEnsimmainen = 0;
+  if (suunta) zoomaaAnkkurista(map.getZoom() + suunta * ZOOM_HIIRI_MAX_TASOA, ankkuri, true);
+  zoomEleLoppuuViiveella(ZOOM_HIIRI_ANIMAATIO_MS + 60);
+}
+
+map.scrollWheelZoom.disable();
+map.getContainer().addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const delta = zoomDeltaPikseleina(e);
+  if (!delta) return;
+  const ankkuri = map.mouseEventToContainerPoint(e);
+  // Laitetyyppi paatellaan ELEEN ENSIMMAISESTA tapahtumasta ja pidetaan
+  // eleen loppuun asti. Kesken eleen vaihtuva tulkinta nakyisi nykayksena.
+  if (zoomTila === null) {
+    zoomTila = Math.abs(delta) < ZOOM_TRACKPAD_RAJA ? 'trackpad' : 'hiiri';
+  }
+  zoomEleAlkaa();
+  if (zoomTila === 'trackpad') {
+    zoomaaAnkkurista(map.getZoom() - delta / ZOOM_DELTA_PER_TASO, ankkuri, false);
+    zoomEleLoppuuViiveella(ZOOM_ELEEN_LOPPU_MS);
+  } else {
+    zoomKertyma += delta;
+    if (!zoomEnsimmainen) zoomEnsimmainen = performance.now();
+    const jaljella = Math.max(ZOOM_ELEEN_LOPPU_MS - (performance.now() - zoomEnsimmainen), 0);
+    clearTimeout(zoomPykalaAjastin);
+    zoomPykalaAjastin = setTimeout(() => zoomHiirenPykala(ankkuri), jaljella);
+  }
+}, { passive: false });
+
+// ZOOMNAPPULAT VIEVAT KOKONAISELLE TASOLLE, kuten retkikartassa. Ilman
+// tata ne siirtaisivat zoomSnap: 0:n takia murtoluvusta toiseen
+// (-1,404 -> -0,404), jolloin nappulalla ei paase koskaan tasalukuun.
+map.zoomIn = function (askel, valinnat) {
+  return this.setZoom(Math.floor(this._zoom + 1e-6) + (askel || 1), valinnat);
+};
+map.zoomOut = function (askel, valinnat) {
+  return this.setZoom(Math.ceil(this._zoom - 1e-6) - (askel || 1), valinnat);
+};
+
+// ELEEN AIKANA EI RENDEROIDA. refreshActive lataa ja piirtaa kaikki
+// nakyvat tiilet; portaattomassa zoomauksessa zoomend laukeaa jokaisesta
+// vieritystapahtumasta eli kymmenia kertoja sekunnissa. Ilman tata porttia
+// selain jaatyi - se on kokeiltu ja tapahtui kolmesti.
+//
+// Kartta ei jaa tyhjaksi odottamaan: Leaflet skaalaa jo ladatut kuvat
+// uuteen zoomiin itse, joten ele nayttaa oikealta koko ajan ja tarkka
+// renderointi tehdaan kerran kun ele paattyy (ks. zoomEleLoppuu).
+map.on('zoomend moveend', () => { if (!zoomEleKesken) refreshActive(); });
 
 // Asetussivulta paluu: 'pageshow' kattaa seka tavallisen latauksen etta
 // selaimen takaisin-napin (bfcache, jolloin skriptia ei ajeta uudelleen).
