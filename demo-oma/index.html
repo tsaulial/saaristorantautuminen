@@ -1,0 +1,398 @@
+<meta charset="utf-8">
+<title>Oma ranta – demo</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root { --tausta:#fff; --teksti:#1a1a1a; --raja:#d8d8d8; --korostus:#0b6ea8; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; font:14px/1.45 system-ui, sans-serif; color:var(--teksti); }
+  #map { position:absolute; inset:0 340px 0 0; background:#dfe8ee; }
+  #paneeli { position:absolute; top:0; right:0; bottom:0; width:340px; overflow-y:auto;
+             border-left:1px solid var(--raja); background:var(--tausta); padding:14px 16px; }
+  h1 { font-size:16px; margin:0 0 2px; }
+  .vihje { color:#666; font-size:12px; margin:0 0 14px; }
+  .lohko { border-top:1px solid var(--raja); padding-top:12px; margin-top:12px; }
+  .lohko h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:#555; margin:0 0 8px; }
+  button { font:inherit; padding:6px 10px; border:1px solid var(--raja); background:#fff;
+           border-radius:5px; cursor:pointer; }
+  button:hover { border-color:#999; }
+  button.paalla { background:var(--korostus); color:#fff; border-color:var(--korostus); }
+  .tila { padding:8px 10px; border-radius:5px; font-size:13px; }
+  .tila.odottaa { background:#fdf3d8; border:1px solid #e8d9a0; }
+  .tila.valmis  { background:#e8f4ea; border:1px solid #b9dcc0; }
+  ol.suosikit { margin:0; padding-left:20px; font-size:13px; }
+  ol.suosikit li { margin-bottom:3px; }
+  ol.suosikit button { padding:0 5px; font-size:11px; margin-left:6px; }
+  table.painot { width:100%; border-collapse:collapse; font-size:12px; }
+  table.painot td { padding:1px 0; vertical-align:middle; }
+  table.painot td:first-child { white-space:nowrap; padding-right:6px; }
+  .palkki { height:9px; background:var(--korostus); border-radius:2px; }
+  .luku { text-align:right; color:#666; padding-left:6px; font-variant-numeric:tabular-nums; }
+  .selite { display:flex; gap:2px; margin:6px 0 3px; }
+  .selite i { flex:1; height:9px; }
+  .selite-teksti { display:flex; justify-content:space-between; font-size:11px; color:#666; }
+  #koe { font-size:12px; color:#444; }
+  #koe b { font-variant-numeric:tabular-nums; }
+</style>
+<div id="map"></div>
+<div id="paneeli">
+  <h1>Oma ranta</h1>
+  <p class="vihje">Klikkaa kartalta rantoja jotka ovat mielestäsi hyviä.
+     Kolmen jälkeen kartta värittyy sen mukaan, miten lähellä kukin ranta on
+     <em>sinun</em> ideaaliasi.</p>
+
+  <div id="tila" class="tila odottaa">Merkitse vähintään 3 suosikkia.</div>
+
+  <div class="lohko">
+    <h2>Näkymä</h2>
+    <button id="nappi-oma" class="paalla">Oma malli</button>
+    <button id="nappi-yleinen">Yleinen malli</button>
+    <div class="selite" id="selite"></div>
+    <div class="selite-teksti"><span id="selite-vasen">kaukana</span><span id="selite-oikea">lähellä ideaalia</span></div>
+  </div>
+
+  <div class="lohko">
+    <h2>Suosikit (<span id="suosikkeja">0</span>)</h2>
+    <ol class="suosikit" id="lista"></ol>
+    <p class="vihje" id="tyhja">Ei vielä yhtään.</p>
+    <button id="tyhjenna">Tyhjennä</button>
+  </div>
+
+  <div class="lohko">
+    <h2>Mikä sinulle merkitsee</h2>
+    <p class="vihje">Mikä erottelee sinun rantasi muista. Päätellään siitä, mistä suosikkisi ovat yhtä mieltä ja muut rannat eivät.</p>
+    <table class="painot" id="painot"></table>
+  </div>
+
+  <div class="lohko">
+    <h2>Poisjättökoe</h2>
+    <p class="vihje">Ideaali lasketaan n−1 suosikista. Mihin poisjätetty osuu?</p>
+    <div id="koe">Vaatii vähintään 4 suosikkia.</div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// ---------------------------------------------------------------------------
+// HENKILOKOHTAINEN RANTAUTUMISKELPOISUUS - demo (clusterplan.md, vaiheet 1-2)
+//
+// TAMA ON SOPIMUS PYTHONIN KANSSA. demo-oma/pisteytys.py laskee saman asian,
+// ja poisjattokoe.py todentaa sen. Jos muutat toista, MUUTA MOLEMMAT -
+// projektissa on jo yksi tallainen pari (score_from_components /
+// scoreFromComponents) ja sen ainoa ylläpitosaanto on tama.
+// ---------------------------------------------------------------------------
+// KUTISTUSTERMI ON PIIRREKOHTAINEN, EI 1/12. Kvantiilimuunnos tuottaa
+// tasajakauman vain jos sidoksia ei ole; harvinaisilla maanpeiteluokilla
+// 99 % ehdokkaista on samassa arvossa, jolloin varianssi on murto-osa
+// 1/12:sta. Ilman tata jokainen harvinainen luokka sai suurimman painon,
+// koska suosikit olivat siita triviaalisti yhta mielta. Varianssit tulevat
+// piirteet.json:ista (vie.py laskee ne aineistosta).
+const KUTISTUS_KERROIN = 3;              // lambda = 3 / n
+const VAHIN_SUOSIKKEJA = 3;
+
+let META = null, PIIRTEET = null, XY = null, N = 0, D = 0;
+let RYHMA = [], YKSIN = [];
+let suosikit = [], pisteet = null, nykyisetPainot = null;
+let tila = 'oma';
+
+const map = L.map('map', { crs: L.CRS.Simple, zoomSnap: 0, minZoom: -10, maxZoom: 4 });
+
+async function lataa() {
+  META = await (await fetch('piirteet.json')).json();
+  N = META.n; D = META.d;
+  PIIRTEET = new Uint8Array(await (await fetch('piirteet.bin')).arrayBuffer());
+  XY = new Int32Array(await (await fetch('koordinaatit.bin')).arrayBuffer());
+  META.nimet.forEach((n, i) => (n.startsWith(META.ryhma_etuliite) ? RYHMA : YKSIN).push(i));
+  // NAKYMA ENNEN KERROKSIA. peruskartta() kysyy heti map.getBounds():ia
+  // paattaakseen mitka tiilet ladataan, ja Leaflet heittaa "Set map center
+  // and zoom first" jos nakymaa ei ole viela asetettu.
+  map.fitBounds(rajat(), { padding: [20, 20] });
+  await peruskartta();
+  kanvasKerros.addTo(map);
+  piirraSelite(); paivita();
+}
+
+// --- Peruskartta: tiilet imageOverlayna, sama aineisto kuin tuotannossa ----
+let tiililista = [];
+async function peruskartta() {
+  const tl = (await (await fetch('../docs/tiles.json')).json()).tiles;
+  const kp = META.keskipiste, r = META.sade_m;
+  tiililista = tl.filter(t => {
+    const b = t.bounds_epsg3067;
+    const dx = Math.max(b.minx - kp[0], 0, kp[0] - b.maxx);
+    const dy = Math.max(b.miny - kp[1], 0, kp[1] - b.maxy);
+    return Math.hypot(dx, dy) <= r;
+  });
+  const kerros = L.layerGroup().addTo(map);
+  const nakyvat = new Map();
+  const paivitaKartta = () => {
+    const z = map.getZoom();
+    const taso = z < -3.5 ? '_overview' : z < -2 ? '_mid' : '';
+    const nak = map.getBounds();
+    for (const t of tiililista) {
+      const b = t.bounds_epsg3067;
+      const osuu = nak.getEast() > b.minx && nak.getWest() < b.maxx
+                && nak.getNorth() > b.miny && nak.getSouth() < b.maxy;
+      const avain = t.tile_id + taso;
+      if (osuu && !nakyvat.has(avain)) {
+        const o = L.imageOverlay(`../docs/cache/${t.tile_id}_base${taso}.webp`,
+          [[b.miny, b.minx], [b.maxy, b.maxx]], { opacity: 0.85 });
+        o.on('error', () => o.remove());
+        o.addTo(kerros); nakyvat.set(avain, o);
+      }
+    }
+    for (const [avain, o] of [...nakyvat]) {
+      if (!avain.endsWith(taso) || (taso === '' && /_mid|_overview/.test(avain))) {
+        o.remove(); nakyvat.delete(avain);
+      }
+    }
+  };
+  map.on('moveend zoomend', paivitaKartta);
+  paivitaKartta();
+}
+
+function rajat() {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (let i = 0; i < N; i++) {
+    const x = XY[2*i], y = XY[2*i+1];
+    if (x < x0) x0 = x; if (x > x1) x1 = x;
+    if (y < y0) y0 = y; if (y > y1) y1 = y;
+  }
+  return [[y0, x0], [y1, x1]];
+}
+
+// --- Pisteytys (sama kuin pisteytys.py) ------------------------------------
+function arvo(i, j) { return PIIRTEET[i*D + j] / 255; }
+
+function ideaali(idx) {
+  // MEDIAANI ulottuvuuksittain, ei keskiarvo: yksi poikkeava suosikki ei
+  // silloin siirra ideaalia.
+  const m = new Float64Array(D), apu = new Float64Array(idx.length);
+  for (let j = 0; j < D; j++) {
+    for (let k = 0; k < idx.length; k++) apu[k] = arvo(idx[k], j);
+    const s = Array.from(apu).sort((a,b) => a-b), h = s.length >> 1;
+    m[j] = s.length % 2 ? s[h] : (s[h-1] + s[h]) / 2;
+  }
+  return m;
+}
+
+function painot(idx) {
+  const n = idx.length, lam = KUTISTUS_KERROIN / Math.max(n, 1);
+  const s2 = new Float64Array(D);
+  for (let j = 0; j < D; j++) {
+    let mu = 0; for (const i of idx) mu += arvo(i, j); mu /= n;
+    let v = 0; for (const i of idx) { const d = arvo(i, j) - mu; v += d*d; }
+    s2[j] = v / n;
+  }
+  const sig2 = META.varianssit;
+  const w = new Float64Array(D);
+  for (const j of YKSIN) w[j] = 1 / (s2[j] + lam * sig2[j]);
+  if (RYHMA.length) {
+    // RYHMAPAINOTUS: 12 pyyhkaisysektoria hukuttaisivat muut piirteet
+    // pelkalla lukumaarallaan, joten ryhma saa yhden piirteen painon.
+    let mv = 0, mg = 0;
+    for (const j of RYHMA) { mv += s2[j]; mg += sig2[j]; }
+    mv /= RYHMA.length; mg /= RYHMA.length;
+    const wr = 1 / (mv + lam * mg);
+    for (const j of RYHMA) w[j] = wr / RYHMA.length;
+  }
+  return w;
+}
+
+// PIIRTEEN TODELLINEN VAIKUTUS JARJESTYKSEEN, ei pelkka paino.
+//
+// Suuri paino ei tarkoita suurta vaikutusta. Jos kaikki ehdokkaat ovat
+// piirteessa samanlaisia kuin ideaali, poikkeama on aina nolla eika paino
+// erottele mitaan - se vain nayttaa suurelta. Nain kavi harvinaisille
+// maanpeiteluokille: painolista naytti "suo, kivikko, suo_vektori" vaikka
+// suosikit olivat hiekkarantoja.
+//
+// Vaikutus = paino kertaa se hajonta jonka piirre TOSIASIASSA tuottaa.
+function vaikutukset(m, w) {
+  const luokat = META.nimet.map(n => META.luokat[n] || 'tavoite');
+  const v = new Float64Array(D);
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < D; j++) {
+      const x = arvo(i, j), mj = m[j];
+      const d = luokat[j] === 'ylos' ? Math.max(0, mj - x)
+              : luokat[j] === 'alas' ? Math.max(0, x - mj)
+              : Math.abs(x - mj);
+      v[j] += d * d;
+    }
+  }
+  for (let j = 0; j < D; j++) v[j] = w[j] * v[j] / N;
+  return v;
+}
+
+function etaisyydet(idx) {
+  const m = ideaali(idx), w = painot(idx), ulos = new Float64Array(N);
+  const luokat = META.nimet.map(n => META.luokat[n] || 'tavoite');
+  for (let i = 0; i < N; i++) {
+    let s = 0;
+    for (let j = 0; j < D; j++) {
+      const x = arvo(i, j), mj = m[j];
+      // Suunnalliset piirteet: ideaalin YLITTAMINEN ei saa rangaista.
+      const d = luokat[j] === 'ylos' ? Math.max(0, mj - x)
+              : luokat[j] === 'alas' ? Math.max(0, x - mj)
+              : Math.abs(x - mj);
+      s += w[j] * d * d;
+    }
+    ulos[i] = Math.sqrt(s);
+  }
+  return { d: ulos, m, w };
+}
+
+function persentiilit(d) {
+  const idx = Array.from({length: N}, (_, i) => i).sort((a,b) => d[a]-d[b]);
+  const p = new Float32Array(N);
+  idx.forEach((i, r) => { p[i] = r / Math.max(N-1, 1); });
+  return p;
+}
+
+// --- Kanvaskerros ehdokkaille ---------------------------------------------
+const kanvas = L.Layer.extend({
+  onAdd(m) {
+    this._el = L.DomUtil.create('canvas', 'leaflet-zoom-animated');
+    m.getPanes().overlayPane.appendChild(this._el);
+    m.on('moveend zoomend resize', this._piirra, this);
+    this._piirra();
+  },
+  _piirra() {
+    const m = map, koko = m.getSize(), c = this._el;
+    if (c.width !== koko.x || c.height !== koko.y) { c.width = koko.x; c.height = koko.y; }
+    const tl = m.containerPointToLayerPoint([0, 0]);
+    L.DomUtil.setPosition(c, tl);
+    const g = c.getContext('2d');
+    g.clearRect(0, 0, c.width, c.height);
+    if (!XY) return;
+    const b = m.getBounds(), r = m.getZoom() > -2 ? 3.5 : m.getZoom() > -4 ? 2.5 : 1.6;
+    for (let i = 0; i < N; i++) {
+      const x = XY[2*i], y = XY[2*i+1];
+      if (x < b.getWest() || x > b.getEast() || y < b.getSouth() || y > b.getNorth()) continue;
+      const p = m.latLngToContainerPoint([y, x]);
+      g.fillStyle = vari(i);
+      g.beginPath(); g.arc(p.x, p.y, r, 0, 6.2832); g.fill();
+    }
+    for (const i of suosikit) {
+      const p = m.latLngToContainerPoint([XY[2*i+1], XY[2*i]]);
+      g.strokeStyle = '#111'; g.lineWidth = 2.5;
+      g.beginPath(); g.arc(p.x, p.y, 7, 0, 6.2832); g.stroke();
+      g.strokeStyle = '#fff'; g.lineWidth = 1.2;
+      g.beginPath(); g.arc(p.x, p.y, 7, 0, 6.2832); g.stroke();
+    }
+  },
+}); 
+const kanvasKerros = new (kanvas)();
+
+// VARIASTEIKKO. Sininen = kaukana ideaalista, oranssi = lahella.
+const ASTEIKKO = ['#3b5f8a','#5b86ad','#8fb2c9','#d8d3c4','#e8b878','#dd8f3d','#c25e12'];
+function vari(i) {
+  if (tila === 'yleinen' || !pisteet) return '#7d8b96';
+  const p = pisteet[i];
+  return ASTEIKKO[Math.min(ASTEIKKO.length-1, Math.floor(p * ASTEIKKO.length))];
+}
+function piirraSelite() {
+  document.getElementById('selite').innerHTML =
+    ASTEIKKO.map(c => `<i style="background:${c}"></i>`).join('');
+}
+
+// --- Vuorovaikutus ---------------------------------------------------------
+function lahinEhdokas(latlng, maxPx) {
+  const p0 = map.latLngToContainerPoint(latlng);
+  let paras = -1, parasD = maxPx * maxPx;
+  const b = map.getBounds();
+  for (let i = 0; i < N; i++) {
+    const x = XY[2*i], y = XY[2*i+1];
+    if (x < b.getWest() || x > b.getEast() || y < b.getSouth() || y > b.getNorth()) continue;
+    const p = map.latLngToContainerPoint([y, x]);
+    const d = (p.x-p0.x)**2 + (p.y-p0.y)**2;
+    if (d < parasD) { parasD = d; paras = i; }
+  }
+  return paras;
+}
+
+map.on('click', (e) => {
+  const i = lahinEhdokas(e.latlng, 18);
+  if (i < 0) return;
+  const k = suosikit.indexOf(i);
+  if (k >= 0) suosikit.splice(k, 1); else suosikit.push(i);
+  paivita();
+});
+
+function paivita() {
+  document.getElementById('suosikkeja').textContent = suosikit.length;
+  const lista = document.getElementById('lista');
+  lista.innerHTML = suosikit.map((i, k) =>
+    `<li>${XY[2*i]}, ${XY[2*i+1]} <button data-k="${k}">poista</button></li>`).join('');
+  lista.querySelectorAll('button').forEach(b => b.onclick = () => {
+    suosikit.splice(+b.dataset.k, 1); paivita();
+  });
+  document.getElementById('tyhja').hidden = suosikit.length > 0;
+
+  const t = document.getElementById('tila');
+  if (suosikit.length < VAHIN_SUOSIKKEJA) {
+    pisteet = null; nykyisetPainot = null;
+    t.className = 'tila odottaa';
+    t.textContent = `Merkitse vielä ${VAHIN_SUOSIKKEJA - suosikit.length} suosikkia.`;
+    document.getElementById('painot').innerHTML = '';
+    document.getElementById('koe').textContent = 'Vaatii vähintään 4 suosikkia.';
+  } else {
+    const { d, m, w } = etaisyydet(suosikit);
+    const p = persentiilit(d);
+    pisteet = new Float32Array(N);
+    for (let i = 0; i < N; i++) pisteet[i] = 1 - p[i];   // 1 = lahinna ideaalia
+    nykyisetPainot = w;
+    t.className = 'tila valmis';
+    t.textContent = `${suosikit.length} suosikkia — kartta värittyy oman mallisi mukaan.`;
+    piirraPainot(vaikutukset(m, w));
+    poisjattokoe();
+  }
+  kanvasKerros._piirra && kanvasKerros._piirra();
+}
+
+function piirraPainot(v) {
+  // Ryhma esitetaan yhtena rivina: se on yksi paatos, ei kaksitoista.
+  const rivit = YKSIN.map(j => [META.nimet[j], v[j]]);
+  if (RYHMA.length) rivit.push(['pyyhkäisyprofiili',
+    RYHMA.reduce((s, j) => s + v[j], 0)]);
+  const max = Math.max(...rivit.map(r => r[1]));
+  rivit.sort((a, b) => b[1] - a[1]);
+  document.getElementById('painot').innerHTML = rivit.map(([n, v]) =>
+    `<tr><td>${n.replace(/_/g,' ')}</td>
+         <td style="width:100%"><div class="palkki" style="width:${100*v/max}%"></div></td>
+         <td class="luku">${(v/max).toFixed(2)}</td></tr>`).join('');
+}
+
+function poisjattokoe() {
+  const el = document.getElementById('koe');
+  if (suosikit.length < 4) { el.textContent = 'Vaatii vähintään 4 suosikkia.'; return; }
+  const sijat = [];
+  for (let k = 0; k < suosikit.length; k++) {
+    const muut = suosikit.filter((_, j) => j !== k);
+    const { d } = etaisyydet(muut);
+    const p = persentiilit(d);
+    sijat.push(p[suosikit[k]]);
+  }
+  const mediaani = sijat.slice().sort((a,b)=>a-b)[sijat.length >> 1];
+  const top10 = sijat.filter(s => s < 0.10).length;
+  el.innerHTML =
+    `Poisjätetty osuu mediaanina parhaaseen <b>${(100*mediaani).toFixed(1)} %</b>:iin.<br>`
+    + `<b>${top10}/${sijat.length}</b> osui parhaaseen 10 %:iin.<br>`
+    + `<span style="color:#666">Sattumalta odottaisi 10 %. Suunnitelman tavoite on, `
+    + `että poisjätetty on johdonmukaisesti parhaassa 10 %:ssa.</span>`;
+}
+
+document.getElementById('tyhjenna').onclick = () => { suosikit = []; paivita(); };
+for (const [id, arvo_] of [['nappi-oma','oma'], ['nappi-yleinen','yleinen']]) {
+  document.getElementById(id).onclick = () => {
+    tila = arvo_;
+    document.getElementById('nappi-oma').classList.toggle('paalla', tila==='oma');
+    document.getElementById('nappi-yleinen').classList.toggle('paalla', tila==='yleinen');
+    kanvasKerros._piirra();
+  };
+}
+
+lataa().catch(e => {
+  document.getElementById('tila').textContent = 'Lataus epäonnistui: ' + e.message;
+  console.error(e);
+});
+</script>

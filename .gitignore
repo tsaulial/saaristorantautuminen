@@ -18,6 +18,7 @@ docs/
 # filter-repo sen aikanaan pudotti, ja rakennukset.gpkg (93 Mt) olisi
 # lahestynyt GitHubin 100 Mt tiedostorajaa.
 korkeusmalli-mml/
+maasto-mml/
 karttakuva-mll/
 taustakartta-mml/
 rakennukset-mll/
