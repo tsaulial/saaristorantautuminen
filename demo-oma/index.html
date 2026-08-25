@@ -673,7 +673,7 @@ function poisjattokoe() {
   const mediaani = sijat.slice().sort((a,b)=>a-b)[sijat.length >> 1];
   const top10 = sijat.filter(s => s < 0.10).length;
   el.innerHTML =
-    `Poisjätetty osuu mediaanina parhaaseen <b>${(100*mediaani).toFixed(1)} %</b>:iin.<br>`
+    `Poisjätetty osuu mediaanina parhaaseen <b>${(100*mediaani).toFixed(1).replace('.', ',')} %</b>:iin.<br>`
     + `<b>${top10}/${sijat.length}</b> osui parhaaseen 10 %:iin.<br>`
     + `<span style="color:#666">Sattumalta odottaisi 10 %. Suunnitelman tavoite on, `
     + `että poisjätetty on johdonmukaisesti parhaassa 10 %:ssa.</span>`;
