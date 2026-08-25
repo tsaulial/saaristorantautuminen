@@ -19,6 +19,8 @@ python3 -m http.server 8771 --bind 127.0.0.1
 python3 demo-oma/piirteet.py        # 18 geometriapiirrettä docs/cache-kuvista
 python3 demo-oma/maastopiirteet.py  # 9 maanpeiteluokkaa maasto-mml/maasto.gpkg:sta
 python3 demo-oma/vaylapiirteet.py   # etäisyys kauppamerenkulun väylään docs/vaylat.json:ista
+python3 demo-oma/kelpoala.py        # kelvollisen rannan määrä
+python3 demo-oma/yleinen.py         # yleisen mallin pistemäärä + sen termit
 python3 demo-oma/vie.py             # yhdistää, kvantiloi, kirjoittaa selaimelle
 python3 demo-oma/poisjattokoe.py    # mittari: toimiiko mitta
 ```
@@ -133,3 +135,48 @@ pistemääriä**: jyrkkyys 1,0 alle 5° ja 0 yli 20°, etäisyys 0 alle 20 m ja 
 yli 150 m. Näytin ne aluksi prosentteina — "100 %" ei erota 200 metriä
 viidestä kilometristä. Nyt ne käännetään takaisin asteiksi ja metreiksi, ja
 kyllästysraja merkitään näytöllä: **"yli 150 m"**, ei "150 m".
+
+## Kaksi mallia
+
+| | Yleinen malli | Oma malli |
+|---|---|---|
+| Vastaa kysymykseen | "onko tämä hyvä ranta" | "onko tämä *minun* rantani" |
+| Perusta | `score_from_components`, kiinteät painot | etäisyys omaan ideaaliin |
+| Vaatii | ei mitään | ≥3 suosikkia |
+| **Väri** | **pistemäärä 0–1 sellaisenaan** | **1 − persentiili** |
+| Vertailukelpoinen | kyllä, kaikkien kesken | vain omien rantojen kesken |
+
+**Yleinen on oletus.** Se on ainoa mahdollinen vastaus käyttäjälle jolla ei
+vielä ole suosikkeja; aiemmin kartta oli harmaa kunnes kolme suosikkia oli
+merkitty, mikä on asetelma väärin päin.
+
+**Asteikot ovat eri, ja se on tahallista.** Yleisellä pistemäärällä on
+absoluuttinen merkitys — vihreä tarkoittaa aina samaa riippumatta siitä mitä
+muita rantoja aineistossa on. Etäisyydellä omaan ideaaliin ei ole
+absoluuttista asteikkoa, vain järjestys on mielekäs. Sama väri tarkoittaa
+siis eri asiaa, ja siksi **selitteen teksti vaihtuu tilan mukana**.
+
+Molemmat luvut näkyvät paneelissa aina: *"0,82 / 1,00 · sinulle parhaat 3 %"*.
+Se on halvin tapa nähdä missä mallit ovat eri mieltä.
+
+### Yleisen mallin selitys
+
+Puretaan kolmeen painotettuun termiin ja suon kertovaan rangaistukseen:
+
+```
+score = (0,50·loivuus + 0,35·etäisyys + 0,15·kallio) / 1,00
+suo:    score × 0,5
+```
+
+Termit **summautuvat tasan pistemäärään** — todennettu `yleinen.py`:ssä
+(suurin poikkeama 6·10⁻⁸) ja säilytetty kvantisoinnin yli johtamalla
+`yleinen.bin` samoista pyöristetyistä termeistä. Erikseen pyöristettyinä ne
+erosivat 0,004, mikä ei näy mutta tekisi paneelista epäjohdonmukaisen.
+
+Todennettu kolmella tapauksella:
+
+| ranta | suurin syy vastaan |
+|---|---|
+| jyrkin (20,0°) | `jyrkkyys 0,492` |
+| suoisin (95 % suota, muuten 5° / 150 m) | `suo 0,439`, jyrkkyys ja etäisyys 0,000 |
+| paras (5°, 150 m, kallio) | kaikki ≈ 0 |

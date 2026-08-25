@@ -14,7 +14,8 @@
   .lohko h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:#555; margin:0 0 8px; }
   button { font:inherit; padding:6px 10px; border:1px solid var(--raja); background:#fff;
            border-radius:5px; cursor:pointer; }
-  button:hover { border-color:#999; }
+  button:hover:not(:disabled) { border-color:#999; }
+  button:disabled { opacity:.45; cursor:default; }
   button.paalla { background:var(--korostus); color:#fff; border-color:var(--korostus); }
   .tila { padding:8px 10px; border-radius:5px; font-size:13px; }
   .tila.odottaa { background:#fdf3d8; border:1px solid #e8d9a0; }
@@ -52,10 +53,10 @@
 <div id="map"></div>
 <div id="paneeli">
   <h1>Oma ranta</h1>
-  <p class="vihje">Klikkaa kartalta rantaa nähdäksesi sen tiedot. Merkitse
-     kolme suosikkia, niin kartta värittyy sen mukaan, miten lähellä kukin
-     ranta on <em>sinun</em> ideaaliasi — ja jokaisesta rannasta kerrotaan
-     millä perusteella se sai arvionsa.</p>
+  <p class="vihje">Kartta näyttää aluksi <b>yleisen mallin</b>: onko tämä
+     hyvä ranta kenelle tahansa. Klikkaa rantaa nähdäksesi millä perusteella
+     se sai arvionsa. Merkitse kolme suosikkia, niin saat rinnalle
+     <b>oman mallin</b>: onko tämä <em>sinun</em> rantasi.</p>
 
   <div id="tila" class="tila odottaa">Merkitse vähintään 3 suosikkia.</div>
 
@@ -71,8 +72,8 @@
 
   <div class="lohko">
     <h2>Näkymä</h2>
-    <button id="nappi-oma" class="paalla">Oma malli</button>
-    <button id="nappi-yleinen">Yleinen malli</button>
+    <button id="nappi-yleinen" class="paalla">Yleinen malli</button>
+    <button id="nappi-oma" disabled title="Vaatii vähintään 3 suosikkia">Oma malli</button>
     <div class="selite" id="selite"></div>
     <div class="selite-teksti"><span id="selite-vasen">kaukana</span><span id="selite-oikea">lähellä ideaalia</span></div>
   </div>
@@ -117,10 +118,14 @@ const KUTISTUS_KERROIN = 3;              // lambda = 3 / n
 const VAHIN_SUOSIKKEJA = 3;
 
 let META = null, PIIRTEET = null, XY = null, KVANTIILIT = null, N = 0, D = 0;
+let YLEINEN = null, YLEINEN_OSAT = null;
 let valittu = -1;
 let RYHMA = [], YKSIN = [];
 let suosikit = [], pisteet = null, nykyisetPainot = null;
-let tila = 'oma';
+// OLETUS ON YLEINEN MALLI. Se on ainoa mahdollinen vastaus kayttajalle
+// jolla ei viela ole suosikkeja (clusterplan.md) - aiemmin kartta oli
+// harmaa kunnes kolme suosikkia oli merkitty, mika on asetelma vaarin pain.
+let tila = 'yleinen';
 
 const map = L.map('map', { crs: L.CRS.Simple, zoomSnap: 0, minZoom: -10, maxZoom: 4 });
 
@@ -136,6 +141,8 @@ async function lataa() {
   PIIRTEET = new Uint8Array(await (await fetch('piirteet.bin', EI_VALIMUISTIA)).arrayBuffer());
   XY = new Int32Array(await (await fetch('koordinaatit.bin', EI_VALIMUISTIA)).arrayBuffer());
   KVANTIILIT = new Float32Array(await (await fetch('kvantiilit.bin', EI_VALIMUISTIA)).arrayBuffer());
+  YLEINEN = new Uint8Array(await (await fetch('yleinen.bin', EI_VALIMUISTIA)).arrayBuffer());
+  YLEINEN_OSAT = new Uint8Array(await (await fetch('yleinen_osat.bin', EI_VALIMUISTIA)).arrayBuffer());
   META.nimet.forEach((n, i) => (n.startsWith(META.ryhma_etuliite) ? RYHMA : YKSIN).push(i));
   // NAKYMA ENNEN KERROKSIA. peruskartta() kysyy heti map.getBounds():ia
   // paattaakseen mitka tiilet ladataan, ja Leaflet heittaa "Set map center
@@ -342,6 +349,33 @@ function erittely(i, m, w) {
   return { panos, sopivuus: Array.from(huonompia, h => h / N), summa };
 }
 
+// Yleisen mallin erittely nelja termia. Kolme ensimmaista SUMMAUTUVAT
+// TASAN pistemaaraan (todennettu yleinen.py:ssa, poikkeama 6e-08), nelias
+// on suon kertovan rangaistuksen viema osuus.
+const YLEINEN_MAKSIMIT = { jyrkkyys: 0.50, etaisyys: 0.35, kallio: 0.15 };
+const YLEINEN_PIIRRE = { jyrkkyys: 'jyrkkyys', etaisyys: 'etaisyys_rakennuksiin',
+                         kallio: 'kallio', suo_menetys: 'suo' };
+
+function yleinenErittely(i) {
+  const nimet = META.yleinen_osat;
+  const t = {};
+  nimet.forEach((n, k) => { t[n] = YLEINEN_OSAT[i * nimet.length + k] / 255; });
+  const pistemaara = t.jyrkkyys + t.etaisyys + t.kallio;
+  // Suon rangaistus on KERTOVA, joten se sisaltyy jo kolmeen termiin.
+  // Rangaistukseton arvo saadaan takaisin summasta: ilman suota pistemaara
+  // olisi ollut pistemaara + suo_menetys.
+  const ilmanSuota = pistemaara + t.suo_menetys;
+  const kerroin = ilmanSuota > 0 ? pistemaara / ilmanSuota : 1;
+  const puolesta = [], vastaan = [];
+  for (const n of ['jyrkkyys', 'etaisyys', 'kallio']) {
+    const u = kerroin > 0 ? t[n] / kerroin : t[n];      // ilman suorangaistusta
+    puolesta.push({ nimi: n, arvo: t[n] });
+    vastaan.push({ nimi: n, arvo: Math.max(0, YLEINEN_MAKSIMIT[n] - u) });
+  }
+  if (t.suo_menetys > 0.001) vastaan.push({ nimi: 'suo_menetys', arvo: t.suo_menetys });
+  return { pistemaara, puolesta, vastaan };
+}
+
 function piirraSelitys() {
   const el = document.getElementById('selitys');
   if (valittu < 0) { el.classList.remove('nakyy'); return; }
@@ -355,11 +389,47 @@ function piirraSelitys() {
   const sisalto = document.getElementById('sel-sisalto');
   const ryhmaOsuus = (arr) => RYHMA.reduce((s, j) => s + arr[j], 0);
 
+  // MOLEMMAT LUVUT AINA. Se on halvin tapa nahda missa mallit ovat eri
+  // mielta: "yleisesti keskinkertainen mutta juuri sinulle paras 2 %".
+  const yl = YLEINEN[valittu] / 255;
+  document.getElementById('sel-piste').textContent =
+    tila === 'yleinen' ? yl.toFixed(2).replace('.', ',') + ' / 1,00'
+                       : (pisteet ? (100 * pisteet[valittu]).toFixed(0) + ' / 100' : '–');
+  document.getElementById('sel-sija').textContent = pisteet
+    ? (tila === 'yleinen' ? `sinulle parhaat ${(100*(1-pisteet[valittu])).toFixed(1)} %`
+                          : `yleinen ${yl.toFixed(2).replace('.', ',')}`)
+    : (tila === 'yleinen' ? 'yleinen malli' : 'ei vielä arviota');
+
+  // YLEINEN MALLI: puretaan neljaan kiintean painon tekijaan.
+  if (tila === 'yleinen') {
+    const { puolesta, vastaan } = yleinenErittely(valittu);
+    const rivi = (r, luokka, mitta) => {
+      const piirre = YLEINEN_PIIRRE[r.nimi];
+      const j = META.nimet.indexOf(piirre);
+      const otsikko = META.yleinen_otsikot[r.nimi];
+      const arvo = j >= 0 ? muotoile(piirre, raakaArvo(valittu, j)) : '';
+      return `<tr><td class="nimi">${otsikko}</td>
+                  <td style="width:100%"><div class="mini ${luokka}"
+                       style="width:${Math.max(4, 100 * mitta(r))}%"></div></td>
+                  <td class="arvo">${arvo}</td></tr>`;
+    };
+    const mp = Math.max(0.0001, ...puolesta.map(r => r.arvo));
+    const mv = Math.max(0.0001, ...vastaan.map(r => r.arvo));
+    sisalto.innerHTML =
+      `<div class="sel-ryhma"><b>Tämän puolesta</b><table class="erittely">`
+      + puolesta.slice().sort((a,b)=>b.arvo-a.arvo)
+          .map(r => rivi(r, 'hyva', x => x.arvo / mp)).join('') + `</table></div>`
+    + `<div class="sel-ryhma"><b>Tätä vastaan</b><table class="erittely">`
+      + vastaan.slice().sort((a,b)=>b.arvo-a.arvo)
+          .map(r => rivi(r, 'huono', x => x.arvo / mv)).join('') + `</table></div>`
+    + `<p class="sel-tyhja" style="margin-top:8px">Kiinteät painot:
+       loivuus 0,50 · etäisyys 0,35 · kallio 0,15. Suo puolittaa pistemäärän.</p>`;
+    return;
+  }
+
   // Ilman ideaalia ei ole mitaan selitettavaa - naytetaan silti rannan
   // omat luvut, jotta sita voi tutkia ennen kolmatta suosikkia.
   if (!pisteet) {
-    document.getElementById('sel-piste').textContent = '–';
-    document.getElementById('sel-sija').textContent = 'ei vielä arviota';
     const rivit = YKSIN.filter(j => META.esitys[META.nimet[j]].nakyy)
       .map(j => `<tr><td class="nimi">${META.esitys[META.nimet[j]].otsikko}</td>
                      <td class="arvo">${muotoile(META.nimet[j], raakaArvo(valittu, j))}</td></tr>`);
@@ -374,11 +444,6 @@ function piirraSelitys() {
 
   const { m, w } = etaisyydet(suosikit);
   const { panos, sopivuus, summa } = erittely(valittu, m, w);
-  const p = pisteet[valittu];
-  document.getElementById('sel-piste').textContent = (100 * p).toFixed(0) + ' / 100';
-  document.getElementById('sel-sija').textContent =
-    `parhaat ${(100 * (1 - p)).toFixed(1)} %`;
-
   // Rivit: yksittaiset ulottuvuudet + pyyhkaisyryhma yhtena.
   const rivit = YKSIN.filter(j => META.esitys[META.nimet[j]].nakyy).map(j => ({
     nimi: META.nimet[j], otsikko: META.esitys[META.nimet[j]].otsikko,
@@ -466,7 +531,7 @@ const kanvas = L.Layer.extend({
 }); 
 const kanvasKerros = new (kanvas)();
 
-// VARIASTEIKKO. Punainen = kaukana ideaalista, vihrea = lahella.
+// VARIASTEIKKO. Punainen = huono, vihrea = hyva.
 //
 // Jarjestys on sama kuin selitteessa: indeksi 0 vasemmalla (kaukana),
 // viimeinen oikealla (lahella). vari() indeksoi pistemaaralla, joka on
@@ -477,14 +542,28 @@ const kanvasKerros = new (kanvas)();
 // keskikohta on vaalein ja molemmat paat tummenevat. Ero on siksi nakyvissa
 // myos silloin kun savyt eivat erotu.
 const ASTEIKKO = ['#d73027','#fc8d59','#fee08b','#ffffbf','#d9ef8b','#91cf60','#1a9850'];
+// KAKSI ERI ASTEIKKOA, ja se on tahallista.
+//
+// Yleinen malli varitetaan PISTEMAARALLA 0-1 sellaisenaan, kuten tuotanto:
+// vihrea tarkoittaa aina samaa riippumatta siita mita muita rantoja
+// aineistossa on. Oma malli varitetaan PERSENTIILILLA, koska etaisyydella
+// ideaaliin ei ole absoluuttista asteikkoa - vain jarjestys on mielekas.
+//
+// Sama vari tarkoittaa siis eri asiaa naissa kahdessa, ja siksi selitteen
+// TEKSTI vaihtuu tilan mukana (ks. piirraSelite).
 function vari(i) {
-  if (tila === 'yleinen' || !pisteet) return '#7d8b96';
-  const p = pisteet[i];
-  return ASTEIKKO[Math.min(ASTEIKKO.length-1, Math.floor(p * ASTEIKKO.length))];
+  const x = tila === 'yleinen' ? YLEINEN[i] / 255 : (pisteet ? pisteet[i] : null);
+  if (x === null) return '#7d8b96';
+  return ASTEIKKO[Math.min(ASTEIKKO.length - 1, Math.floor(x * ASTEIKKO.length))];
 }
 function piirraSelite() {
   document.getElementById('selite').innerHTML =
     ASTEIKKO.map(c => `<i style="background:${c}"></i>`).join('');
+  const yleinen = tila === 'yleinen';
+  document.getElementById('selite-vasen').textContent =
+    yleinen ? 'huono ranta' : 'kaukana';
+  document.getElementById('selite-oikea').textContent =
+    yleinen ? 'hyvä ranta' : 'lähellä ideaaliasi';
 }
 
 // --- Vuorovaikutus ---------------------------------------------------------
@@ -539,6 +618,19 @@ function paivita() {
     piirraPainot(vaikutukset(m, w));
     poisjattokoe();
   }
+  // "Oma malli" on kaytettavissa vasta kun ideaali on olemassa. Jos
+  // suosikkeja poistetaan alle kolmen, tila palaa yleiseen - muuten kartta
+  // jaisi harmaaksi ilman etta mikaan kertoo miksi.
+  const oma = document.getElementById('nappi-oma');
+  oma.disabled = suosikit.length < VAHIN_SUOSIKKEJA;
+  oma.title = oma.disabled
+    ? `Vaatii vähintään ${VAHIN_SUOSIKKEJA} suosikkia`
+    : 'Väritä kartta oman ideaalisi mukaan';
+  if (oma.disabled && tila === 'oma') { asetaTila('yleinen'); return; }
+  document.getElementById('nappi-oma').classList.toggle('paalla', tila === 'oma');
+  document.getElementById('nappi-yleinen').classList.toggle('paalla', tila === 'yleinen');
+
+  piirraSelite();
   piirraSelitys();
   kanvasKerros._piirra && kanvasKerros._piirra();
 }
@@ -582,12 +674,18 @@ document.getElementById('sel-suosikki').onclick = () => {
   paivita();
 };
 document.getElementById('tyhjenna').onclick = () => { suosikit = []; paivita(); };
+function asetaTila(uusi) {
+  tila = uusi;
+  document.getElementById('nappi-oma').classList.toggle('paalla', tila === 'oma');
+  document.getElementById('nappi-yleinen').classList.toggle('paalla', tila === 'yleinen');
+  piirraSelite();
+  piirraSelitys();
+  kanvasKerros._piirra();
+}
 for (const [id, arvo_] of [['nappi-oma','oma'], ['nappi-yleinen','yleinen']]) {
-  document.getElementById(id).onclick = () => {
-    tila = arvo_;
-    document.getElementById('nappi-oma').classList.toggle('paalla', tila==='oma');
-    document.getElementById('nappi-yleinen').classList.toggle('paalla', tila==='yleinen');
-    kanvasKerros._piirra();
+  document.getElementById(id).onclick = (e) => {
+    if (e.currentTarget.disabled) return;
+    asetaTila(arvo_);
   };
 }
 

@@ -89,17 +89,30 @@ def main():
     m = np.load(ULOS / "maastoluokat.npz", allow_pickle=True)
     v = np.load(ULOS / "vaylaetaisyys.npz", allow_pickle=True)
     ka = np.load(ULOS / "kelpoala.npz", allow_pickle=True)
+    yl = np.load(ULOS / "yleinen.npz", allow_pickle=True)
 
     geo = [str(x) for x in d["nimet"]]
     maa = [str(x) for x in m["nimet"]]
     vay = [str(x) for x in v["nimet"]]
     kel = [str(x) for x in ka["nimet"]]
     nimet = geo + maa + vay + kel
+    # TASAPELINPURKU POIS PIIRREVEKTORISTA.
+    #
+    # Se on TUOTANNOSSA valttamaton: varsinainen pistemaara kyllastyy tasan
+    # arvoon 1,0, jolloin ilman sita "parhaat 1 %" ja "parhaat 7 %" ovat
+    # sama alue (pipeline.py:278). Piirteena se ei ansaitse paikkaansa -
+    # mitattuna korrelaatio jyrkkyyspisteisiin 0,63 ja etaisyyspisteisiin
+    # 0,74, ja sen poistaminen ei muuttanut poisjattokoetta desimaaliakaan.
+    # clusterplan varoittaa tasta: korreloivat piirteet heikentavat hakua.
+    #
+    # backend/pipeline.py:hyn EI kosketa - poisto koskee vain tata vektoria.
+    POIS = {"tasapelinpurku"}
+    pidä = [i for i, n in enumerate(nimet) if n not in POIS]
     raaka = np.hstack([d["piirteet"], m["luokat"],
                        v["etaisyys"].reshape(-1, 1), ka["ala"].reshape(-1, 1)])
-    q = np.hstack([kvantiloi(d["piirteet"]), kvantiloi(m["luokat"]),
-                   kvantiloi(v["etaisyys"].reshape(-1, 1)),
-                   kvantiloi(ka["ala"].reshape(-1, 1))])
+    raaka = raaka[:, pidä]
+    nimet = [nimet[i] for i in pidä]
+    q = kvantiloi(raaka)
     xs, ys = d["x"], d["y"]
 
     # KVANTIILI TAKAISIN RAAKA-ARVOKSI. 101 katkaisukohtaa per ulottuvuus
@@ -121,6 +134,22 @@ def main():
         ULOS / "koordinaatit.bin")
     taulu.astype(np.float32).tofile(ULOS / "kvantiilit.bin")
 
+    # YLEISEN MALLIN PISTEMAARA JA SEN TERMIT. Omassa tiedostossaan, koska
+    # se on mallin ULOSTULO eika syote - piirrevektoriin lisattyna oma malli
+    # olisi osittain kopio yleisesta.
+    osat_u8 = np.clip(np.rint(yl["osat"] * 255), 0, 255).astype(np.uint8)
+    # PISTEMAARA JOHDETAAN SAMOISTA PYORISTETYISTA TERMEISTA, ei erikseen.
+    #
+    # Erikseen pyoristettyna kolmen termin summa ja pistemaara erosivat
+    # toisistaan enintaan 1,5/255 - mitattuna 0,004. Se ei nayta miltaan,
+    # mutta selityspaneeli vaittaa termien selittavan luvun, ja silloin
+    # niiden on summauduttava siihen. Pieni aaneton ristiriita on tassa
+    # projektissa maksanut aikaa useammin kuin suuri kaatuminen.
+    pisteet_u8 = np.clip(osat_u8[:, :3].astype(np.int32).sum(axis=1),
+                         0, 255).astype(np.uint8)
+    (ULOS / "yleinen.bin").write_bytes(pisteet_u8.tobytes())
+    (ULOS / "yleinen_osat.bin").write_bytes(osat_u8.tobytes())
+
     esitys = {}
     for n in nimet:
         if n.startswith("pyyhkaisy_"):
@@ -139,6 +168,14 @@ def main():
         # Piirrekohtainen varianssi kutistustermia varten. EI 1/12:
         # kvantiilimuunnos tuottaa tasajakauman vain jos sidoksia ei ole.
         "varianssit": [float(x) for x in q.var(axis=0)],
+        # Yleisen mallin selitys: termien nimet ja kayttajalle nayetettavat
+        # otsikot. Kolme ensimmaista summautuvat pistemaaraan, nelias on
+        # suon kertovan rangaistuksen viema osuus.
+        "yleinen_osat": [str(x) for x in yl["osien_nimet"]],
+        "yleinen_otsikot": {
+            "jyrkkyys": "loivuus", "etaisyys": "etäisyys rakennuksiin",
+            "kallio": "kallio", "suo_menetys": "suo",
+        },
         "vali_m": 50.0, "ikkuna_m": 25.0,
         "keskipiste": [386385.0, 6671827.0], "sade_m": 50000.0,
     }, indent=1, ensure_ascii=False))
@@ -147,6 +184,9 @@ def main():
     print(f"  piirteet.bin     {len(xs)*len(nimet)/1e6:.2f} Mt")
     print(f"  koordinaatit.bin {len(xs)*8/1e6:.2f} Mt")
     print(f"  kvantiilit.bin   {taulu.size*4/1e3:.1f} kt")
+    print(f"  yleinen.bin      {len(xs)/1e3:.1f} kt")
+    print(f"  yleinen_osat.bin {len(xs)*4/1e3:.1f} kt")
+    print(f"  (tasapelinpurku pudotettu vektorista)")
     return 0
 
 
