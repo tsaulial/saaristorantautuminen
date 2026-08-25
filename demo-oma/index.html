@@ -302,8 +302,13 @@ function raakaArvo(i, j) {
 function muotoile(nimi, x) {
   const e = META.esitys[nimi];
   const v = x * e.kerroin;
-  if (e.yksikko === 'm') return (v >= 1000 ? (v / 1000).toFixed(1) + ' km'
+  if (e.yksikko === 'm') return (v >= 1000 ? (v / 1000).toFixed(1).replace('.', ',') + ' km'
                                            : Math.round(v) + ' m');
+  // "m+" = kyllastyva mitta. Ylarajalla nayetaan "yli 150 m" eika "150 m",
+  // koska pistemaara ei erota 200 metria viidesta kilometrista.
+  if (e.yksikko === 'm+') return (v >= 149.5 ? 'yli 150 m' : Math.round(v) + ' m');
+  if (e.yksikko === '°') return v.toFixed(1).replace('.', ',') + '°';
+  if (e.yksikko === 'm2') return Math.round(v) + ' m²';
   if (e.yksikko === '%') return v.toFixed(v < 10 ? 1 : 0) + ' %';
   return v.toFixed(1);
 }

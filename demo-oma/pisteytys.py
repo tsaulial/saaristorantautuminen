@@ -24,6 +24,11 @@ LUOKAT = {
     # on yhta hyva - ei "liian kaukana". Etaisyys rakennuksiin on eri asia
     # ja siksi tavoitteellinen.
     "etaisyys_rahtivaylaan": "ylos",
+    # Rantautumiskelpoisen maan MAARA on kapasiteettia, ei makua: ylimaarainen
+    # tila ei haittaa ketaan, joten ideaalin ylittaminen ei saa rangaista.
+    # Jos suosikkisi ovat 300 nelion rantoja, 600 nelion ranta on yhta hyva.
+    # Ahtaus sen sijaan rankaisee, ja juuri sita tama mittaa.
+    "kelvollista_rantaa": "ylos",
     "etaisyys_rakennuksiin": "tavoite",  # toinen haluaa eramaata, toinen palveluja
     "kallio": "tavoite",                # sileä kallio on laituri tai este
     "puskurin_leveys": "tavoite",

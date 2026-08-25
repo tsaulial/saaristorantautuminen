@@ -1,6 +1,6 @@
 {
  "n": 17222,
- "d": 28,
+ "d": 29,
  "nimet": [
   "jyrkkyys",
   "etaisyys_rakennuksiin",
@@ -29,7 +29,8 @@
   "satama",
   "rakennettu",
   "jyrkanne_lahella",
-  "etaisyys_rahtivaylaan"
+  "etaisyys_rahtivaylaan",
+  "kelvollista_rantaa"
  ],
  "luokat": {
   "jyrkkyys": "ylos",
@@ -59,19 +60,20 @@
   "satama": "tavoite",
   "rakennettu": "tavoite",
   "jyrkanne_lahella": "tavoite",
-  "etaisyys_rahtivaylaan": "ylos"
+  "etaisyys_rahtivaylaan": "ylos",
+  "kelvollista_rantaa": "ylos"
  },
  "esitys": {
   "jyrkkyys": {
-   "otsikko": "loivuus",
-   "yksikko": "%",
-   "kerroin": 0.39215686274509803,
+   "otsikko": "kaltevuus",
+   "yksikko": "°",
+   "kerroin": 1.0,
    "nakyy": true
   },
   "etaisyys_rakennuksiin": {
    "otsikko": "etäisyys rakennuksiin",
-   "yksikko": "%",
-   "kerroin": 0.39215686274509803,
+   "yksikko": "m+",
+   "kerroin": 1.0,
    "nakyy": true
   },
   "kallio": {
@@ -93,9 +95,9 @@
    "nakyy": false
   },
   "puskurin_leveys": {
-   "otsikko": "rantakaistaleen leveys",
-   "yksikko": "m",
-   "kerroin": 1.0,
+   "otsikko": "rantavyöhykettä ympärillä",
+   "yksikko": "%",
+   "kerroin": 2.5464731347084286,
    "nakyy": true
   },
   "pyyhkaisy_0": {
@@ -229,6 +231,12 @@
    "yksikko": "m",
    "kerroin": 1.0,
    "nakyy": true
+  },
+  "kelvollista_rantaa": {
+   "otsikko": "kelvollista rantaa",
+   "yksikko": "m2",
+   "kerroin": 1.0,
+   "nakyy": true
   }
  },
  "ryhma_etuliite": "pyyhkaisy_",
@@ -261,7 +269,8 @@
   0.006485580001026392,
   0.015835316851735115,
   0.008208484388887882,
-  0.08334323763847351
+  0.08334323763847351,
+  0.08334295451641083
  ],
  "vali_m": 50.0,
  "ikkuna_m": 25.0,
