@@ -283,8 +283,17 @@ const kanvas = L.Layer.extend({
 }); 
 const kanvasKerros = new (kanvas)();
 
-// VARIASTEIKKO. Sininen = kaukana ideaalista, oranssi = lahella.
-const ASTEIKKO = ['#3b5f8a','#5b86ad','#8fb2c9','#d8d3c4','#e8b878','#dd8f3d','#c25e12'];
+// VARIASTEIKKO. Punainen = kaukana ideaalista, vihrea = lahella.
+//
+// Jarjestys on sama kuin selitteessa: indeksi 0 vasemmalla (kaukana),
+// viimeinen oikealla (lahella). vari() indeksoi pistemaaralla, joka on
+// 1 - persentiili, joten suuri arvo = lahella ideaalia = vihrea.
+//
+// Asteikko on RdYlGn (ColorBrewer). Punainen ja vihrea ovat vaikein pari
+// yleisimmalle varisokeudelle, joten savyjen lisaksi muuttuu VAALEUS:
+// keskikohta on vaalein ja molemmat paat tummenevat. Ero on siksi nakyvissa
+// myos silloin kun savyt eivat erotu.
+const ASTEIKKO = ['#d73027','#fc8d59','#fee08b','#ffffbf','#d9ef8b','#91cf60','#1a9850'];
 function vari(i) {
   if (tila === 'yleinen' || !pisteet) return '#7d8b96';
   const p = pisteet[i];
