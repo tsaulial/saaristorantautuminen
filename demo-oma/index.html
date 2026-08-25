@@ -316,7 +316,7 @@ function muotoile(nimi, x) {
   if (e.yksikko === 'm+') return (v >= 149.5 ? 'yli 150 m' : Math.round(v) + ' m');
   if (e.yksikko === '°') return v.toFixed(1).replace('.', ',') + '°';
   if (e.yksikko === 'm2') return Math.round(v) + ' m²';
-  if (e.yksikko === '%') return v.toFixed(v < 10 ? 1 : 0) + ' %';
+  if (e.yksikko === '%') return v.toFixed(v < 10 ? 1 : 0).replace('.', ',') + ' %';
   return v.toFixed(1);
 }
 
@@ -366,12 +366,20 @@ function yleinenErittely(i) {
   // olisi ollut pistemaara + suo_menetys.
   const ilmanSuota = pistemaara + t.suo_menetys;
   const kerroin = ilmanSuota > 0 ? pistemaara / ilmanSuota : 1;
+  // JOKAINEN TEKIJA VAIN TOISELLE PUOLELLE.
+  //
+  // Rakenteellisesti jokaisella tekijalla on seka kertyma etta vaje, joten
+  // naiivi jako naytti kaikki kolme molemmilla puolilla - "loivuus 20,0°"
+  // luki yhta aikaa puolesta ja vastaan. Se ei ole vaarin mutta on hyodyton.
+  // Tekija menee sille puolelle jolla se on ratkaisevampi.
   const puolesta = [], vastaan = [];
   for (const n of ['jyrkkyys', 'etaisyys', 'kallio']) {
     const u = kerroin > 0 ? t[n] / kerroin : t[n];      // ilman suorangaistusta
-    puolesta.push({ nimi: n, arvo: t[n] });
-    vastaan.push({ nimi: n, arvo: Math.max(0, YLEINEN_MAKSIMIT[n] - u) });
+    const vaje = Math.max(0, YLEINEN_MAKSIMIT[n] - u);
+    if (t[n] >= vaje) puolesta.push({ nimi: n, arvo: t[n] });
+    else vastaan.push({ nimi: n, arvo: vaje });
   }
+  // Suo on aina vastaan - se on rangaistus, ei tekija josta voi hyotya.
   if (t.suo_menetys > 0.001) vastaan.push({ nimi: 'suo_menetys', arvo: t.suo_menetys });
   return { pistemaara, puolesta, vastaan };
 }
@@ -396,7 +404,7 @@ function piirraSelitys() {
     tila === 'yleinen' ? yl.toFixed(2).replace('.', ',') + ' / 1,00'
                        : (pisteet ? (100 * pisteet[valittu]).toFixed(0) + ' / 100' : '–');
   document.getElementById('sel-sija').textContent = pisteet
-    ? (tila === 'yleinen' ? `sinulle parhaat ${(100*(1-pisteet[valittu])).toFixed(1)} %`
+    ? (tila === 'yleinen' ? `sinulle parhaat ${(100*(1-pisteet[valittu])).toFixed(1).replace('.', ',')} %`
                           : `yleinen ${yl.toFixed(2).replace('.', ',')}`)
     : (tila === 'yleinen' ? 'yleinen malli' : 'ei vielä arviota');
 
@@ -416,12 +424,16 @@ function piirraSelitys() {
     const mp = Math.max(0.0001, ...puolesta.map(r => r.arvo));
     const mv = Math.max(0.0001, ...vastaan.map(r => r.arvo));
     sisalto.innerHTML =
-      `<div class="sel-ryhma"><b>Tämän puolesta</b><table class="erittely">`
-      + puolesta.slice().sort((a,b)=>b.arvo-a.arvo)
-          .map(r => rivi(r, 'hyva', x => x.arvo / mp)).join('') + `</table></div>`
-    + `<div class="sel-ryhma"><b>Tätä vastaan</b><table class="erittely">`
-      + vastaan.slice().sort((a,b)=>b.arvo-a.arvo)
-          .map(r => rivi(r, 'huono', x => x.arvo / mv)).join('') + `</table></div>`
+      `<div class="sel-ryhma"><b>Tämän puolesta</b>`
+      + (puolesta.length ? `<table class="erittely">` + puolesta.slice()
+          .sort((a,b)=>b.arvo-a.arvo)
+          .map(r => rivi(r, 'hyva', x => x.arvo / mp)).join('') + `</table>`
+        : `<p class="sel-tyhja">–</p>`) + `</div>`
+    + `<div class="sel-ryhma"><b>Tätä vastaan</b>`
+      + (vastaan.length ? `<table class="erittely">` + vastaan.slice()
+          .sort((a,b)=>b.arvo-a.arvo)
+          .map(r => rivi(r, 'huono', x => x.arvo / mv)).join('') + `</table>`
+        : `<p class="sel-tyhja">–</p>`) + `</div>`
     + `<p class="sel-tyhja" style="margin-top:8px">Kiinteät painot:
        loivuus 0,50 · etäisyys 0,35 · kallio 0,15. Suo puolittaa pistemäärän.</p>`;
     return;
