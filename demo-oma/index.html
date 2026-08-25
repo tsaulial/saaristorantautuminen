@@ -96,11 +96,17 @@ let tila = 'oma';
 
 const map = L.map('map', { crs: L.CRS.Simple, zoomSnap: 0, minZoom: -10, maxZoom: 4 });
 
+// VALIMUISTI OHI DATATIEDOSTOILLE. Nama kirjoitetaan uudelleen aina kun
+// piirteita lisataan, mutta niiden nimet eivat muutu - selain tarjoili
+// vanhan version ja sivu naytti toimivan, vain vaarilla luvuilla. Sama ansa
+// on harhauttanut tassa projektissa jo kolmesti.
+const EI_VALIMUISTIA = { cache: 'no-store' };
+
 async function lataa() {
-  META = await (await fetch('piirteet.json')).json();
+  META = await (await fetch('piirteet.json', EI_VALIMUISTIA)).json();
   N = META.n; D = META.d;
-  PIIRTEET = new Uint8Array(await (await fetch('piirteet.bin')).arrayBuffer());
-  XY = new Int32Array(await (await fetch('koordinaatit.bin')).arrayBuffer());
+  PIIRTEET = new Uint8Array(await (await fetch('piirteet.bin', EI_VALIMUISTIA)).arrayBuffer());
+  XY = new Int32Array(await (await fetch('koordinaatit.bin', EI_VALIMUISTIA)).arrayBuffer());
   META.nimet.forEach((n, i) => (n.startsWith(META.ryhma_etuliite) ? RYHMA : YKSIN).push(i));
   // NAKYMA ENNEN KERROKSIA. peruskartta() kysyy heti map.getBounds():ia
   // paattaakseen mitka tiilet ladataan, ja Leaflet heittaa "Set map center

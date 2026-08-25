@@ -9,9 +9,12 @@ from pisteytys import LUOKAT
 
 d = np.load(ULOS/"ehdokkaat_raaka.npz", allow_pickle=True)
 m = np.load(ULOS/"maastoluokat.npz", allow_pickle=True)
+v = np.load(ULOS/"vaylaetaisyys.npz", allow_pickle=True)
 geo = [str(x) for x in d["nimet"]]; maa = [str(x) for x in m["nimet"]]
-q = np.hstack([kvantiloi(d["piirteet"]), kvantiloi(m["luokat"])])
-nimet = geo + maa
+vay = [str(x) for x in v["nimet"]]
+q = np.hstack([kvantiloi(d["piirteet"]), kvantiloi(m["luokat"]),
+               kvantiloi(v["etaisyys"].reshape(-1, 1))])
+nimet = geo + maa + vay
 xs, ys = d["x"], d["y"]
 
 # Uint8 riittaa: arvo on kvantiili, joten 1/255 on 0,4 prosenttiyksikkoa -

@@ -18,6 +18,12 @@ import numpy as np
 LUOKAT = {
     "jyrkkyys": "ylos",                 # loivuuspisteet: 1,0 = tasainen
     "suo": "alas",                      # kukaan ei etsi enemman suota
+    # Rahtivayla on VAARA, ei mieltymys. Kukaan ei rantaudu mielellaan
+    # lahemmas ruuhkaista vaylaa, joten ideaalin ylittaminen ei saa
+    # rangaista: jos suosikkisi ovat 3 km paassa, 5 km paassa oleva ranta
+    # on yhta hyva - ei "liian kaukana". Etaisyys rakennuksiin on eri asia
+    # ja siksi tavoitteellinen.
+    "etaisyys_rahtivaylaan": "ylos",
     "etaisyys_rakennuksiin": "tavoite",  # toinen haluaa eramaata, toinen palveluja
     "kallio": "tavoite",                # sileä kallio on laituri tai este
     "puskurin_leveys": "tavoite",

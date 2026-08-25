@@ -1,6 +1,6 @@
 {
  "n": 17222,
- "d": 27,
+ "d": 28,
  "nimet": [
   "jyrkkyys",
   "etaisyys_rakennuksiin",
@@ -28,7 +28,8 @@
   "hoidettu",
   "satama",
   "rakennettu",
-  "jyrkanne_lahella"
+  "jyrkanne_lahella",
+  "etaisyys_rahtivaylaan"
  ],
  "luokat": {
   "jyrkkyys": "ylos",
@@ -57,7 +58,8 @@
   "hoidettu": "tavoite",
   "satama": "tavoite",
   "rakennettu": "tavoite",
-  "jyrkanne_lahella": "tavoite"
+  "jyrkanne_lahella": "tavoite",
+  "etaisyys_rahtivaylaan": "ylos"
  },
  "ryhma_etuliite": "pyyhkaisy_",
  "varianssit": [
@@ -87,7 +89,8 @@
   0.006870809476822615,
   0.006485580001026392,
   0.015835316851735115,
-  0.008208484388887882
+  0.008208484388887882,
+  0.08334323763847351
  ],
  "vali_m": 50.0,
  "ikkuna_m": 25.0,
