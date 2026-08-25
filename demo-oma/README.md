@@ -71,3 +71,34 @@ Seuraus on **epäsymmetria**, ja se on tarkoitettu:
 
 Mitta osaa siis ilmaista "haluan kauas rahtiväylistä" mutta ei "haluan
 lähelle". Lisäys ei muuttanut yhtäkään aiempaa tulosta desimaaliakaan.
+
+## Miksi tämä ranta sai arvionsa
+
+Klikkaa kartalta rantaa. Paneeli kertoo pistemäärän ja purkaa sen osiin:
+**"Sopii sinulle"** ja **"Vie kauemmas ideaalistasi"**.
+
+Selitys on **sama aritmetiikka kuin väri**, ei erillinen tarina. Etäisyys on
+`d² = Σ wⱼ·δⱼ²`, joten jokaisen ulottuvuuden osuus luetaan suoraan siitä
+samasta summasta jolla kartta väritetään. Erillinen selitysheuristiikka voisi
+olla eri mieltä kuin väri — tämä ei voi.
+
+Kaksi lukua ulottuvuutta kohti:
+
+| | |
+|---|---|
+| **osuus** | `w·δ²` jaettuna kokonaissummalla — paljonko tämä ulottuvuus vie rantaa kauemmas |
+| **sopivuus** | kuinka moni ehdokas sopii tässä ulottuvuudessa huonommin |
+
+Molempia tarvitaan. Osuus yksin ei vastaa kysymykseen "mikä tässä on hyvää":
+osuus voi olla nolla myös siksi, ettei ulottuvuus erottele mitään.
+
+Sama rivi ei voi olla molemmilla puolilla. Piirre voi hyvin sopia paremmin
+kuin 60 % rannoista **ja** olla suurin yksittäinen syy etäisyyteen — molemmat
+ovat totta, mutta yhdessä ne lukisivat kuin ohjelma olisi eri mieltä itsensä
+kanssa.
+
+Arvot näytetään oikeissa yksiköissä (`kvantiilit.bin`, 101 katkaisukohtaa per
+ulottuvuus, 11 kt): "rantakaistaleen leveys 10 m", ei "0,84".
+
+Todennettu Pythonia vasten (`pisteytys.erittely`): identtinen etäisyys
+kuudella desimaalilla ja identtiset osuudet ja sopivuudet neljällä.

@@ -31,16 +31,43 @@
   .selite i { flex:1; height:9px; }
   .selite-teksti { display:flex; justify-content:space-between; font-size:11px; color:#666; }
   #koe { font-size:12px; color:#444; }
+  #selitys { display:none; }
+  #selitys.nakyy { display:block; }
+  .sel-otsikko { display:flex; justify-content:space-between; align-items:baseline; }
+  .sel-piste { font-size:22px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .sel-sija { font-size:12px; color:#666; }
+  .sel-ryhma { margin-top:10px; }
+  .sel-ryhma > b { font-size:12px; }
+  table.erittely { width:100%; border-collapse:collapse; font-size:12px; margin-top:4px; }
+  table.erittely td { padding:2px 0; vertical-align:middle; }
+  table.erittely td.nimi { white-space:nowrap; padding-right:8px; }
+  table.erittely td.arvo { text-align:right; white-space:nowrap; color:#333;
+                           font-variant-numeric:tabular-nums; padding-left:8px; }
+  .mini { height:7px; border-radius:2px; }
+  .mini.hyva { background:#1a9850; }
+  .mini.huono { background:#d73027; }
+  .sel-tyhja { color:#666; font-size:12px; }
   #koe b { font-variant-numeric:tabular-nums; }
 </style>
 <div id="map"></div>
 <div id="paneeli">
   <h1>Oma ranta</h1>
-  <p class="vihje">Klikkaa kartalta rantoja jotka ovat mielestäsi hyviä.
-     Kolmen jälkeen kartta värittyy sen mukaan, miten lähellä kukin ranta on
-     <em>sinun</em> ideaaliasi.</p>
+  <p class="vihje">Klikkaa kartalta rantaa nähdäksesi sen tiedot. Merkitse
+     kolme suosikkia, niin kartta värittyy sen mukaan, miten lähellä kukin
+     ranta on <em>sinun</em> ideaaliasi — ja jokaisesta rannasta kerrotaan
+     millä perusteella se sai arvionsa.</p>
 
   <div id="tila" class="tila odottaa">Merkitse vähintään 3 suosikkia.</div>
+
+  <div class="lohko" id="selitys">
+    <h2>Valittu ranta</h2>
+    <div class="sel-otsikko">
+      <span class="sel-piste" id="sel-piste">–</span>
+      <span class="sel-sija" id="sel-sija"></span>
+    </div>
+    <div id="sel-sisalto"></div>
+    <p style="margin:10px 0 0"><button id="sel-suosikki">Lisää suosikiksi</button></p>
+  </div>
 
   <div class="lohko">
     <h2>Näkymä</h2>
@@ -89,7 +116,8 @@
 const KUTISTUS_KERROIN = 3;              // lambda = 3 / n
 const VAHIN_SUOSIKKEJA = 3;
 
-let META = null, PIIRTEET = null, XY = null, N = 0, D = 0;
+let META = null, PIIRTEET = null, XY = null, KVANTIILIT = null, N = 0, D = 0;
+let valittu = -1;
 let RYHMA = [], YKSIN = [];
 let suosikit = [], pisteet = null, nykyisetPainot = null;
 let tila = 'oma';
@@ -107,6 +135,7 @@ async function lataa() {
   N = META.n; D = META.d;
   PIIRTEET = new Uint8Array(await (await fetch('piirteet.bin', EI_VALIMUISTIA)).arrayBuffer());
   XY = new Int32Array(await (await fetch('koordinaatit.bin', EI_VALIMUISTIA)).arrayBuffer());
+  KVANTIILIT = new Float32Array(await (await fetch('kvantiilit.bin', EI_VALIMUISTIA)).arrayBuffer());
   META.nimet.forEach((n, i) => (n.startsWith(META.ryhma_etuliite) ? RYHMA : YKSIN).push(i));
   // NAKYMA ENNEN KERROKSIA. peruskartta() kysyy heti map.getBounds():ia
   // paattaakseen mitka tiilet ladataan, ja Leaflet heittaa "Set map center
@@ -254,6 +283,140 @@ function persentiilit(d) {
   return p;
 }
 
+// --- Selitys: miksi TAMA ranta sai arvionsa -----------------------------
+//
+// SELITYS ON SAMA ARITMETIIKKA KUIN VARI, ei erillinen tarina. Etaisyys on
+// d^2 = summa w_j * delta_j^2, joten jokaisen ulottuvuuden osuus luetaan
+// suoraan siita samasta summasta jolla kartta varitetaan. Erillinen
+// selitysheuristiikka voisi olla eri mielta kuin vari - tama ei voi.
+
+// Kvantiili takaisin oikeaksi yksikoksi: 101 katkaisukohtaa per ulottuvuus,
+// lineaarinen interpolointi valilla.
+function raakaArvo(i, j) {
+  const q = PIIRTEET[i * D + j] / 255 * 100;
+  const a = Math.min(100, Math.floor(q)), b = Math.min(100, a + 1), t = q - a;
+  const p = j * 101;
+  return KVANTIILIT[p + a] * (1 - t) + KVANTIILIT[p + b] * t;
+}
+
+function muotoile(nimi, x) {
+  const e = META.esitys[nimi];
+  const v = x * e.kerroin;
+  if (e.yksikko === 'm') return (v >= 1000 ? (v / 1000).toFixed(1) + ' km'
+                                           : Math.round(v) + ' m');
+  if (e.yksikko === '%') return v.toFixed(v < 10 ? 1 : 0) + ' %';
+  return v.toFixed(1);
+}
+
+// Poikkeama luokan mukaan - sama saanto kuin etaisyydet().
+function delta(x, mj, luokka) {
+  return luokka === 'ylos' ? Math.max(0, mj - x)
+       : luokka === 'alas' ? Math.max(0, x - mj)
+       : Math.abs(x - mj);
+}
+
+function erittely(i, m, w) {
+  const luokat = META.nimet.map(n => META.luokat[n] || 'tavoite');
+  // Panos = w * delta^2 jokaiselle ulottuvuudelle, tälle ehdokkaalle.
+  const panos = new Float64Array(D);
+  for (let j = 0; j < D; j++) {
+    const dj = delta(PIIRTEET[i*D+j]/255, m[j], luokat[j]);
+    panos[j] = w[j] * dj * dj;
+  }
+  // SOPIVUUS: kuinka moni ehdokas sopii TASSA ulottuvuudessa huonommin.
+  // Pelkka panos ei vastaa kysymykseen "mika tassa on hyvaa": panos voi olla
+  // nolla myos siksi, ettei ulottuvuus erottele mitaan.
+  const huonompia = new Int32Array(D);
+  for (let k = 0; k < N; k++) {
+    for (let j = 0; j < D; j++) {
+      const dj = delta(PIIRTEET[k*D+j]/255, m[j], luokat[j]);
+      if (w[j] * dj * dj > panos[j]) huonompia[j]++;
+    }
+  }
+  let summa = 0; for (let j = 0; j < D; j++) summa += panos[j];
+  return { panos, sopivuus: Array.from(huonompia, h => h / N), summa };
+}
+
+function piirraSelitys() {
+  const el = document.getElementById('selitys');
+  if (valittu < 0) { el.classList.remove('nakyy'); return; }
+  el.classList.add('nakyy');
+
+  const nappi = document.getElementById('sel-suosikki');
+  const onSuosikki = suosikit.includes(valittu);
+  nappi.textContent = onSuosikki ? 'Poista suosikeista' : 'Lisää suosikiksi';
+  nappi.classList.toggle('paalla', onSuosikki);
+
+  const sisalto = document.getElementById('sel-sisalto');
+  const ryhmaOsuus = (arr) => RYHMA.reduce((s, j) => s + arr[j], 0);
+
+  // Ilman ideaalia ei ole mitaan selitettavaa - naytetaan silti rannan
+  // omat luvut, jotta sita voi tutkia ennen kolmatta suosikkia.
+  if (!pisteet) {
+    document.getElementById('sel-piste').textContent = '–';
+    document.getElementById('sel-sija').textContent = 'ei vielä arviota';
+    const rivit = YKSIN.filter(j => META.esitys[META.nimet[j]].nakyy)
+      .map(j => `<tr><td class="nimi">${META.esitys[META.nimet[j]].otsikko}</td>
+                     <td class="arvo">${muotoile(META.nimet[j], raakaArvo(valittu, j))}</td></tr>`);
+    let fm = 0; for (const j of RYHMA) fm += raakaArvo(valittu, j);
+    rivit.push(`<tr><td class="nimi">${META.ryhma_otsikko}</td>
+                    <td class="arvo">${muotoile(META.nimet[RYHMA[0]], fm / RYHMA.length)}</td></tr>`);
+    sisalto.innerHTML = `<p class="sel-tyhja">Merkitse kolme suosikkia, niin
+      tässä kerrotaan miksi juuri tämä ranta sai arvionsa.</p>
+      <table class="erittely">${rivit.join('')}</table>`;
+    return;
+  }
+
+  const { m, w } = etaisyydet(suosikit);
+  const { panos, sopivuus, summa } = erittely(valittu, m, w);
+  const p = pisteet[valittu];
+  document.getElementById('sel-piste').textContent = (100 * p).toFixed(0) + ' / 100';
+  document.getElementById('sel-sija').textContent =
+    `parhaat ${(100 * (1 - p)).toFixed(1)} %`;
+
+  // Rivit: yksittaiset ulottuvuudet + pyyhkaisyryhma yhtena.
+  const rivit = YKSIN.filter(j => META.esitys[META.nimet[j]].nakyy).map(j => ({
+    nimi: META.nimet[j], otsikko: META.esitys[META.nimet[j]].otsikko,
+    arvo: muotoile(META.nimet[j], raakaArvo(valittu, j)),
+    osuus: summa > 0 ? panos[j] / summa : 0, sopivuus: sopivuus[j],
+  }));
+  let fm = 0; for (const j of RYHMA) fm += raakaArvo(valittu, j);
+  rivit.push({
+    nimi: META.nimet[RYHMA[0]], otsikko: META.ryhma_otsikko,
+    arvo: muotoile(META.nimet[RYHMA[0]], fm / RYHMA.length),
+    osuus: summa > 0 ? ryhmaOsuus(panos) / summa : 0,
+    sopivuus: ryhmaOsuus(sopivuus) / RYHMA.length,
+  });
+
+  const taulukko = (lista, luokka, mitta) => lista.length
+    ? `<table class="erittely">` + lista.map(r =>
+        `<tr><td class="nimi">${r.otsikko}</td>
+             <td style="width:100%"><div class="mini ${luokka}"
+                  style="width:${Math.max(4, 100 * mitta(r))}%"></div></td>
+             <td class="arvo">${r.arvo}</td></tr>`).join('') + `</table>`
+    : `<p class="sel-tyhja">–</p>`;
+
+  // VIE KAUEMMAS: suurin osuus etaisyydesta.
+  const vie = rivit.filter(r => r.osuus > 0.02)
+                   .sort((a, b) => b.osuus - a.osuus).slice(0, 5);
+  // SOPII: osuu ideaaliin paremmin kuin valtaosa rannoista.
+  //
+  // SAMA RIVI EI SAA OLLA MOLEMMILLA PUOLILLA. Piirre voi hyvin sopia
+  // paremmin kuin 60 % rannoista JA silti olla suurin yksittainen syy
+  // etaisyyteen - molemmat ovat totta, mutta yhdessa ne lukevat kuin
+  // ohjelma olisi eri mielta itsensa kanssa. Suurempi syy voittaa.
+  const vieNimet = new Set(vie.map(r => r.nimi));
+  const sopii = rivit.filter(r => r.sopivuus >= 0.6 && !vieNimet.has(r.nimi))
+                     .sort((a, b) => b.sopivuus - a.sopivuus).slice(0, 5);
+  const maxOsuus = Math.max(0.0001, ...vie.map(r => r.osuus));
+
+  sisalto.innerHTML =
+    `<div class="sel-ryhma"><b>Sopii sinulle</b>
+       ${taulukko(sopii, 'hyva', r => r.sopivuus)}</div>`
+  + `<div class="sel-ryhma"><b>Vie kauemmas ideaalistasi</b>
+       ${taulukko(vie, 'huono', r => r.osuus / maxOsuus)}</div>`;
+}
+
 // --- Kanvaskerros ehdokkaille ---------------------------------------------
 const kanvas = L.Layer.extend({
   onAdd(m) {
@@ -284,6 +447,15 @@ const kanvas = L.Layer.extend({
       g.beginPath(); g.arc(p.x, p.y, 7, 0, 6.2832); g.stroke();
       g.strokeStyle = '#fff'; g.lineWidth = 1.2;
       g.beginPath(); g.arc(p.x, p.y, 7, 0, 6.2832); g.stroke();
+    }
+    if (valittu >= 0) {
+      const p = m.latLngToContainerPoint([XY[2*valittu+1], XY[2*valittu]]);
+      g.strokeStyle = '#0b6ea8'; g.lineWidth = 2;
+      g.beginPath(); g.arc(p.x, p.y, 11, 0, 6.2832); g.stroke();
+      g.beginPath(); g.moveTo(p.x - 15, p.y); g.lineTo(p.x - 8, p.y);
+      g.moveTo(p.x + 8, p.y); g.lineTo(p.x + 15, p.y);
+      g.moveTo(p.x, p.y - 15); g.lineTo(p.x, p.y - 8);
+      g.moveTo(p.x, p.y + 8); g.lineTo(p.x, p.y + 15); g.stroke();
     }
   },
 }); 
@@ -325,11 +497,12 @@ function lahinEhdokas(latlng, maxPx) {
   return paras;
 }
 
+// KLIKKAUS VALITSEE, EI MERKITSE SUOSIKIKSI. Rannan haluaa yleensa katsoa
+// ennen kuin sitoutuu siihen, ja kolmen suosikin pakko tekee jokaisesta
+// valinnasta merkittavan. Suosikiksi lisataan paneelin napista.
 map.on('click', (e) => {
   const i = lahinEhdokas(e.latlng, 18);
-  if (i < 0) return;
-  const k = suosikit.indexOf(i);
-  if (k >= 0) suosikit.splice(k, 1); else suosikit.push(i);
+  valittu = (i === valittu) ? -1 : i;
   paivita();
 });
 
@@ -361,6 +534,7 @@ function paivita() {
     piirraPainot(vaikutukset(m, w));
     poisjattokoe();
   }
+  piirraSelitys();
   kanvasKerros._piirra && kanvasKerros._piirra();
 }
 
@@ -396,6 +570,12 @@ function poisjattokoe() {
     + `että poisjätetty on johdonmukaisesti parhaassa 10 %:ssa.</span>`;
 }
 
+document.getElementById('sel-suosikki').onclick = () => {
+  if (valittu < 0) return;
+  const k = suosikit.indexOf(valittu);
+  if (k >= 0) suosikit.splice(k, 1); else suosikit.push(valittu);
+  paivita();
+};
 document.getElementById('tyhjenna').onclick = () => { suosikit = []; paivita(); };
 for (const [id, arvo_] of [['nappi-oma','oma'], ['nappi-yleinen','yleinen']]) {
   document.getElementById(id).onclick = () => {

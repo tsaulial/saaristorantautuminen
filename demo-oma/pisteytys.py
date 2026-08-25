@@ -142,3 +142,43 @@ def pistemaara(q, suosikit, nimet, varianssit=None):
     sija = np.empty(len(d))
     sija[jarjestys] = np.arange(len(d))
     return 1.0 - sija / max(len(d) - 1, 1), d, m, w
+
+
+def erittely(q, suosikit, nimet, ehdokas, varianssit=None):
+    """Miksi TAMA ranta sai arvionsa. Palauttaa listan ulottuvuuksittain.
+
+    SELITYS ON SAMA ARITMETIIKKA, EI ERILLINEN TARINA. Etaisyys on
+    d^2 = summa w_j * delta_j^2, joten jokaisen ulottuvuuden osuus on
+    suoraan luettavissa siita samasta summasta jolla kartta varitetaan.
+    Erillinen selitysheuristiikka voisi olla eri mielta kuin vari - tama ei
+    voi, koska se on sama luku.
+
+    Kentat per ulottuvuus:
+      osuus    - w*delta^2 jaettuna kokonaissummalla: paljonko TAMA
+                 ulottuvuus vie ranta kauemmas ideaalista
+      sopivuus - kuinka moni ehdokas sopii TASSA ulottuvuudessa huonommin.
+                 1,0 = parempi osuma kuin yhdellakaan muulla. Tama vastaa
+                 kysymykseen "mika tassa rannassa on sinulle hyvaa", johon
+                 pelkka osuus ei vastaa: osuus voi olla nolla myos siksi,
+                 etta ulottuvuus ei erottele mitaan.
+    """
+    m = ideaali(q, suosikit)
+    w = painot(q, suosikit, nimet, varianssit)
+    d = poikkeama(q, m, nimet)               # (n, d)
+    panos = w * d * d                        # (n, d)
+    yhteensa = panos[ehdokas].sum()
+    ulos = []
+    for j, nimi in enumerate(nimet):
+        # Kuinka moni ehdokas saa TASSA ulottuvuudessa suuremman panoksen
+        # eli sopii huonommin. Vertailu on aineistoon, ei absoluuttinen.
+        sopivuus = float((panos[:, j] > panos[ehdokas, j]).mean())
+        ulos.append({
+            "nimi": nimi,
+            "arvo": float(q[ehdokas, j]),
+            "ideaali": float(m[j]),
+            "poikkeama": float(d[ehdokas, j]),
+            "panos": float(panos[ehdokas, j]),
+            "osuus": float(panos[ehdokas, j] / yhteensa) if yhteensa > 0 else 0.0,
+            "sopivuus": sopivuus,
+        })
+    return ulos, float(np.sqrt(yhteensa))

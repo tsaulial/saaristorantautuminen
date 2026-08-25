@@ -61,7 +61,178 @@
   "jyrkanne_lahella": "tavoite",
   "etaisyys_rahtivaylaan": "ylos"
  },
+ "esitys": {
+  "jyrkkyys": {
+   "otsikko": "loivuus",
+   "yksikko": "%",
+   "kerroin": 0.39215686274509803,
+   "nakyy": true
+  },
+  "etaisyys_rakennuksiin": {
+   "otsikko": "etäisyys rakennuksiin",
+   "yksikko": "%",
+   "kerroin": 0.39215686274509803,
+   "nakyy": true
+  },
+  "kallio": {
+   "otsikko": "kallio kartasta",
+   "yksikko": "%",
+   "kerroin": 100.0,
+   "nakyy": true
+  },
+  "suo": {
+   "otsikko": "suo kartasta",
+   "yksikko": "%",
+   "kerroin": 100.0,
+   "nakyy": true
+  },
+  "tasapelinpurku": {
+   "otsikko": "tasapelinpurku",
+   "yksikko": "",
+   "kerroin": 1.0,
+   "nakyy": false
+  },
+  "puskurin_leveys": {
+   "otsikko": "rantakaistaleen leveys",
+   "yksikko": "m",
+   "kerroin": 1.0,
+   "nakyy": true
+  },
+  "pyyhkaisy_0": {
+   "otsikko": "avoimuus merelle",
+   "yksikko": "m",
+   "kerroin": 1.0,
+   "nakyy": true
+  },
+  "pyyhkaisy_1": {
+   "otsikko": "avoimuus merelle",
+   "yksikko": "m",
+   "kerroin": 1.0,
+   "nakyy": true
+  },
+  "pyyhkaisy_2": {
+   "otsikko": "avoimuus merelle",
+   "yksikko": "m",
+   "kerroin": 1.0,
+   "nakyy": true
+  },
+  "pyyhkaisy_3": {
+   "otsikko": "avoimuus merelle",
+   "yksikko": "m",
+   "kerroin": 1.0,
+   "nakyy": true
+  },
+  "pyyhkaisy_4": {
+   "otsikko": "avoimuus merelle",
+   "yksikko": "m",
+   "kerroin": 1.0,
+   "nakyy": true
+  },
+  "pyyhkaisy_5": {
+   "otsikko": "avoimuus merelle",
+   "yksikko": "m",
+   "kerroin": 1.0,
+   "nakyy": true
+  },
+  "pyyhkaisy_6": {
+   "otsikko": "avoimuus merelle",
+   "yksikko": "m",
+   "kerroin": 1.0,
+   "nakyy": true
+  },
+  "pyyhkaisy_7": {
+   "otsikko": "avoimuus merelle",
+   "yksikko": "m",
+   "kerroin": 1.0,
+   "nakyy": true
+  },
+  "pyyhkaisy_8": {
+   "otsikko": "avoimuus merelle",
+   "yksikko": "m",
+   "kerroin": 1.0,
+   "nakyy": true
+  },
+  "pyyhkaisy_9": {
+   "otsikko": "avoimuus merelle",
+   "yksikko": "m",
+   "kerroin": 1.0,
+   "nakyy": true
+  },
+  "pyyhkaisy_10": {
+   "otsikko": "avoimuus merelle",
+   "yksikko": "m",
+   "kerroin": 1.0,
+   "nakyy": true
+  },
+  "pyyhkaisy_11": {
+   "otsikko": "avoimuus merelle",
+   "yksikko": "m",
+   "kerroin": 1.0,
+   "nakyy": true
+  },
+  "hietikko": {
+   "otsikko": "hiekkaranta",
+   "yksikko": "%",
+   "kerroin": 100.0,
+   "nakyy": true
+  },
+  "kivikko": {
+   "otsikko": "kivikko",
+   "yksikko": "%",
+   "kerroin": 100.0,
+   "nakyy": true
+  },
+  "kallio_vektori": {
+   "otsikko": "kallioalue",
+   "yksikko": "%",
+   "kerroin": 100.0,
+   "nakyy": true
+  },
+  "suo_vektori": {
+   "otsikko": "suo",
+   "yksikko": "%",
+   "kerroin": 100.0,
+   "nakyy": true
+  },
+  "avoin_maa": {
+   "otsikko": "avoin maa",
+   "yksikko": "%",
+   "kerroin": 100.0,
+   "nakyy": true
+  },
+  "hoidettu": {
+   "otsikko": "puisto tai virkistys",
+   "yksikko": "%",
+   "kerroin": 100.0,
+   "nakyy": true
+  },
+  "satama": {
+   "otsikko": "satama-alue",
+   "yksikko": "%",
+   "kerroin": 100.0,
+   "nakyy": true
+  },
+  "rakennettu": {
+   "otsikko": "rakennettu alue",
+   "yksikko": "%",
+   "kerroin": 100.0,
+   "nakyy": true
+  },
+  "jyrkanne_lahella": {
+   "otsikko": "jyrkänne lähellä",
+   "yksikko": "%",
+   "kerroin": 100.0,
+   "nakyy": true
+  },
+  "etaisyys_rahtivaylaan": {
+   "otsikko": "etäisyys rahtiväylään",
+   "yksikko": "m",
+   "kerroin": 1.0,
+   "nakyy": true
+  }
+ },
  "ryhma_etuliite": "pyyhkaisy_",
+ "ryhma_otsikko": "avoimuus merelle",
  "varianssit": [
   0.08331568539142609,
   0.08257272094488144,
