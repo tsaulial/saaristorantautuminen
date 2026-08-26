@@ -1,0 +1,472 @@
+<meta charset="utf-8">
+<title>Rantabotti</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root { --tausta:#fff; --teksti:#17222b; --harmaa:#5c6b76; --raja:#d8dee2;
+          --korostus:#0b6ea8; --varo:#c25e12; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; font:15px/1.55 system-ui,sans-serif; color:var(--teksti); }
+  #map { position:absolute; inset:0 400px 0 0; background:#dfe8ee; }
+  #paneeli { position:absolute; top:0; right:0; bottom:0; width:400px;
+             border-left:1px solid var(--raja); display:flex; flex-direction:column;
+             background:var(--tausta); }
+  header { padding:14px 18px 10px; border-bottom:1px solid var(--raja); }
+  header h1 { font-size:16px; margin:0 0 3px; }
+  header p { margin:0; font-size:12.5px; color:var(--harmaa); }
+  #virta { flex:1; overflow-y:auto; padding:16px 18px; display:flex;
+           flex-direction:column; gap:14px; }
+  .viesti { font-size:14px; }
+  .viesti.kysyja { align-self:flex-end; background:var(--korostus); color:#fff;
+                   padding:8px 13px; border-radius:14px 14px 3px 14px; max-width:82%; }
+  .viesti.botti { max-width:100%; }
+  .kysely { font-family:ui-monospace,monospace; font-size:12px; background:#f3f6f7;
+            border:1px solid var(--raja); border-radius:6px; padding:9px 11px;
+            margin-top:8px; white-space:pre-wrap; color:#41525e; }
+  .tulos { font-size:22px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .tulos small { font-size:13px; font-weight:400; color:var(--harmaa); }
+  .varoitus { border-left:3px solid var(--varo); background:#fdf4ec; padding:9px 12px;
+              border-radius:0 5px 5px 0; font-size:13.5px; }
+  ol.rannat { margin:8px 0 0; padding-left:20px; font-size:13px; color:#41525e; }
+  ol.rannat li { margin-bottom:2px; }
+  footer { border-top:1px solid var(--raja); padding:12px 14px; }
+  #rivi { display:flex; gap:8px; }
+  input[type=text] { flex:1; font:inherit; padding:9px 12px; border:1px solid var(--raja);
+                     border-radius:7px; }
+  input[type=text]:focus { outline:2px solid var(--korostus); outline-offset:-1px; }
+  button { font:inherit; padding:9px 15px; border:1px solid var(--korostus);
+           background:var(--korostus); color:#fff; border-radius:7px; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  .ehdotukset { display:flex; flex-wrap:wrap; gap:5px; margin-top:9px; }
+  .ehdotukset button { background:#fff; color:var(--korostus); font-size:12px;
+                       padding:4px 9px; border-radius:99px; }
+  .tila { font-size:11.5px; color:var(--harmaa); margin-top:8px; }
+  .tila b { color:var(--varo); }
+</style>
+<div id="map"></div>
+<div id="paneeli">
+  <header>
+    <h1>Rantabotti</h1>
+    <p>Kysy rannoista. Vastaus on aina suodatin, ei mielipide.</p>
+  </header>
+  <div id="virta"></div>
+  <footer>
+    <div id="rivi">
+      <input type="text" id="kysymys" placeholder="esim. kallioinen ranta kaukana väylästä"
+             autocomplete="off">
+      <button id="laheta">Kysy</button>
+    </div>
+    <div class="ehdotukset" id="ehdotukset"></div>
+    <div class="tila" id="tila"></div>
+  </footer>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="sopimus.js"></script>
+<script>
+// ---------------------------------------------------------------------------
+// RANTABOTTI
+//
+// TURVALLISUUS ON TASSA ARKKITEHTUURIKYSYMYS. Malli ei koskaan tuota faktoja
+// rannoista - se palauttaa vain KYSELYN, joka validoidaan valkolistaa vasten
+// ja suoritetaan paikallisesti. Hallusinaatio ei siis rakenteellisesti VOI
+// tuottaa vaaraa vaitetta rannasta; pahin virhe on vaarin ymmarretty kysymys,
+// ja se nakyy koska kysely naytetaan takaisin.
+// ---------------------------------------------------------------------------
+const EI_VALIMUISTIA = { cache: 'no-store' };
+const PAATEPISTE = '/api/kysely';        // Ubuntun paatepiste, jos pystyssa
+const FMI_WFS = 'https://opendata.fmi.fi/wfs?service=WFS&version=2.0.0&request=getFeature';
+
+let META, SANASTO, PIIRTEET, RAAKA, XY, LATLON, SUUNTA, FETCH, ESTEET, KV;
+let N = 0, D = 0, SEKT = 12, NIMET = null, NIMI_I = null, NIMI_ET = null;
+let valinta = null, tuuli = null, paatepisteToimii = null;
+
+const map = L.map('map', { crs: L.CRS.Simple, zoomSnap: 0, minZoom: -10, maxZoom: 4 });
+
+async function lataa() {
+  const bin = async (n, T) => new T(await (await fetch(n, EI_VALIMUISTIA)).arrayBuffer());
+  META = await (await fetch('piirteet.json', EI_VALIMUISTIA)).json();
+  SANASTO = await (await fetch('sanasto.json', EI_VALIMUISTIA)).json();
+  N = META.n; D = META.d; SEKT = META.sektoreita;
+  PIIRTEET = await bin('piirteet.bin', Uint8Array);
+  XY = await bin('koordinaatit.bin', Int32Array);
+  LATLON = await bin('latlon.bin', Float32Array);
+  SUUNTA = await bin('suunta.bin', Uint16Array);
+  FETCH = await bin('fetch.bin', Uint16Array);
+  ESTEET = await bin('esteet.bin', Uint16Array);
+  KV = await bin('kvantiilit.bin', Float32Array);
+  try {
+    NIMET = await (await fetch('nimet.json', EI_VALIMUISTIA)).json();
+    NIMI_I = await bin('nimi_indeksi.bin', Uint16Array);
+    NIMI_ET = await bin('nimi_etaisyys.bin', Uint16Array);
+  } catch { NIMET = null; }   // nimet ovat valinnaisia
+
+  // RAAKA-ARVOT KERRAN, ei suodatinta kohti. Sama muunnos kuin kysely.py:ssa.
+  RAAKA = new Float32Array(N * D);
+  for (let j = 0; j < D; j++) {
+    for (let i = 0; i < N; i++) {
+      const x = PIIRTEET[i*D+j] / 255 * 100;
+      const a = Math.min(100, Math.floor(x)), b = Math.min(100, a+1), t = x - a;
+      RAAKA[i*D+j] = KV[j*101+a]*(1-t) + KV[j*101+b]*t;
+    }
+  }
+  map.fitBounds(rajat(), { padding: [20, 20] });
+  await peruskartta();
+  kerros.addTo(map);
+  ehdotukset();
+  sano('botti', 'Kysy rannoista. Tunnen ' + Object.keys(SANASTO.ominaisuudet).length
+     + ' ominaisuutta ja kahdeksan ilmansuuntaa. Aallonkorkeuden osaan laskea '
+     + 'ennusteesta — mutta se ei ole turvallisuusneuvo.');
+  kokeilePaatepiste();
+}
+
+function rajat() {
+  let a=Infinity,b=Infinity,c=-Infinity,d=-Infinity;
+  for (let i=0;i<N;i++){const x=XY[2*i],y=XY[2*i+1];
+    if(x<a)a=x; if(x>c)c=x; if(y<b)b=y; if(y>d)d=y;}
+  return [[b,a],[d,c]];
+}
+
+async function peruskartta() {
+  const tl = (await (await fetch('../docs/tiles.json')).json()).tiles;
+  const kp = META.keskipiste, r = META.sade_m;
+  const osuvat = tl.filter(t => { const b=t.bounds_epsg3067;
+    return Math.hypot(Math.max(b.minx-kp[0],0,kp[0]-b.maxx),
+                      Math.max(b.miny-kp[1],0,kp[1]-b.maxy)) <= r; });
+  const ryhma = L.layerGroup().addTo(map), nak = new Map();
+  const paivita = () => {
+    const z = map.getZoom(), taso = z < -3.5 ? '_overview' : z < -2 ? '_mid' : '';
+    const nk = map.getBounds();
+    for (const t of osuvat) {
+      const b = t.bounds_epsg3067, avain = t.tile_id + taso;
+      if (nk.getEast()>b.minx && nk.getWest()<b.maxx && nk.getNorth()>b.miny
+          && nk.getSouth()<b.maxy && !nak.has(avain)) {
+        const o = L.imageOverlay(`../docs/cache/${t.tile_id}_base${taso}.webp`,
+          [[b.miny,b.minx],[b.maxy,b.maxx]], { opacity:.8 });
+        o.on('error', () => o.remove()); o.addTo(ryhma); nak.set(avain,o);
+      }
+    }
+    for (const [a,o] of [...nak]) if (!a.endsWith(taso) || (taso==='' && /_mid|_overview/.test(a))) {
+      o.remove(); nak.delete(a); }
+  };
+  map.on('moveend zoomend', paivita); paivita();
+}
+
+// --- Kanvas: kaikki harmaana, valitut korostettuna ------------------------
+const kerros = new (L.Layer.extend({
+  onAdd(m) {
+    this._el = L.DomUtil.create('canvas','leaflet-zoom-animated');
+    m.getPanes().overlayPane.appendChild(this._el);
+    m.on('moveend zoomend resize', this._piirra, this); this._piirra();
+  },
+  _piirra() {
+    const koko = map.getSize(), c = this._el;
+    if (c.width!==koko.x||c.height!==koko.y){c.width=koko.x;c.height=koko.y;}
+    L.DomUtil.setPosition(c, map.containerPointToLayerPoint([0,0]));
+    const g = c.getContext('2d'); g.clearRect(0,0,c.width,c.height);
+    if (!XY) return;
+    const b = map.getBounds(), r = map.getZoom()>-3 ? 3 : 2;
+    for (let vaihe = 0; vaihe < 2; vaihe++) {
+      for (let i=0;i<N;i++) {
+        const on = valinta ? valinta[i] : 0;
+        if ((vaihe===0) === !!on) continue;      // valitut paalle
+        const x=XY[2*i], y=XY[2*i+1];
+        if (x<b.getWest()||x>b.getEast()||y<b.getSouth()||y>b.getNorth()) continue;
+        const p = map.latLngToContainerPoint([y,x]);
+        g.fillStyle = !valinta ? '#8b98a3' : on ? '#1a9850' : 'rgba(140,152,162,.30)';
+        g.beginPath(); g.arc(p.x,p.y, on?r+1:r, 0, 6.2832); g.fill();
+      }
+    }
+  },
+}))();
+
+// --- Kyselyn suoritus (peilaa kysely.py:ta) -------------------------------
+function suuntaValissa(k, a, b) {
+  k = ((k % 360) + 360) % 360;
+  return a <= b ? (k >= a && k <= b) : (k >= a || k <= b);
+}
+function vertaa(x, op, v) {
+  return op === '<' ? x < v : op === '>' ? x > v
+       : op === '<=' ? x <= v : x >= v;
+}
+function validoi(k) {
+  const virheet = [];
+  for (const f of k.suodattimet || []) {
+    if (f.ulottuvuus === 'suunta') {
+      if (!Array.isArray(f.valissa) || f.valissa.length !== 2)
+        virheet.push('suunta: valissa oltava [alku, loppu]');
+      continue;
+    }
+    if (!META.nimet.includes(f.ulottuvuus))
+      virheet.push(`tuntematon ulottuvuus: ${f.ulottuvuus}`);
+    if (!['<','>','<=','>='].includes(f.op)) virheet.push(`tuntematon operaattori: ${f.op}`);
+    if (typeof f.arvo !== 'number') virheet.push('arvo ei ole luku');
+  }
+  for (const f of k.dynaaminen || [])
+    if (!['aallonkorkeus','suojaisuus'].includes(f.suure))
+      virheet.push(`tuntematon dynaaminen suure: ${f.suure}`);
+  return virheet;
+}
+function suoritaStaattinen(k) {
+  const v = new Uint8Array(N).fill(1);
+  for (const f of k.suodattimet || []) {
+    if (f.ulottuvuus === 'suunta') {
+      for (let i=0;i<N;i++) if (v[i] && !suuntaValissa(SUUNTA[i], f.valissa[0], f.valissa[1])) v[i]=0;
+      continue;
+    }
+    const j = META.nimet.indexOf(f.ulottuvuus);
+    for (let i=0;i<N;i++) if (v[i] && !vertaa(RAAKA[i*D+j], f.op, f.arvo)) v[i]=0;
+  }
+  return v;
+}
+
+// --- Dynaaminen: aallonkorkeus ennusteesta --------------------------------
+async function haeTuuli() {
+  if (tuuli) return tuuli;
+  // Karkea hila alueen yli. Yksi piste koko 38 x 29 km alueelle antaisi eri
+  // vastauksen kuin tuotanto samalle rannalle.
+  const pisteet = [];
+  for (let lat = 59.95; lat <= 60.30; lat += 0.10)
+    for (let lon = 24.55; lon <= 25.35; lon += 0.15)
+      pisteet.push({ lat, lon });
+  const url = FMI_WFS
+    + '&storedquery_id=fmi::forecast::harmonie::surface::point::multipointcoverage'
+    + '&parameters=WindSpeedMS,WindDirection&timestep=60'
+    + pisteet.map(p => `&latlon=${p.lat.toFixed(2)},${p.lon.toFixed(2)}`).join('');
+  const teksti = await (await fetch(url)).text();
+  const pos = teksti.match(/<gmlcov:positions>([\s\S]*?)<\/gmlcov:positions>/);
+  const val = teksti.match(/<gml:doubleOrNilReasonTupleList>([\s\S]*?)<\/gml:doubleOrNilReasonTupleList>/);
+  if (!pos || !val) throw new Error('odottamaton vastaus FMI:lta');
+  const pr = pos[1].trim().split('\n').filter(r=>r.trim());
+  const vr = val[1].trim().split('\n').filter(r=>r.trim());
+  const sarjat = new Map();
+  for (let i=0;i<pr.length;i++) {
+    const pk = pr[i].trim().split(/\s+/), vk = vr[i].trim().split(/\s+/).map(Number);
+    const avain = `${(+pk[0]).toFixed(2)},${(+pk[1]).toFixed(2)}`;
+    if (!sarjat.has(avain)) sarjat.set(avain, []);
+    sarjat.get(avain).push({ epoch:+pk[2], nopeus:vk[0], suunta:vk[1] });
+  }
+  for (const s of sarjat.values()) s.sort((a,b)=>a.epoch-b.epoch);
+  const eka = sarjat.values().next().value;
+  tuuli = { sarjat, tunteja: eka ? eka.length : 0 };
+  return tuuli;
+}
+function tuuliPisteessa(i, tunti) {
+  const lat = LATLON[2*i], lon = LATLON[2*i+1];
+  let paras = null, pd = Infinity;
+  for (const [avain, sarja] of tuuli.sarjat) {
+    const [a,b] = avain.split(',').map(Number);
+    const d = (a-lat)**2 + (b-lon)**2;
+    if (d < pd) { pd = d; paras = sarja; }
+  }
+  return paras[Math.min(tunti, paras.length-1)];
+}
+function aallonkorkeusRannalla(i, tunti) {
+  const t = tuuliPisteessa(i, tunti);
+  // Tuuli tulee suunnasta t.suunta; aallokko syntyy samasta suunnasta,
+  // joten pyyhkaisymatka ja este luetaan sielta - INTERPOLOIDEN kahden
+  // sektorin valilla, kuten tuotanto tekee.
+  const f = suureSuunnasta(FETCH, i, t.suunta, SEKT);
+  const e = suureSuunnasta(ESTEET, i, t.suunta, SEKT) * META.este_kerroin;
+  return { hs: aallonkorkeus(f, t.nopeus, e, META.vakiot), tuuli: t };
+}
+
+// --- Varapolku: kasin kirjoitettu kielioppi -------------------------------
+// AAKKOSET NORMALISOIDAAN MOLEMMILTA PUOLILTA. Ensimmainen versio vertasi
+// avainta "itaan" tekstiin "itaan" ja epaonnistui aina; sama koski jokaista
+// sanaa jossa on a tai o. Sanaston osumat on kirjattu samassa muodossa.
+function normalisoi(t) {
+  return t.toLowerCase().replace(/[\u00e4\u00e5]/g,'a').replace(/\u00f6/g,'o')
+          .replace(/[?.,!:;]/g,' ');
+}
+// TAIVUTUSTA EI PAATELLA VAAN SE KIRJATAAN. "kallioista" ei ala samoin kuin
+// "kallioinen", eika suomen sijamuotoja voi kattaa prefiksisaannolla. Osumat
+// ovat sanastossa nakyvissa, jolloin ne voi korjata ilman koodimuutosta.
+function jasenna(teksti) {
+  const s = normalisoi(teksti);
+  for (const k of SANASTO._kieltaydy) if (s.includes(k)) return { kieltaydy: k };
+  for (const t of SANASTO._ei_tunneta) {
+    const i = s.indexOf(t);
+    if (i >= 0) {
+      // Naytetaan KAYTTAJAN sana, ei sanaston varsi: "ruovikkoa" eika "ruovik".
+      const loppu = s.slice(i).match(/^\S+/)[0];
+      return { tuntematon: teksti.trim().split(/\s+/).find(
+        w => normalisoi(w).startsWith(t)) || loppu };
+    }
+  }
+  const suodattimet = [], sanat = [];
+  const osuu = (d) => (d.osumat || []).some(o => s.includes(normalisoi(o)));
+  for (const [sana, d] of Object.entries(SANASTO.ominaisuudet))
+    if (osuu(d)) { suodattimet.push(d); sanat.push(sana); }
+  for (const [sana, d] of Object.entries(SANASTO.suunnat))
+    if (osuu(d)) { suodattimet.push({ ulottuvuus:'suunta', valissa:d.valissa });
+                   sanat.push(sana); }
+  const dyn = [];
+  for (const [sana, d] of Object.entries(SANASTO.dynaaminen))
+    if (osuu(d)) { dyn.push(d); sanat.push(sana); }
+  const aika = jasennaAika(s, sanat);
+  if (!suodattimet.length && !dyn.length) return { eiYmmarretty: true };
+  return { suodattimet, dynaaminen: dyn.length ? dyn : undefined, aika,
+           tulkinta: sanat.join(', '), lahde: 'varapolku' };
+}
+
+// AIKA JASENNETAAN MYOS VARAPOLUSSA. Ensimmainen versio ei tehnyt sita, ja
+// seuraus oli hiljainen: "suojaisa ranta 200 tunnin paasta" palautti
+// staattisen tuloksen kuin aikaa ei olisi mainittu. Kayttaja olisi luullut
+// saaneensa vastauksen tulevaisuudesta.
+function jasennaAika(s, sanat) {
+  let m = s.match(/(\d+)\s*(tunnin|tuntia|h)\b/);
+  if (m) { sanat.push(`+${m[1]} h`); return { tunti: +m[1] }; }
+  m = s.match(/(\d+)\s*(paivan|vuorokauden)/);
+  if (m) { sanat.push(`+${m[1]} vrk`); return { tunti: +m[1] * 24 }; }
+  if (/ylihuomenna/.test(s)) { sanat.push('ylihuomenna'); return { tunti: 48 }; }
+  if (/huomenna/.test(s)) { sanat.push('huomenna'); return { tunti: 24 }; }
+  return undefined;
+}
+
+async function kokeilePaatepiste() {
+  try {
+    const r = await fetch(PAATEPISTE, { method:'POST',
+      headers:{'content-type':'application/json'}, body:JSON.stringify({ koe:true }) });
+    paatepisteToimii = r.ok;
+  } catch { paatepisteToimii = false; }
+  tila();
+}
+function tila() {
+  document.getElementById('tila').innerHTML = paatepisteToimii
+    ? 'Kielimalli käytössä.'
+    : '<b>Päätepiste ei vastaa</b> — käytössä on sanastopohjainen varapolku.';
+}
+
+// --- Keskustelu -----------------------------------------------------------
+function sano(kuka, html) {
+  const d = document.createElement('div');
+  d.className = 'viesti ' + kuka; d.innerHTML = html;
+  document.getElementById('virta').appendChild(d);
+  d.scrollIntoView({ block:'end' });
+  return d;
+}
+function kyselyTekstina(k) {
+  const rivit = (k.suodattimet||[]).map(f => f.ulottuvuus === 'suunta'
+    ? `suunta ${f.valissa[0]}–${f.valissa[1]}°`
+    : `${f.ulottuvuus} ${f.op} ${f.arvo}${f.yksikko==='%'?' (osuus)':''}`);
+  for (const f of k.dynaaminen||[]) rivit.push(`${f.suure} ${f.op} ${f.arvo} m`);
+  if (k.aika) rivit.push(`aika: +${k.aika.tunti} h`);
+  return rivit.join('\n');
+}
+
+async function kysy(teksti) {
+  sano('kysyja', teksti);
+  let k = null;
+  if (paatepisteToimii) {
+    try {
+      const r = await fetch(PAATEPISTE, { method:'POST',
+        headers:{'content-type':'application/json'}, body:JSON.stringify({ kysymys:teksti }) });
+      if (r.ok) k = await r.json();
+    } catch { paatepisteToimii = false; tila(); }
+  }
+  if (!k) k = jasenna(teksti);
+
+  if (k.kieltaydy) return sano('botti',
+    `<div class="varoitus"><b>En vastaa tähän.</b> Kysymys koskee turvallisuutta.
+     Kerron aallonkorkeuden ennusteesta, mutta se ei ole neuvo siitä kannattaako
+     lähteä. Se päätös on sinun ja perustuu muuhunkin kuin näihin lukuihin.</div>`);
+  if (k.tuntematon) return sano('botti',
+    `En tunne ominaisuutta <b>${k.tuntematon}</b> — sitä ei ole missään käytetyssä
+     aineistossa, enkä arvaa. Tunnen nämä: ${Object.keys(SANASTO.ominaisuudet).join(', ')}.`);
+  if (k.eiYmmarretty) return sano('botti',
+    `En saanut kysymyksestä kiinni. Kokeile esimerkiksi:
+     <i>kallioinen ranta kaukana väylästä</i>.`);
+
+  // VALIDOINTI MYOS SELAIMESSA. Paatepiste validoi jo, mutta jos se joskus
+  // palauttaisi keksityn ulottuvuuden, sita ei suoriteta.
+  const virheet = validoi(k);
+  if (virheet.length) return sano('botti',
+    `<div class="varoitus"><b>Hylkäsin kyselyn.</b><br>${virheet.join('<br>')}</div>`);
+
+  valinta = suoritaStaattinen(k);
+  let n = valinta.reduce((a,b)=>a+b, 0);
+  let dynTeksti = '';
+
+  // AIKA TARKISTETAAN VAIKKA DYNAAMISTA EHTOA EI OLISI. Jos kayttaja mainitsi
+  // ajan, hanelle on kerrottava jos se on ennusteen ulkopuolella - muuten han
+  // luulee saaneensa vastauksen tulevaisuudesta.
+  if ((k.dynaaminen||[]).length || k.aika) {
+    try {
+      await haeTuuli();
+      const tunti = (k.aika && k.aika.tunti) || 0;
+      if (tunti >= tuuli.tunteja) {
+        dynTeksti = `<div class="varoitus"><b>Ennuste ei ulotu niin pitkälle.</b>
+          Se päättyy ${tuuli.tunteja} tunnin päähän, ja kysyit ${tunti} tunnin
+          päästä. En ekstrapoloi, joten alla on vain rannan omat ominaisuudet
+          — ei sään vaikutusta.</div>`;
+      } else {
+        let esim = null;
+        for (let i=0;i<N;i++) {
+          if (!valinta[i]) continue;
+          const { hs, tuuli:tt } = aallonkorkeusRannalla(i, tunti);
+          if (!esim) esim = tt;
+          // (k.dynaaminen || []) EIKA k.dynaaminen: aika voi tulla ilman
+          // dynaamista ehtoa ("suojaisa ranta huomenna"), ja silloin silmukka
+          // ajoi undefined:n yli ja koko vastaus kaatui.
+          for (const f of (k.dynaaminen || [])) {
+            const arvo = f.suure === 'aallonkorkeus' ? hs
+              : shelterScoreFromFetch(suureSuunnasta(FETCH,i,tt.suunta,SEKT), tt.nopeus,
+                  suureSuunnasta(ESTEET,i,tt.suunta,SEKT)*META.este_kerroin, META.vakiot);
+            if (!vertaa(arvo, f.op, f.arvo)) { valinta[i] = 0; break; }
+          }
+        }
+        n = valinta.reduce((a,b)=>a+b, 0);
+        if (!esim && valinta.some(v=>v)) {
+          const i = valinta.findIndex(v=>v); esim = tuuliPisteessa(i, tunti);
+        }
+        dynTeksti = esim ? `<div class="tila">Tuuli +${tunti} h:
+          ${esim.nopeus.toFixed(1)} m/s, suunta ${Math.round(esim.suunta)}°
+          (Ilmatieteen laitos).</div>` : '';
+      }
+    } catch (e) {
+      dynTeksti = `<div class="varoitus">Sääennustetta ei saatu: ${e.message}.
+        Näytän vain staattisen suodatuksen tuloksen.</div>`;
+    }
+  }
+
+  kerros._piirra();
+  const lista = [];
+  for (let i=0;i<N && lista.length<5;i++) if (valinta[i]) lista.push(i);
+  sano('botti',
+    `<div class="tulos">${n.toLocaleString('fi')} <small>/ ${N.toLocaleString('fi')} rantaa</small></div>`
+    + (k.tulkinta ? `<div class="tila">Tulkitsin: ${k.tulkinta}${k.lahde===
+        'varapolku' ? ' (varapolku)' : ''}</div>` : '')
+    + `<div class="kysely">${kyselyTekstina(k) || '(ei suodattimia)'}</div>`
+    + dynTeksti
+    + (n ? `<ol class="rannat">${lista.map(kuvaaRanta).join('')}</ol>` : ''));
+}
+
+// PAIKANNIMI AINA ETAISYYDEN KANSSA, ei koskaan vaitteena. Lahin nimi ei ole
+// sama kuin oikea nimi: ranta 300 m paassa "Bjorkholmenista" voi olla
+// naapurisaari jolla ei ole nimea. Etaisyys antaa lukijalle mahdollisuuden
+// arvioida sen itse.
+function kuvaaRanta(i) {
+  if (!NIMET) return `<li>${XY[2*i]}, ${XY[2*i+1]}</li>`;
+  const nimi = NIMET.nimet[NIMI_I[i]], et = NIMI_ET[i];
+  const epavarma = et > 400 ? ' style="color:#8b98a3"' : '';
+  return `<li${epavarma}>lähellä: ${nimi} (${et} m)</li>`;
+}
+
+function ehdotukset() {
+  const e = ['kallioinen ranta kaukana väylästä', 'hiekkaranta joka antaa etelään',
+             'suojaisa ja tilava', 'missä on ruovikkoa', 'onko turvallista mennä'];
+  document.getElementById('ehdotukset').innerHTML =
+    e.map(t => `<button data-t="${t}">${t}</button>`).join('');
+  document.querySelectorAll('.ehdotukset button').forEach(b =>
+    b.onclick = () => { document.getElementById('kysymys').value = b.dataset.t; laheta(); });
+}
+function laheta() {
+  const el = document.getElementById('kysymys');
+  const t = el.value.trim(); if (!t) return;
+  el.value = ''; kysy(t).catch(e => sano('botti', 'Virhe: ' + e.message));
+}
+document.getElementById('laheta').onclick = laheta;
+document.getElementById('kysymys').addEventListener('keydown',
+  e => { if (e.key === 'Enter') laheta(); });
+
+lataa().catch(e => { sano('botti','Lataus epäonnistui: '+e.message); console.error(e); });
+</script>

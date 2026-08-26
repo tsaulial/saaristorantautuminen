@@ -1,0 +1,346 @@
+{
+ "_kuvaus": "Sana -> suodatin. TASSA LAATU ASUU, EI MALLISSA. Sama tiedosto ohjaa seka mallin kehotetta etta selaimen varapolkua, jolloin ne eivat voi ajautua erilleen.",
+ "_kynnykset_on_mitattu": "Jokaisen kynnyksen perassa on osuus ehdokkaista jonka se valitsee. Luvut on mitattu aineistosta, ei arvattu.",
+ "ominaisuudet": {
+  "kallioinen": {
+   "ulottuvuus": "kallio_vektori",
+   "op": ">",
+   "arvo": 0.3,
+   "yksikko": "%",
+   "osuus": 0.249,
+   "osumat": [
+    "kalli"
+   ]
+  },
+  "hiekkaranta": {
+   "ulottuvuus": "hietikko",
+   "op": ">",
+   "arvo": 0.05,
+   "yksikko": "%",
+   "osuus": 0.016,
+   "osumat": [
+    "hiekk",
+    "hieta"
+   ]
+  },
+  "kivikkoinen": {
+   "ulottuvuus": "kivikko",
+   "op": ">",
+   "arvo": 0.05,
+   "yksikko": "%",
+   "osuus": 0.025,
+   "osumat": [
+    "kivik",
+    "louhi"
+   ]
+  },
+  "soinen": {
+   "ulottuvuus": "suo",
+   "op": ">",
+   "arvo": 0.1,
+   "yksikko": "%",
+   "osuus": 0.057,
+   "osumat": [
+    "soine",
+    "soist",
+    "suota",
+    "suolla",
+    "suoranta",
+    "suoperai"
+   ]
+  },
+  "loiva": {
+   "ulottuvuus": "jyrkkyys",
+   "op": "<",
+   "arvo": 6.0,
+   "yksikko": "°",
+   "osuus": 0.331,
+   "osumat": [
+    "loiv",
+    "laake",
+    "tasai"
+   ]
+  },
+  "jyrkka": {
+   "ulottuvuus": "jyrkkyys",
+   "op": ">",
+   "arvo": 12.0,
+   "yksikko": "°",
+   "osumat": [
+    "jyrkk"
+   ]
+  },
+  "tilava": {
+   "ulottuvuus": "kelvollista_rantaa",
+   "op": ">",
+   "arvo": 400,
+   "yksikko": "m2",
+   "osuus": 0.127,
+   "osumat": [
+    "tilav",
+    "tilaa",
+    "iso",
+    "suuri",
+    "laaja"
+   ]
+  },
+  "ahdas": {
+   "ulottuvuus": "kelvollista_rantaa",
+   "op": "<",
+   "arvo": 200,
+   "yksikko": "m2",
+   "osumat": [
+    "ahda",
+    "ahta",
+    "pieni",
+    "kapea"
+   ]
+  },
+  "syrjainen": {
+   "ulottuvuus": "etaisyys_rakennuksiin",
+   "op": ">",
+   "arvo": 145,
+   "yksikko": "m",
+   "osuus": 0.233,
+   "osumat": [
+    "syrja",
+    "eramaa",
+    "kaukana rakennu",
+    "asumat",
+    "hiljais"
+   ]
+  },
+  "rakennettu": {
+   "ulottuvuus": "rakennettu",
+   "op": ">",
+   "arvo": 0.05,
+   "yksikko": "%",
+   "osumat": [
+    "rakennett",
+    "taajam"
+   ]
+  },
+  "puistoinen": {
+   "ulottuvuus": "hoidettu",
+   "op": ">",
+   "arvo": 0.05,
+   "yksikko": "%",
+   "osumat": [
+    "puisto",
+    "virkist"
+   ]
+  },
+  "satamassa": {
+   "ulottuvuus": "satama",
+   "op": ">",
+   "arvo": 0.05,
+   "yksikko": "%",
+   "osumat": [
+    "satam"
+   ]
+  },
+  "jyrkanteinen": {
+   "ulottuvuus": "jyrkanne_lahella",
+   "op": ">",
+   "arvo": 0.05,
+   "yksikko": "%",
+   "osumat": [
+    "jyrkant",
+    "kallioseina"
+   ]
+  },
+  "kaukana_vaylasta": {
+   "ulottuvuus": "etaisyys_rahtivaylaan",
+   "op": ">",
+   "arvo": 4000,
+   "yksikko": "m",
+   "osuus": 0.312,
+   "osumat": [
+    "kaukana vayl",
+    "kaukana rahti",
+    "pois vayl",
+    "ei vayl"
+   ]
+  },
+  "lahella_vaylaa": {
+   "ulottuvuus": "etaisyys_rahtivaylaan",
+   "op": "<",
+   "arvo": 1000,
+   "yksikko": "m",
+   "osumat": [
+    "lahella vayl",
+    "vaylan lah",
+    "vaylan varr"
+   ]
+  },
+  "suojaisa": {
+   "ulottuvuus": "pyyhkaisy_0",
+   "op": "<",
+   "arvo": 300,
+   "yksikko": "m",
+   "osumat": [
+    "suojais",
+    "suojas",
+    "poukam",
+    "lahdel"
+   ]
+  },
+  "avoin": {
+   "ulottuvuus": "pyyhkaisy_0",
+   "op": ">",
+   "arvo": 2000,
+   "yksikko": "m",
+   "osumat": [
+    "avoin",
+    "avoim",
+    "ulapa",
+    "ulapal",
+    "aava"
+   ]
+  }
+ },
+ "_kallio_puuttuu_tarkoituksella": "Ulottuvuus 'kallio' (peruskartan vareista) korreloi 'kallio_vektori'in kanssa r = 0,941 - kaksi tapaa mitata sama asia. Jos molemmat olisivat sanastossa, tulos riippuisi siita kumman malli sattuu valitsemaan. Sanastossa on vain vektorilahde, joka on se aineisto josta kartta on piirretty.",
+ "suunnat": {
+  "pohjoiseen": {
+   "valissa": [
+    315,
+    45
+   ],
+   "osumat": [
+    "pohjois",
+    "pohjoise"
+   ]
+  },
+  "koilliseen": {
+   "valissa": [
+    22,
+    68
+   ],
+   "osumat": [
+    "koilli"
+   ]
+  },
+  "itaan": {
+   "valissa": [
+    45,
+    135
+   ],
+   "osumat": [
+    "itaan",
+    "itaa",
+    "idas",
+    "itai"
+   ]
+  },
+  "kaakkoon": {
+   "valissa": [
+    112,
+    158
+   ],
+   "osumat": [
+    "kaakko"
+   ]
+  },
+  "etelaan": {
+   "valissa": [
+    135,
+    225
+   ],
+   "osumat": [
+    "etela",
+    "etelaa"
+   ]
+  },
+  "lounaaseen": {
+   "valissa": [
+    202,
+    248
+   ],
+   "osumat": [
+    "lounaa",
+    "lounai"
+   ]
+  },
+  "lanteen": {
+   "valissa": [
+    225,
+    315
+   ],
+   "osumat": [
+    "lantee",
+    "lannes",
+    "lantis"
+   ]
+  },
+  "luoteeseen": {
+   "valissa": [
+    292,
+    338
+   ],
+   "osumat": [
+    "luotee"
+   ]
+  }
+ },
+ "_suunta_tarkoittaa": "Suunta johon ranta ANTAA eli mihin ilmansuuntaan vesi on. 'Ranta antaa itaan' = meri on idassa.",
+ "dynaaminen": {
+  "tyyni": {
+   "suure": "aallonkorkeus",
+   "op": "<",
+   "arvo": 0.05,
+   "yksikko": "m",
+   "osumat": [
+    "tyyn",
+    "peilityyn"
+   ]
+  },
+  "rauhallinen": {
+   "suure": "aallonkorkeus",
+   "op": "<",
+   "arvo": 0.15,
+   "yksikko": "m",
+   "osumat": [
+    "rauhalli",
+    "pieni aallo",
+    "vahan aallo"
+   ]
+  },
+  "karkea": {
+   "suure": "aallonkorkeus",
+   "op": ">",
+   "arvo": 0.3,
+   "yksikko": "m",
+   "osumat": [
+    "karke",
+    "kova aallo",
+    "iso aallo"
+   ]
+  }
+ },
+ "_ei_tunneta": [
+  "ruovik",
+  "ruoko",
+  "kaisl",
+  "lepik",
+  "pohjan laat",
+  "syvyy",
+  "veneluisk",
+  "laituri",
+  "nuotio",
+  "vessa",
+  "juomavesi"
+ ],
+ "_ei_tunneta_selitys": "Naita ei ole missaan kaytetyssa aineistossa. Botin on sanottava se, ei arvattava.",
+ "_kieltaydy": [
+  "turvallis",
+  "vaarallis",
+  "kannattaa",
+  "suositt",
+  "voiko sinne",
+  "uskallan",
+  "pitaisiko menna"
+ ],
+ "_kieltaydy_selitys": "Botti kertoo aallonkorkeuden ennusteesta. Se ei ole turvallisuusneuvo, eika se saa esittaa sellaista.",
+ "_osumat_normalisoidaan": "Vertailu tehdaan pienilla kirjaimilla ja aakkoset korvattuina (a->a, o->o). Osumat on kirjattu samassa muodossa.",
+ "_varren_pituus": "Varren on oltava riittavan pitka. Ensimmainen versio kaytti sanaa 'suo', ja se osui sanaan 'suojaisa' - kysely 'suojaisa ranta' sai mukaansa suosuodattimen. Lyhyet varret on tarkistettava muita sanastoja vasten ennen lisaamista."
+}

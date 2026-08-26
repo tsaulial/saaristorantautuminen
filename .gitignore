@@ -28,3 +28,8 @@ vesistot-mml/
 demo-viz/kuvat/
 demo-viz/raportti.html
 demo-viz/klusterit.npz
+nimisto-mml/
+# Botin binaarit syntyvat skripteista (demo-botti/esteet.py, vie.py, nimet.py)
+demo-botti/*.bin
+demo-botti/*.npz
+demo-botti/nimet.json
