@@ -23,3 +23,8 @@ karttakuva-mll/
 taustakartta-mml/
 rakennukset-mll/
 vesistot-mml/
+# Kuvat ja koostettu raportti syntyvat skripteista (demo-viz/kuvat.py,
+# raportti.py) - lahdekoodi riittaa versionhallintaan.
+demo-viz/kuvat/
+demo-viz/raportti.html
+demo-viz/klusterit.npz

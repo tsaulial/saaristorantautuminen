@@ -1,0 +1,289 @@
+<title>Rantojen piirreavaruus</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Serif:wght@400;600&display=swap">
+<style>
+  :root {
+    --ground:#e9eef0; --surface:#ffffff; --surface-2:#f3f6f7;
+    --ink:#17222b; --ink-2:#41525e; --ink-3:#6f8290;
+    --rule:#cfd9de; --accent:#0b6ea8; --accent-soft:#e3eef5;
+    --warn:#c25e12; --warn-soft:#f7e9dc; --ok:#2e7d4f;
+    --serif:"IBM Plex Serif",Georgia,serif;
+    --sans:"IBM Plex Sans",system-ui,sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:#0e171d; --surface:#16222a; --surface-2:#1c2b34;
+      --ink:#e2eaee; --ink-2:#a8bcc7; --ink-3:#7e94a1;
+      --rule:#2b3d48; --accent:#5aa9d6; --accent-soft:#14303f;
+      --warn:#e08a4a; --warn-soft:#33251a; --ok:#63b183;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:#0e171d; --surface:#16222a; --surface-2:#1c2b34;
+    --ink:#e2eaee; --ink-2:#a8bcc7; --ink-3:#7e94a1;
+    --rule:#2b3d48; --accent:#5aa9d6; --accent-soft:#14303f;
+    --warn:#e08a4a; --warn-soft:#33251a; --ok:#63b183;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--ground); color:var(--ink);
+         font-family:var(--sans); font-size:16px; line-height:1.62;
+         -webkit-font-smoothing:antialiased; }
+  .kaista { max-width:1180px; margin:0 auto; padding:0 24px 88px; }
+  .teksti { max-width:66ch; }
+  header { border-bottom:1px solid var(--rule); background:var(--surface);
+           padding:72px 0 40px; margin-bottom:48px; }
+  header .kaista { padding-bottom:0; }
+  .eyebrow { font-family:var(--mono); font-size:12px; letter-spacing:.14em;
+             text-transform:uppercase; color:var(--accent); margin:0 0 14px; }
+  h1 { font-family:var(--serif); font-weight:600; font-size:clamp(30px,5vw,46px);
+       line-height:1.1; margin:0 0 18px; text-wrap:balance; letter-spacing:-.015em; }
+  .ingressi { font-size:19px; color:var(--ink-2); max-width:62ch; margin:0; }
+  h2 { font-family:var(--serif); font-weight:600; font-size:26px; line-height:1.25;
+       margin:56px 0 6px; text-wrap:balance; }
+  h2 .num { font-family:var(--mono); font-size:14px; color:var(--accent);
+            display:block; margin-bottom:6px; letter-spacing:.1em; }
+  h3 { font-size:15px; font-weight:600; margin:32px 0 8px; letter-spacing:.01em; }
+  p { margin:0 0 16px; }
+  a { color:var(--accent); }
+  code { font-family:var(--mono); font-size:.88em; background:var(--surface-2);
+         padding:1px 5px; border-radius:3px; }
+  strong { font-weight:600; }
+  .luvut { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+           gap:1px; background:var(--rule); border:1px solid var(--rule);
+           border-radius:6px; overflow:hidden; margin:28px 0 8px; }
+  .luvut div { background:var(--surface); padding:16px 18px; }
+  .luvut dt { font-size:12px; color:var(--ink-3); margin-bottom:4px;
+              letter-spacing:.03em; }
+  .luvut dd { margin:0; font-family:var(--mono); font-size:23px; font-weight:500;
+              font-variant-numeric:tabular-nums; }
+  figure { margin:28px 0 8px; }
+  .kuvakehys { background:var(--surface); border:1px solid var(--rule);
+               border-radius:6px; padding:10px; overflow-x:auto; }
+  .kuvakehys img { display:block; width:100%; min-width:520px; height:auto;
+                   border-radius:3px; }
+  figcaption { font-size:13.5px; color:var(--ink-3); margin-top:10px;
+               max-width:66ch; }
+  .havainto { border-left:3px solid var(--accent); background:var(--surface);
+              padding:18px 22px; margin:24px 0; border-radius:0 6px 6px 0; }
+  .havainto.varo { border-left-color:var(--warn); }
+  .havainto b { display:block; font-size:14px; margin-bottom:6px;
+                letter-spacing:.01em; }
+  .havainto p:last-child { margin-bottom:0; }
+  .taulukko { overflow-x:auto; margin:20px 0; border:1px solid var(--rule);
+              border-radius:6px; background:var(--surface); }
+  table { border-collapse:collapse; width:100%; font-size:14.5px; }
+  th,td { text-align:left; padding:10px 16px; border-bottom:1px solid var(--rule); }
+  th { font-size:12px; text-transform:uppercase; letter-spacing:.07em;
+       color:var(--ink-3); font-weight:500; }
+  tbody tr:last-child td { border-bottom:none; }
+  td.n { font-family:var(--mono); font-variant-numeric:tabular-nums;
+         text-align:right; }
+  .lippu { font-family:var(--mono); font-size:11.5px; padding:2px 8px;
+           border-radius:99px; letter-spacing:.04em; white-space:nowrap; }
+  .lippu.ok { background:var(--accent-soft); color:var(--accent); }
+  .lippu.ei { background:var(--warn-soft); color:var(--warn); }
+  footer { border-top:1px solid var(--rule); margin-top:64px; padding-top:24px;
+           font-size:13.5px; color:var(--ink-3); }
+  @media (prefers-reduced-motion:no-preference) { html { scroll-behavior:smooth; } }
+  :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+</style>
+
+<header>
+  <div class="kaista">
+    <p class="eyebrow">Saaristorantautuminen · aineiston tarkastus</p>
+    <h1>Rantojen piirreavaruus</h1>
+    <p class="ingressi">
+      {{n}} rantaehdokasta, {{d}} ulottuvuutta, {{arvoja}} lukua Helsingin
+      edustalta. Tämä on ensimmäinen kerta kun aineistoa katsotaan kuvina eikä
+      taulukkoina — ja kuvat kertoivat kaksi asiaa joita luvut eivät kertoneet.
+    </p>
+  </div>
+</header>
+
+<div class="kaista">
+  <div class="teksti">
+    <p>
+      Aineisto on kahdella tavalla liikaa katsottavaksi kerralla: paljon tietoa
+      jokaisesta rantapisteestä, ja paljon rantapisteitä. Tähän asti sitä on
+      tarkasteltu vain lukuina — korrelaatioina, persentiileinä, poisjättö&shy;kokeina.
+      Se on löytänyt vikoja, mutta osa niistä olisi näkynyt kuvasta heti.
+    </p>
+  </div>
+
+  <dl class="luvut">
+    <div><dt>Ehdokkaita</dt><dd>{{n}}</dd></div>
+    <div><dt>Ulottuvuuksia</dt><dd>{{d}}</dd></div>
+    <div><dt>Päätöksiä painotuksessa</dt><dd>17</dd></div>
+    <div><dt>Pääkomponentteja 95 %:iin</dt><dd>{{k95}}</dd></div>
+  </dl>
+
+  <h2><span class="num">Kuva 1</span>Missä kukin ominaisuus on</h2>
+  <div class="teksti">
+    <p>
+      Kaksikymmentäkahdeksan pienoiskarttaa, sama rajaus jokaisessa, väri on
+      kvantiili. Tämä on kokoelman tärkein kuva, koska se vastaa kysymykseen
+      jota mikään tunnusluku ei vastaa: <strong>missä</strong> ominaisuus on.
+    </p>
+  </div>
+  <figure>
+    <div class="kuvakehys"><img src="{{kuva1}}" alt="28 pienoiskarttaa, yksi kutakin ulottuvuutta kohti"></div>
+    <figcaption>
+      Arvot on piirretty järjestyksessä niin että korkeat tulevat päälle —
+      muuten 1,6 %:n hiekkaranta hautautuisi nollien alle.
+    </figcaption>
+  </figure>
+  <div class="teksti">
+    <p>
+      Selvin yksittäinen rakenne on <strong>etäisyys rahtiväylään</strong>:
+      punainen nauha seuraa Helsingin satamaväyliä, vihreä reunustaa läntisiä
+      rantoja. Se on juuri se kuvio jonka pitääkin syntyä, ja sen näkeminen
+      vahvistaa että mitta osuu oikeisiin väyliin.
+    </p>
+    <p>
+      Yhtä tärkeää on mitä <em>ei</em> näy: yksikään kuvio ei seuraa kuuden
+      kilometrin tiiliruudukkoa. Se oli erikseen tarkistettava asia, koska
+      tiilirajaa myötäilevä kuvio tarkoittaisi että malli on oppinut
+      laskentatavan eikä maastoa.
+    </p>
+  </div>
+
+  <h2><span class="num">Kuva 2</span>Mitkä ulottuvuudet toistavat toisiaan</h2>
+  <figure>
+    <div class="kuvakehys"><img src="{{kuva2}}" alt="Korrelaatiomatriisi 28 × 28"></div>
+    <figcaption>Punainen = positiivinen korrelaatio, sininen = negatiivinen.</figcaption>
+  </figure>
+  <div class="havainto varo">
+    <b>Uusi löydös: kallio on mitattu kahdesti</b>
+    <p>
+      <code>kallio kartasta</code> ja <code>kallioalue</code> korreloivat
+      <strong>r = {{kallio_r}}</strong>. Toinen tulee peruskartan väreistä,
+      toinen maastotietokannan polygoneista — kaksi tapaa mitata sama asia.
+    </p>
+    <p>
+      Pikselitasolla ne olivat vain kohtalaisen yksimielisiä (Jaccard 0,58),
+      mutta 25 metrin ikkunaan keskiarvoistettuna ero katoaa. Suunnitelman oma
+      sääntö sanoo pudottaa toinen kun <code>|r| &gt; 0,9</code>. Sitä ei ole
+      vielä tehty — tämä kuva on syy tehdä se.
+    </p>
+  </div>
+
+  <h2><span class="num">Kuva 3</span>Aineisto on aidosti moniulotteinen</h2>
+  <figure>
+    <div class="kuvakehys"><img src="{{kuva3}}" alt="PCA-romahduskuvaaja"></div>
+    <figcaption>Komponenttien osuudet ja kumulatiivinen selitysaste.</figcaption>
+  </figure>
+  <div class="teksti">
+    <p>
+      95 prosentin selitysasteeseen tarvitaan <strong>{{k95}} pääkomponenttia</strong>.
+      Suunnitelman kynnys oli viisi: jos ulottuvuudet romahtaisivat alle
+      viiteen, niitä olisi liikaa ja osa olisi saman asian toisintoja.
+    </p>
+    <p>
+      Luku on kasvanut yhdeksästä kolmeentoista sen jälkeen kun maanpeite ja
+      kaksi laskettua mittaa lisättiin — aiempi yhdeksän koski vielä
+      kahdeksantoista ulottuvuuden vektoria. Lisätty tieto oli siis
+      pääosin uutta eikä vanhan uudelleenmuotoilua.
+    </p>
+  </div>
+
+  <h2><span class="num">Kuva 4</span>Miksi kutistuskaava rikkoutui</h2>
+  <figure>
+    <div class="kuvakehys"><img src="{{kuva4}}" alt="Ulottuvuuksien varianssit"></div>
+    <figcaption>
+      Katkoviiva on 1/12 — tasajakauman varianssi, jonka alkuperäinen kaava
+      oletti päteväksi kaikille.
+    </figcaption>
+  </figure>
+  <div class="teksti">
+    <p>
+      Kvantiilimuunnos tekee jakaumasta tasaisen vain jos sidoksia ei ole.
+      Harvinaisella luokalla lähes kaikki ehdokkaat ovat samassa arvossa, ja
+      varianssi romahtaa: pienin on <strong>{{varmin}}</strong>
+      (<em>{{varmin_nimi}}</em>), eli neljäsataa kertaa oletettua pienempi.
+    </p>
+    <p>
+      Seuraus oli näkyvä ja väärä. Painot lasketaan siitä mistä suosikit ovat
+      yhtä mieltä, joten jokainen harvinaisuus sai suurimman painon — suosikit
+      olivat siitä triviaalisti samaa mieltä, kaikki nollia. Painolistan
+      kärjessä luki «suo» ja «kivikko» vaikka suosikit olivat hiekkarantoja.
+    </p>
+  </div>
+
+  <h2><span class="num">Kuva 5</span>Rantatyypit: rajat ovat pehmeät</h2>
+  <figure>
+    <div class="kuvakehys"><img src="{{kuva5}}" alt="Klusterit kartalla ja kahdessa pääkomponentissa"></div>
+    <figcaption>
+      Vasemmalla klusterit maantieteellisesti, oikealla sama joukko kahdessa
+      ensimmäisessä pääkomponentissa.
+    </figcaption>
+  </figure>
+  <div class="havainto varo">
+    <b>Mittari ei mene läpi</b>
+    <p>
+      Paras jako on <strong>k = {{k}}</strong>, siluettipisteet
+      <strong>{{siluetti}}</strong>. Kynnys oli 0,25. Kokeiltu myös ilman
+      harvinaisia luokkia (0,160) ja yhdeksässä pääkomponentissa (0,196) —
+      kumpikaan ei nosta sitä.
+    </p>
+    <p>
+      Kahteen komponenttiin projisoituna siluetti nousee arvoon 0,355, mutta
+      <strong>sitä ei lasketa läpimenoksi</strong>: siluetti kasvaa mekaanisesti
+      kun ulottuvuuksia vähennetään, joten se mittaisi projektiota eikä
+      aineistoa.
+    </p>
+  </div>
+  <div class="teksti">
+    <p>
+      Oikeanpuoleinen paneeli näyttää miksi. Se on yksi yhtenäinen pilvi, ei
+      erillisiä saarekkeita — <strong>saariston rannat muodostavat jatkumon,
+      eivät tyyppejä</strong>. Avoimuus, kallioisuus ja syrjäisyys vaihtelevat
+      liukuvasti, eikä niiden väliin synny rajoja.
+    </p>
+    <p>
+      Kartalla rakenne kuitenkin näkyy: yksi klusteri hallitsee ulkosaaristoa,
+      toinen mantereen rantoja, kolmas sisälahtia. Klusterit ovat siis
+      <em>taipumuksia</em> vaikka eivät ole <em>luokkia</em>.
+    </p>
+    <p>
+      Ero merkitsee sitä, mihin niitä voi käyttää. Nimettyinä rantatyyppeinä
+      kartalle ne olisivat harhaanjohtavia, koska raja tyyppien välillä on
+      keksitty. Lähtökohtana omalle mallille ne kelpaavat: «tyypillinen
+      suojaisa sisälahti» on käyttökelpoinen alku vaikka sen ja naapurin väliin
+      ei voi vetää viivaa.
+    </p>
+  </div>
+
+  <h2><span class="num">Yhteenveto</span>Mitä tarkistettiin</h2>
+  <div class="taulukko">
+    <table>
+      <thead><tr><th>Tarkistus</th><th>Tulos</th><th></th></tr></thead>
+      <tbody>
+        <tr><td>Yksikään kuvio ei seuraa tiilirajoja</td>
+            <td class="n">28 / 28</td><td><span class="lippu ok">läpi</span></td></tr>
+        <tr><td>Rahtiväyläetäisyys kasvaa ulospäin</td>
+            <td class="n">—</td><td><span class="lippu ok">läpi</span></td></tr>
+        <tr><td>Pääkomponentteja 95 %:iin &gt; 5</td>
+            <td class="n">{{k95}}</td><td><span class="lippu ok">läpi</span></td></tr>
+        <tr><td>Siluettipisteet &gt; 0,25</td>
+            <td class="n">{{siluetti}}</td><td><span class="lippu ei">ei läpi</span></td></tr>
+        <tr><td>Klusterit maantieteellisesti mielekkäitä</td>
+            <td class="n">—</td><td><span class="lippu ok">läpi</span></td></tr>
+        <tr><td>Ulottuvuuksia joilla |r| &gt; 0,9</td>
+            <td class="n">2 paria</td><td><span class="lippu ei">korjattava</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="teksti">
+    <p>
+      Kaksi asiaa jää tehtäväksi, ja molemmat tulivat esiin kuvista eivätkä
+      luvuista: <strong>kallion kaksinkertainen mittaus</strong> on purettava,
+      ja <strong>klustereiden käyttötapa</strong> on rajattava lähtökohdaksi
+      eikä luokitteluksi.
+    </p>
+  </div>
+
+  <footer>
+    Aineisto: Maanmittauslaitoksen korkeusmalli, maastotietokanta ja peruskartta ·
+    Väylävirasto · Kuvat on piirretty suoraan aineistosta.
+  </footer>
+</div>
