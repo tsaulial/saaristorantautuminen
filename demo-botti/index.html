@@ -72,12 +72,22 @@
 // ja se nakyy koska kysely naytetaan takaisin.
 // ---------------------------------------------------------------------------
 const EI_VALIMUISTIA = { cache: 'no-store' };
-const PAATEPISTE = '/api/kysely';        // Ubuntun paatepiste, jos pystyssa
+// PAATEPISTEEN OSOITE.
+//
+// Oletus on paikallinen palvelin.py, joka kuuntelee porttia 8772 - EI samaa
+// porttia kuin tama sivu (8771 on staattinen tiedostopalvelin, joka vastaa
+// POSTiin 501:lla). Aiempi arvo oli suhteellinen '/api/kysely', ja kommentti
+// vaitti sita "Ubuntun paatepisteeksi" - se ei osoittanut Ubuntuun vaan
+// samaan staattiseen palvelimeen, eika olisi voinut toimia missaan.
+//
+// Muualle osoitetaan ilman koodimuutosta:  ?api=https://kone.ts.net/api/kysely
+const PAATEPISTE = new URLSearchParams(location.search).get('api')
+                || 'http://127.0.0.1:8772/kysely';
 const FMI_WFS = 'https://opendata.fmi.fi/wfs?service=WFS&version=2.0.0&request=getFeature';
 
 let META, SANASTO, PIIRTEET, RAAKA, XY, LATLON, SUUNTA, FETCH, ESTEET, KV;
 let N = 0, D = 0, SEKT = 12, NIMET = null, NIMI_I = null, NIMI_ET = null;
-let valinta = null, tuuli = null, paatepisteToimii = null;
+let valinta = null, tuuli = null, paatepisteToimii = null, virheSyy = null;
 
 const map = L.map('map', { crs: L.CRS.Simple, zoomSnap: 0, minZoom: -10, maxZoom: 4 });
 
@@ -331,9 +341,14 @@ async function kokeilePaatepiste() {
   tila();
 }
 function tila() {
-  document.getElementById('tila').innerHTML = paatepisteToimii
-    ? 'Kielimalli käytössä.'
-    : '<b>Päätepiste ei vastaa</b> — käytössä on sanastopohjainen varapolku.';
+  // Viesti kertoo MYOS minne yritettiin. "Paatepiste ei vastaa" yksinaan
+  // jattaa arvailtavaksi mita konetta se koskee.
+  const el = document.getElementById('tila');
+  el.innerHTML = paatepisteToimii
+    ? `Kielimalli käytössä (${PAATEPISTE}).`
+    : `<b>Päätepiste ei vastaa</b> — käytössä on sanastopohjainen varapolku.
+       Yritin: <code>${PAATEPISTE}</code>${virheSyy ? ` — ${virheSyy}` : ''}.
+       Botti toimii ilmankin.`;
 }
 
 // --- Keskustelu -----------------------------------------------------------
@@ -361,7 +376,14 @@ async function kysy(teksti) {
       const r = await fetch(PAATEPISTE, { method:'POST',
         headers:{'content-type':'application/json'}, body:JSON.stringify({ kysymys:teksti }) });
       if (r.ok) k = await r.json();
-    } catch { paatepisteToimii = false; tila(); }
+      else {
+        // KOEKUTSU EI RIITA. Ilman API-avainta palvelin vastaa koekutsuun
+        // 200:lla mutta kyselyihin 503:lla, jolloin tilarivi vaitti
+        // "Kielimalli kaytossa" samalla kun vastaus tuli varapolulta.
+        const syy = await r.json().catch(() => ({}));
+        paatepisteToimii = false; virheSyy = syy.virhe || `HTTP ${r.status}`; tila();
+      }
+    } catch (e) { paatepisteToimii = false; virheSyy = e.message; tila(); }
   }
   if (!k) k = jasenna(teksti);
 

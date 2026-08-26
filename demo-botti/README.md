@@ -36,11 +36,23 @@ python3 demo-botti/kysely.py          # sanaston ja varsien tarkistus
 python3 demo-botti/testaa_sopimus.py  # Python ↔ JS ristiintarkistus
 ```
 
-Päätepiste Ubuntulla (valinnainen — ilman sitä varapolku):
+Päätepiste (valinnainen — ilman sitä varapolku):
 
 ```bash
-ANTHROPIC_API_KEY=... .venv/bin/python3 demo-botti/palvelin.py
+ANTHROPIC_API_KEY=... python3 demo-botti/palvelin.py    # portti 8772
 ```
+
+Selain käyttää oletuksena `http://127.0.0.1:8772/kysely`. **Ei samaa porttia
+kuin sivu itse**: 8771 on staattinen tiedostopalvelin, joka vastaa POSTiin
+501:llä. Muualle osoitetaan ilman koodimuutosta:
+
+```
+?api=https://ubuntu.saola-capella.ts.net/kysely
+```
+
+Ilman API-avainta palvelin käynnistyy silti ja vastaa koekutsuun, mutta
+kyselyihin 503:lla — selain siirtyy varapolulle ja **kertoo syyn**:
+*"Yritin: … — ei API-avainta."*
 
 ## Jaetun sopimuksen kolmas kopio
 

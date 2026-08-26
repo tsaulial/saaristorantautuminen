@@ -85,6 +85,8 @@ class Kasittelija(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
+        if self.path.rstrip("/") not in ("/kysely", "/api/kysely", ""):
+            return self._json(404, {"virhe": f"tuntematon reitti {self.path}"})
         pituus = int(self.headers.get("content-length", 0))
         try:
             pyynto = json.loads(self.rfile.read(pituus) or b"{}")
@@ -128,7 +130,8 @@ class Kasittelija(BaseHTTPRequestHandler):
 def main():
     meta, sanasto = K.lataa()
     Kasittelija.meta, Kasittelija.sanasto = meta, sanasto
-    print(f"rantabotti kuuntelee portissa {PORTTI}, malli {MALLI}")
+    print(f"rantabotti kuuntelee: http://127.0.0.1:{PORTTI}/kysely  (malli {MALLI})")
+    print("  selain kayttaa tata oletuksena; muualle: ?api=<osoite>")
     print(f"  API-avain: {'on' if os.environ.get('ANTHROPIC_API_KEY') else 'PUUTTUU (503, selain kayttaa varapolkua)'}")
     ThreadingHTTPServer(("127.0.0.1", PORTTI), Kasittelija).serve_forever()
 
